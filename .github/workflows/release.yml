@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        run: >-
+          python3 scripts/package_release.py check-tag
+          --tag "${GITHUB_REF_NAME}"
+          --cargo-toml Cargo.toml
+          --github-output "${GITHUB_OUTPUT}"
+      - run: python3 scripts/package_release.py self-test
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            format: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            format: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            format: zip
+          - os: macos-13
+            target: x86_64-apple-darwin
+            format: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            format: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libext2fs-dev
+      - name: Verify native runner
+        run: python3 scripts/package_release.py verify-host --target "${{ matrix.target }}"
+      - name: Build release binaries
+        run: cargo build --workspace --bins --release --locked --target "${{ matrix.target }}"
+      - name: Smoke main binary
+        run: cargo run --release --locked --target "${{ matrix.target }}" --bin neutrasearch -- --version
+      - name: Smoke helper binary
+        run: cargo run --release --locked --target "${{ matrix.target }}" --bin neutrasearch-helper -- --version
+      - name: Package portable archive
+        run: >-
+          python3 scripts/package_release.py package
+          --project-root .
+          --target-dir "target/${{ matrix.target }}/release"
+          --output-dir dist
+          --target "${{ matrix.target }}"
+          --version "${{ needs.prepare.outputs.version }}"
+          --format "${{ matrix.format }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - run: python3 scripts/package_release.py checksums --input-dir dist --output dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "dist/*"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          args=(--verify-tag --generate-notes)
+          if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*
