@@ -122,10 +122,22 @@ mod linux {
         | (0x94 << IOC_TYPESHIFT)
         | (17 << IOC_NRSHIFT)) as libc::c_ulong;
 
+    fn env_present(current: &str, legacy: &str) -> bool {
+        std::env::var_os(current).is_some() || std::env::var_os(legacy).is_some()
+    }
+    fn env_value(current: &str, legacy: &str) -> Option<String> {
+        std::env::var(current)
+            .ok()
+            .or_else(|| std::env::var(legacy).ok())
+    }
+
     pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
         let started = Instant::now();
-        let force_serial = std::env::var_os("NEUTRA_BTRFS_SERIAL").is_some()
-            || std::env::var_os("NEUTRA_BTRFS_MIN_OBJECTID").is_some();
+        let force_serial = env_present("NEUTRASEARCH_BTRFS_SERIAL", "NEUTRA_BTRFS_SERIAL")
+            || env_present(
+                "NEUTRASEARCH_BTRFS_MIN_OBJECTID",
+                "NEUTRA_BTRFS_MIN_OBJECTID",
+            );
         let (nodes, names, batches) = if force_serial {
             let file = File::open(&mount.mountpoint).with_context(|| {
                 format!(
@@ -138,14 +150,18 @@ mod linux {
             let mut current_ino: Option<u64> = None;
             let mut current_meta: Option<Meta> = None;
             let mut current_link: Option<Link> = None;
-            let range_min = std::env::var("NEUTRA_BTRFS_MIN_OBJECTID")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0u64);
-            let range_max = std::env::var("NEUTRA_BTRFS_MAX_OBJECTID")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(u64::MAX);
+            let range_min = env_value(
+                "NEUTRASEARCH_BTRFS_MIN_OBJECTID",
+                "NEUTRA_BTRFS_MIN_OBJECTID",
+            )
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0u64);
+            let range_max = env_value(
+                "NEUTRASEARCH_BTRFS_MAX_OBJECTID",
+                "NEUTRA_BTRFS_MAX_OBJECTID",
+            )
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(u64::MAX);
             let mut cursor = (range_min, INODE_ITEM, 0u64);
             let mut batches = 0u64;
             // Allocate/zero the large userspace result area once. Reallocating it
@@ -191,7 +207,9 @@ mod linux {
                     break;
                 }
                 batches += 1;
-                if std::env::var_os("NEUTRA_PROGRESS").is_some() && batches % 25 == 0 {
+                if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS")
+                    && batches.is_multiple_of(25)
+                {
                     eprintln!(
                         "btrfs batch={batches} count={count} cursor={:?} nodes={} wall_ms={}",
                         cursor,
@@ -263,7 +281,7 @@ mod linux {
             if let Some(old) = current_ino {
                 finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
             }
-            if std::env::var_os("NEUTRA_PROGRESS").is_some() {
+            if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") {
                 eprintln!(
                     "btrfs metadata phase: nodes={} batches={} wall_ms={}",
                     nodes.len(),
