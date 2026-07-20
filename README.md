@@ -10,7 +10,7 @@ Neutrasearch is a fast, cross-platform filename and folder search application wr
 - Compact memory-mapped index with a durable update log
 - No directory-walking fallback in native scanner lanes
 - Desktop GUI for Linux, Windows, and macOS
-- CLI, MCP server, and Pi plugin for agent use
+- CLI and MCP server for agent use; Pi package distributed separately
 - No telemetry
 
 ## Native index sources
@@ -79,9 +79,7 @@ sudo neutrasearch serve --index /path/to/index.nsx --watch /mnt/data
 
 ## Agent integration
 
-Neutrasearch includes an MCP server and a persistent Pi plugin so agents can search an existing index instead of enumerating folders with grep or find.
-
-See [`pi-plugin/README.md`](pi-plugin/README.md) for setup.
+Neutrasearch includes an MCP server so agents can search an existing index instead of enumerating folders with grep or find. A Pi plugin that installs and drives Neutrasearch is published separately at [pi.dev/packages](https://pi.dev/packages).
 
 ## Documentation
 
