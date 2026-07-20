@@ -65,7 +65,7 @@ impl fmt::Display for FsKind {
 pub enum MountSource {
     /// Local privileged scan of a block device / local filesystem.
     Local,
-    /// Remote neutra-helper reached over SSH/TCP because this is a network mount.
+    /// Remote neutrasearch-helper reached over SSH/TCP because this is a network mount.
     Remote { host: String },
 }
 

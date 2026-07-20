@@ -65,7 +65,7 @@ fn main() -> Result<()> {
                 args.remove(i);
             }
             "--help" | "-h" => {
-                println!("usage: neutra-query [--index PATH] [--limit N] [--json] QUERY\n       neutra-query [--index PATH] --stdio");
+                println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--limit N] [--json]\nInternal persistent mode: neutrasearch-query --index INDEX.nsx --stdio");
                 return Ok(());
             }
             x if x.starts_with('-') => bail!("unknown option {x}"),
@@ -169,7 +169,9 @@ fn open_delta(base: &std::path::Path, generation: u64) -> Result<Option<DeltaInd
 }
 
 fn default_index_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("NEUTRA_INDEX") {
+    if let Some(path) =
+        std::env::var_os("NEUTRASEARCH_INDEX").or_else(|| std::env::var_os("NEUTRA_INDEX"))
+    {
         return path.into();
     }
     #[cfg(target_os = "windows")]

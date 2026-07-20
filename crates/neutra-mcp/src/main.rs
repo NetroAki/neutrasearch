@@ -195,8 +195,8 @@ fn write_json(w: &mut impl Write, v: &Value) -> Result<()> {
     Ok(())
 }
 fn legacy_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("NEUTRA_INDEX") {
-        return p.into();
+    if let Some(path) = configured_index() {
+        return path;
     }
     #[cfg(target_os = "windows")]
     {
@@ -221,9 +221,14 @@ fn legacy_path() -> PathBuf {
             .join("neutrasearch/index.bin")
     }
 }
+fn configured_index() -> Option<PathBuf> {
+    std::env::var_os("NEUTRASEARCH_INDEX")
+        .or_else(|| std::env::var_os("NEUTRA_INDEX"))
+        .map(PathBuf::from)
+}
 fn compact_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("NEUTRA_INDEX") {
-        return path.into();
+    if let Some(path) = configured_index() {
+        return path;
     }
     let mut path = legacy_path();
     path.set_extension("nsx");

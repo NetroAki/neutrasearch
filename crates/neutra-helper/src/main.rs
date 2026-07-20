@@ -1,4 +1,4 @@
-//! neutra-helper: the privileged (or platform-native) scanning daemon.
+//! neutrasearch-helper: the privileged (or platform-native) scanning daemon.
 //!
 //! Speaks neutra-core::proto over stdin/stdout (framed bincode). The same
 //! binary is auto-provisioned onto Linux/Windows/macOS file servers, so all
@@ -60,18 +60,18 @@ fn main() -> Result<()> {
     // remote copy is stale. Keep them dependency-free and instant.
     let arg = std::env::args().nth(1);
     let serve_index = if arg.as_deref() == Some("--serve-index") {
-        Some(std::path::PathBuf::from(
-            std::env::args()
-                .nth(2)
-                .context("usage: neutra-helper --serve-index INDEX.nsx")?,
-        ))
+        Some(std::path::PathBuf::from(std::env::args().nth(2).context(
+            "internal usage: neutrasearch-helper --serve-index INDEX.nsx",
+        )?))
     } else {
-        std::env::var_os("NEUTRA_SERVE_INDEX").map(std::path::PathBuf::from)
+        std::env::var_os("NEUTRASEARCH_SERVE_INDEX")
+            .or_else(|| std::env::var_os("NEUTRA_SERVE_INDEX"))
+            .map(std::path::PathBuf::from)
     };
     match arg.as_deref() {
         Some("--version") | Some("-V") => {
             println!(
-                "neutra-helper {} build {}",
+                "neutrasearch-helper {} build {}",
                 env!("CARGO_PKG_VERSION"),
                 HELPER_BUILD
             );
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
         Some("--scan-summary") => {
             let target = std::env::args()
                 .nth(2)
-                .context("usage: neutra-helper --scan-summary MOUNTPOINT")?;
+                .context("use: neutrasearch index MOUNT --output INDEX.nsx")?;
             #[cfg(target_os = "linux")]
             {
                 let mount = neutra_core::mounts::system_mounts()?
@@ -116,11 +116,11 @@ fn main() -> Result<()> {
         Some("--build-index") => {
             let target = std::env::args()
                 .nth(2)
-                .context("usage: neutra-helper --build-index MOUNTPOINT OUTPUT")?;
+                .context("use: neutrasearch index MOUNT --output INDEX.nsx")?;
             let output = std::path::PathBuf::from(
                 std::env::args()
                     .nth(3)
-                    .context("usage: neutra-helper --build-index MOUNTPOINT OUTPUT")?,
+                    .context("use: neutrasearch index MOUNT --output INDEX.nsx")?,
             );
             #[cfg(target_os = "linux")]
             {
@@ -221,7 +221,7 @@ fn main() -> Result<()> {
                     send(
                         &out,
                         &HelperMsg::Error(
-                            "ApplyDelta requires neutra-helper --serve-index INDEX.nsx".into(),
+                            "ApplyDelta requires 'neutrasearch serve --index INDEX.nsx'".into(),
                         ),
                     )?;
                     continue;
@@ -419,8 +419,10 @@ mod tests {
 
     #[test]
     fn durable_store_syncs_and_searches_delta() {
-        let base_path =
-            std::env::temp_dir().join(format!("neutra-helper-store-{}.nsx", std::process::id()));
+        let base_path = std::env::temp_dir().join(format!(
+            "neutrasearch-helper-store-{}.nsx",
+            std::process::id()
+        ));
         let mut delta_path = base_path.clone();
         delta_path.set_extension("delta");
         let _ = std::fs::remove_file(&base_path);
