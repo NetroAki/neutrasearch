@@ -54,7 +54,7 @@ pub(super) fn scan_metadata(mount: &Path, started: Instant) -> Result<(Vec<Node>
         batches += part.batches;
     }
     nodes.sort_unstable_by_key(|n| n.ino);
-    if std::env::var_os("NEUTRA_PROGRESS").is_some() {
+    if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") {
         eprintln!(
             "btrfs parallel metadata phase: nodes={} batches={} wall_ms={}",
             nodes.len(),
@@ -171,7 +171,7 @@ fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) 
     if let Some(old) = current_ino {
         finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
     }
-    if std::env::var_os("NEUTRA_PROGRESS").is_some() && !nodes.is_empty() {
+    if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") && !nodes.is_empty() {
         eprintln!(
             "btrfs shard={range_min}..={range_max} nodes={} batches={} wall_ms={}",
             nodes.len(),

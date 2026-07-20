@@ -91,7 +91,8 @@ pub fn scan_reader<R: Read + Seek>(
 
     let mut entries = HashMap::<u64, Entry>::with_capacity(record_count.min(4_000_000) as usize);
     let mut aliases = HashMap::<u64, Vec<Alias>>::new();
-    let progress = std::env::var_os("NEUTRA_PROGRESS").is_some();
+    let progress = std::env::var_os("NEUTRASEARCH_PROGRESS").is_some()
+        || std::env::var_os("NEUTRA_PROGRESS").is_some();
     let mut skipped_attr_list = 0u64;
     let mut buf = vec![0u8; g.record as usize];
     let mut run_cursor = RunCursor::default();
@@ -577,7 +578,7 @@ fn apply_fixup(rec: &mut [u8], sector: usize) -> Result<()> {
     let usa_off = u16le(rec, 4).context("USA offset")? as usize;
     let count = u16le(rec, 6).context("USA count")? as usize;
     if sector == 0
-        || rec.len() % sector != 0
+        || !rec.len().is_multiple_of(sector)
         || count != rec.len() / sector + 1
         || usa_off + count * 2 > rec.len()
     {
