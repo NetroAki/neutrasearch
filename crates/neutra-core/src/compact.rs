@@ -8,13 +8,14 @@ use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats, SortKey};
 use memmap2::Mmap;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const MAGIC: &[u8; 8] = b"NEUTIDX1";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const HEADER: u64 = 64;
+const CHECKSUM_BYTES: usize = 4;
 const BLOCK_RECORDS: usize = 32;
 const DESC_SIZE: u64 = 16;
 const DICT_SIZE: u64 = 16;
@@ -49,6 +50,14 @@ impl CompactIndex {
     pub fn build(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
         if records.len() > u32::MAX as usize {
             return Err(invalid("compact index supports at most u32::MAX records"));
+        }
+        if records
+            .iter()
+            .any(|record| !safe_absolute_path(&record.path))
+        {
+            return Err(invalid(
+                "compact index records must use absolute normalized paths",
+            ));
         }
         let started = Instant::now();
         let generation = new_generation();
@@ -134,9 +143,23 @@ impl CompactIndex {
         write_u64(&mut file, dict_offset)?;
         write_u64(&mut file, generation)?;
         file.flush()?;
-        file.get_ref().sync_all()?;
+        let mut file = file.into_inner().map_err(|error| error.into_error())?;
+        file.sync_all()?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut checksum = crc32fast::Hasher::new();
+        let mut buffer = [0u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            checksum.update(&buffer[..read]);
+        }
+        file.write_all(&checksum.finalize().to_le_bytes())?;
+        file.sync_all()?;
         drop(file);
         replace_file(&temp, path)?;
+        clear_stale_marker(path)?;
         sync_parent(path)?;
         let bytes = std::fs::metadata(path)?.len();
         Ok(BuildStats {
@@ -167,6 +190,13 @@ impl CompactIndex {
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
+        let stale = suffix_path(path, ".stale");
+        if stale.is_file() {
+            return Err(invalid(format!(
+                "compact index is marked stale by {} and requires a full rebuild",
+                stale.display()
+            )));
+        }
         #[cfg(not(windows))]
         let map = {
             let file = File::open(path)?;
@@ -174,41 +204,51 @@ impl CompactIndex {
         };
         #[cfg(windows)]
         let map = std::fs::read(path)?;
-        if map.len() < HEADER as usize || &map[..8] != MAGIC {
+        if map.len() < HEADER as usize + CHECKSUM_BYTES || &map[..8] != MAGIC {
             return Err(invalid("not a Neutrasearch compact index"));
         }
-        if u32_at(&map, 8)? != VERSION {
+        let data_len = map.len() - CHECKSUM_BYTES;
+        let data = &map[..data_len];
+        let expected_checksum = u32::from_le_bytes(
+            map[data_len..]
+                .try_into()
+                .map_err(|_| invalid("missing compact index checksum"))?,
+        );
+        if crc32fast::hash(data) != expected_checksum {
+            return Err(invalid("compact index checksum mismatch"));
+        }
+        if u32_at(data, 8)? != VERSION {
             return Err(invalid("unsupported compact index version"));
         }
-        if u32_at(&map, 12)? != BLOCK_RECORDS as u32 {
+        if u32_at(data, 12)? != BLOCK_RECORDS as u32 {
             return Err(invalid("unsupported path block size"));
         }
-        let record_count = u64_at(&map, 16)?;
-        let generation = u64_at(&map, 56)?;
-        let block_count = u32_at(&map, 24)? as usize;
-        let dict_count = u32_at(&map, 28)? as usize;
-        let desc_offset = u64_at(&map, 32)? as usize;
-        let dict_offset = u64_at(&map, 48)? as usize;
+        let record_count = u64_at(data, 16)?;
+        let generation = u64_at(data, 56)?;
+        let block_count = u32_at(data, 24)? as usize;
+        let dict_count = u32_at(data, 28)? as usize;
+        let desc_offset = u64_at(data, 32)? as usize;
+        let dict_offset = u64_at(data, 48)? as usize;
         let mut blocks = Vec::with_capacity(block_count);
         for i in 0..block_count {
             let p = desc_offset + i * DESC_SIZE as usize;
             let d = BlockDesc {
-                offset: u64_at(&map, p)?,
-                len: u32_at(&map, p + 8)?,
-                count: u16_at(&map, p + 12)?,
+                offset: u64_at(data, p)?,
+                len: u32_at(data, p + 8)?,
+                count: u16_at(data, p + 12)?,
             };
-            checked(&map, d.offset as usize, d.len as usize)?;
+            checked(data, d.offset as usize, d.len as usize)?;
             blocks.push(d);
         }
         let mut dict = Vec::with_capacity(dict_count);
         for i in 0..dict_count {
             let p = dict_offset + i * DICT_SIZE as usize;
             let d = DictEntry {
-                gram: u32_at(&map, p)?,
-                len: u32_at(&map, p + 4)?,
-                offset: u64_at(&map, p + 8)?,
+                gram: u32_at(data, p)?,
+                len: u32_at(data, p + 4)?,
+                offset: u64_at(data, p + 8)?,
             };
-            checked(&map, d.offset as usize, d.len as usize)?;
+            checked(data, d.offset as usize, d.len as usize)?;
             dict.push(d);
         }
         if !dict.windows(2).all(|w| w[0].gram < w[1].gram) {
@@ -261,6 +301,27 @@ impl CompactIndex {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// Read just enough of the on-disk header to detect atomic base replacement.
+    /// A caller that observes a change must reopen normally, which performs the
+    /// complete structural and whole-file checksum validation.
+    pub fn generation_on_disk(path: &Path) -> io::Result<u64> {
+        let stale = suffix_path(path, ".stale");
+        if stale.is_file() {
+            return Err(invalid(format!(
+                "compact index is marked stale by {} and requires a full rebuild",
+                stale.display()
+            )));
+        }
+        let mut file = File::open(path)?;
+        let mut header = [0u8; HEADER as usize];
+        file.read_exact(&mut header)?;
+        if &header[..8] != MAGIC || u32_at(&header, 8)? != VERSION {
+            return Err(invalid("invalid compact index header"));
+        }
+        u64_at(&header, 56)
+    }
+
     pub fn mapped_bytes(&self) -> usize {
         self.map.len()
     }
@@ -298,6 +359,18 @@ impl CompactIndex {
         let started = Instant::now();
         let candidates = self.candidate_blocks(q)?;
         let mut ranked = Vec::<(u32, FileRecord)>::new();
+        let cmp = |a: &(u32, FileRecord), b: &(u32, FileRecord)| match q.sort {
+            SortKey::Relevance => b.0.cmp(&a.0).then(b.1.mtime.cmp(&a.1.mtime)),
+            SortKey::NameAsc => {
+                a.1.name()
+                    .to_ascii_lowercase()
+                    .cmp(&b.1.name().to_ascii_lowercase())
+            }
+            SortKey::PathAsc => a.1.path.cmp(&b.1.path),
+            SortKey::SizeDesc => b.1.size.cmp(&a.1.size),
+            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime),
+        };
+        let prune_at = q.limit.saturating_mul(2).max(q.limit.saturating_add(32));
         let mut matched = 0u64;
         for block in candidates {
             for record in self.read_block(block)? {
@@ -311,6 +384,9 @@ impl CompactIndex {
                     }
                 }
             }
+            if q.limit > 0 && ranked.len() >= prune_at {
+                retain_best(&mut ranked, q.limit, &cmp);
+            }
         }
         if let Some(overlay) = delta {
             for record in overlay.upserts() {
@@ -318,24 +394,15 @@ impl CompactIndex {
                     if let Some(score) = q.score(record) {
                         matched += 1;
                         ranked.push((score, record.clone()));
+                        if q.limit > 0 && ranked.len() >= prune_at {
+                            retain_best(&mut ranked, q.limit, &cmp);
+                        }
                     }
                 }
             }
         }
-        let cmp = |a: &(u32, FileRecord), b: &(u32, FileRecord)| match q.sort {
-            SortKey::Relevance => b.0.cmp(&a.0).then(b.1.mtime.cmp(&a.1.mtime)),
-            SortKey::NameAsc => {
-                a.1.name()
-                    .to_ascii_lowercase()
-                    .cmp(&b.1.name().to_ascii_lowercase())
-            }
-            SortKey::PathAsc => a.1.path.cmp(&b.1.path),
-            SortKey::SizeDesc => b.1.size.cmp(&a.1.size),
-            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime),
-        };
-        if q.limit > 0 && ranked.len() > q.limit {
-            ranked.select_nth_unstable_by(q.limit, &cmp);
-            ranked.truncate(q.limit);
+        if q.limit > 0 {
+            retain_best(&mut ranked, q.limit, &cmp);
         }
         ranked.sort_unstable_by(&cmp);
         let hits = ranked
@@ -466,6 +533,16 @@ fn get_varint(bytes: &[u8], p: &mut usize) -> io::Result<u32> {
         shift += 7;
     }
 }
+fn retain_best<F>(ranked: &mut Vec<(u32, FileRecord)>, limit: usize, compare: &F)
+where
+    F: Fn(&(u32, FileRecord), &(u32, FileRecord)) -> std::cmp::Ordering,
+{
+    if ranked.len() > limit {
+        ranked.select_nth_unstable_by(limit, compare);
+        ranked.truncate(limit);
+    }
+}
+
 fn checked(bytes: &[u8], offset: usize, len: usize) -> io::Result<&[u8]> {
     bytes
         .get(
@@ -500,6 +577,20 @@ fn binerr(e: impl std::fmt::Display) -> io::Error {
 fn invalid(e: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.into())
 }
+fn safe_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let windows_absolute = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+        || path.starts_with("\\\\");
+    !path.contains('\0')
+        && (Path::new(path).is_absolute() || windows_absolute)
+        && !path
+            .split(['/', '\\'])
+            .any(|component| matches!(component, "." | ".."))
+}
+
 fn new_generation() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -522,20 +613,36 @@ fn new_generation() -> u64 {
 fn temp_path(path: &Path) -> PathBuf {
     suffix_path(path, ".new")
 }
+fn clear_stale_marker(path: &Path) -> io::Result<()> {
+    let stale = suffix_path(path, ".stale");
+    match std::fs::remove_file(stale) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(suffix);
     value.into()
 }
 fn open_private(path: &Path) -> io::Result<BufWriter<File>> {
-    let mut o = OpenOptions::new();
-    o.create(true).truncate(true).write(true).read(true);
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true).read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
-    Ok(BufWriter::with_capacity(1024 * 1024, o.open(path)?))
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    Ok(BufWriter::with_capacity(1024 * 1024, options.open(path)?))
 }
 #[cfg(not(windows))]
 fn replace_file(temp: &Path, path: &Path) -> io::Result<()> {
@@ -629,6 +736,75 @@ mod tests {
         assert_eq!(hits[0].record.path.as_ref(), "/opt/gamma/notes.txt");
         drop(index);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stale_marker_blocks_readers_until_full_rebuild() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-compact-stale-{}.idx", std::process::id()));
+        let stale = suffix_path(&path, ".stale");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&stale);
+        let old = CompactIndex::build(&[rec("/old.txt", 1)], &path).unwrap();
+        assert_eq!(
+            CompactIndex::generation_on_disk(&path).unwrap(),
+            old.generation
+        );
+        std::fs::write(&stale, b"watch overflow").unwrap();
+        assert!(CompactIndex::open(&path).is_err());
+        assert!(CompactIndex::generation_on_disk(&path).is_err());
+
+        let replacement = CompactIndex::build(&[rec("/new.txt", 2)], &path).unwrap();
+        assert!(!stale.exists());
+        assert_eq!(
+            CompactIndex::generation_on_disk(&path).unwrap(),
+            replacement.generation
+        );
+        assert!(CompactIndex::open(&path).is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn checksum_rejects_corrupted_compact_data() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-compact-corrupt-{}.idx", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        CompactIndex::build(&[rec("/safe.txt", 1)], &path).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[HEADER as usize] ^= 0x40;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(CompactIndex::open(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn build_rejects_non_normalized_paths() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-invalid-path-{}.idx", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(CompactIndex::build(&[rec("/allowed/../secret", 1)], &path).is_err());
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_refuses_preplanted_temporary_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let stem = format!("neutra-symlink-{}", std::process::id());
+        let base_path = std::env::temp_dir().join(format!("{stem}.idx"));
+        let temporary = temp_path(&base_path);
+        let victim = std::env::temp_dir().join(format!("{stem}.victim"));
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(&victim);
+        std::fs::write(&victim, b"do not truncate").unwrap();
+        symlink(&victim, &temporary).unwrap();
+
+        assert!(CompactIndex::build(&[rec("/safe.txt", 1)], &base_path).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not truncate");
+        std::fs::remove_file(temporary).unwrap();
+        std::fs::remove_file(victim).unwrap();
     }
 
     #[test]

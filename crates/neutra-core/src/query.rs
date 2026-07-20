@@ -33,8 +33,11 @@ pub struct Query {
     pub fss: Vec<FsKind>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
-    /// Lowercased path prefix.
+    /// Lowercased path prefix supplied by the query language.
     pub under: Option<String>,
+    /// Trusted caller-injected path scopes, ORed together before ranking and limiting.
+    #[serde(default)]
+    pub scope_roots: Vec<String>,
     pub sort: SortKey,
     /// Hard cap on returned hits; 0 = unlimited.
     pub limit: usize,
@@ -50,6 +53,7 @@ impl Default for Query {
             min_size: None,
             max_size: None,
             under: None,
+            scope_roots: Vec::new(),
             sort: SortKey::Relevance,
             limit: 1000,
         }
@@ -98,6 +102,9 @@ impl Query {
     /// Cheap filter phase (no term matching). Run before the term phase.
     #[inline]
     pub fn passes_filters(&self, r: &FileRecord) -> bool {
+        if !safe_absolute_path(&r.path) {
+            return false;
+        }
         if !self.kinds.is_empty() && !self.kinds.contains(&r.kind) {
             return false;
         }
@@ -129,9 +136,17 @@ impl Query {
             }
         }
         if let Some(under) = &self.under {
-            if !starts_with_ci(&r.path, under) {
+            if !path_is_under_ci(&r.path, under) {
                 return false;
             }
+        }
+        if !self.scope_roots.is_empty()
+            && !self
+                .scope_roots
+                .iter()
+                .any(|root| path_is_under_ci(&r.path, root))
+        {
+            return false;
         }
         true
     }
@@ -175,15 +190,46 @@ fn find_ci(haystack: &str, lower_needle: &str) -> Option<usize> {
     haystack.to_lowercase().find(lower_needle)
 }
 #[inline]
-fn starts_with_ci(haystack: &str, lower_prefix: &str) -> bool {
-    if haystack.is_ascii() && lower_prefix.is_ascii() {
-        haystack
-            .as_bytes()
-            .get(..lower_prefix.len())
-            .is_some_and(|p| p.eq_ignore_ascii_case(lower_prefix.as_bytes()))
+fn safe_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let windows_absolute = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+        || path.starts_with("\\\\");
+    !path.contains('\0')
+        && (std::path::Path::new(path).is_absolute() || windows_absolute)
+        && !path
+            .split(['/', '\\'])
+            .any(|component| matches!(component, "." | ".."))
+}
+
+#[inline]
+fn path_is_under_ci(path: &str, lower_root: &str) -> bool {
+    let (path, root) = if path.is_ascii() && lower_root.is_ascii() {
+        (
+            std::borrow::Cow::Borrowed(path),
+            std::borrow::Cow::Borrowed(lower_root),
+        )
     } else {
-        haystack.to_lowercase().starts_with(lower_prefix)
+        (
+            std::borrow::Cow::Owned(path.to_lowercase()),
+            std::borrow::Cow::Owned(lower_root.to_lowercase()),
+        )
+    };
+    let Some(prefix) = path.as_bytes().get(..root.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(root.as_bytes()) {
+        return false;
     }
+    path.len() == root.len()
+        || root.ends_with('/')
+        || root.ends_with('\\')
+        || path
+            .as_bytes()
+            .get(root.len())
+            .is_some_and(|next| matches!(next, b'/' | b'\\'))
 }
 
 /// Split input into tokens, respecting double quotes.
@@ -267,6 +313,29 @@ mod tests {
         assert_eq!(q.min_size, Some(1024));
         assert_eq!(q.kinds, vec![FileKind::File]);
         assert_eq!(q.under.as_deref(), Some("/src"));
+    }
+
+    #[test]
+    fn under_filter_respects_path_component_boundaries() {
+        let q = Query::parse("under:/home/a");
+        assert!(q.passes_filters(&rec("/home/a/file.txt", 1)));
+        assert!(q.passes_filters(&rec("/home/a", 1)));
+        assert!(!q.passes_filters(&rec("/home/ab/file.txt", 1)));
+
+        let windows = Query::parse(r"under:C:\Users\A");
+        assert!(windows.passes_filters(&rec(r"c:\Users\A\file.txt", 1)));
+        assert!(!windows.passes_filters(&rec(r"c:\Users\AB\file.txt", 1)));
+    }
+
+    #[test]
+    fn trusted_scope_roots_are_orred_with_component_boundaries() {
+        let mut q = Query::parse("");
+        q.scope_roots = vec!["/allowed/a".into(), "/allowed/b".into()];
+        assert!(q.passes_filters(&rec("/allowed/a/file.txt", 1)));
+        assert!(q.passes_filters(&rec("/allowed/b/file.txt", 1)));
+        assert!(!q.passes_filters(&rec("/allowed/ab/file.txt", 1)));
+        assert!(!q.passes_filters(&rec("/denied/file.txt", 1)));
+        assert!(!q.passes_filters(&rec("/allowed/a/../secret.txt", 1)));
     }
 
     #[test]

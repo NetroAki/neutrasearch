@@ -817,6 +817,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpufeatures"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1066,7 +1075,7 @@ dependencies = [
 [[package]]
 name = "egui_expressive"
 version = "0.1.0"
-source = "git+https://github.com/NetroAki/egui_expressive.git#10e4f801efab1e777efb02258327ca6b64aaefa7"
+source = "git+https://github.com/NetroAki/egui_expressive.git?rev=10e4f801efab1e777efb02258327ca6b64aaefa7#10e4f801efab1e777efb02258327ca6b64aaefa7"
 dependencies = [
  "egui",
  "flate2",
@@ -2270,6 +2279,7 @@ dependencies = [
  "bincode",
  "crc32fast",
  "fs2",
+ "libc",
  "memmap2",
  "rayon",
  "serde",
@@ -2303,6 +2313,7 @@ name = "neutra-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs2",
  "libc",
  "neutra-btrfs",
  "neutra-core",
@@ -2358,6 +2369,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "neutra-core",
+ "sha2",
 ]
 
 [[package]]
@@ -3413,6 +3425,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.2",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

@@ -28,7 +28,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
-const RECORD_BATCH: usize = 4096;
+const RECORD_BATCH: usize = 1024;
+const MAX_SCAN_MOUNTS: usize = 32;
+const MAX_QUERY_RESULTS: usize = 10_000;
+const MAX_QUERY_TERMS: usize = 32;
+const MAX_QUERY_TEXT_BYTES: usize = 32 * 1024;
+const MAX_DELTA_CHANGES: usize = 65_536;
+const MAX_INDEX_PATH_BYTES: usize = 32 * 1024;
 
 struct DurableStore {
     path: std::path::PathBuf,
@@ -176,7 +182,7 @@ fn open_durable_pair(
         };
         let pair = match current_delta {
             Ok(delta) => (base, delta),
-            Err(error) if recoverable_delta_error(&error) && staged_path.is_file() => {
+            Err(error) if retry_delta_with_staged_generation(&error) && staged_path.is_file() => {
                 let staged =
                     CompactIndex::open(&staged_path).context("open unmarked compaction stage")?;
                 let generation = staged.generation();
@@ -206,7 +212,11 @@ fn open_durable_pair(
                     .with_context(|| format!("open delta index {}", delta_path.display()));
             }
         };
-        for stale in [staged_path, compaction_marker_temp(base_path)] {
+        for stale in [
+            append_suffix(&staged_path, ".new"),
+            staged_path,
+            compaction_marker_temp(base_path),
+        ] {
             let _ = std::fs::remove_file(stale);
         }
         return Ok(pair);
@@ -255,7 +265,7 @@ fn open_durable_pair(
                     .context("finish compaction WAL reset")?;
                 delta
             }
-            Err(error) if recoverable_delta_error(&error) => {
+            Err(error) if retry_delta_with_staged_generation(&error) => {
                 match open_delta_writer(delta_path, expected_generation, compact_at) {
                     Ok(delta) => delta,
                     Err(error) if recoverable_delta_error(&error) => {
@@ -306,11 +316,18 @@ fn replace_empty_delta(
     }
 }
 
-fn recoverable_delta_error(error: &std::io::Error) -> bool {
+fn retry_delta_with_staged_generation(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
     )
+}
+
+fn recoverable_delta_error(error: &std::io::Error) -> bool {
+    // A compaction reset can crash while rewriting the fixed-size WAL header.
+    // Only that demonstrably incomplete state is recoverable. Complete but
+    // invalid headers, frames, generations, and checksums must fail closed.
+    error.kind() == std::io::ErrorKind::UnexpectedEof
 }
 
 fn compaction_stage(base: &std::path::Path) -> std::path::PathBuf {
@@ -323,6 +340,84 @@ fn compaction_marker(base: &std::path::Path) -> std::path::PathBuf {
 
 fn compaction_marker_temp(base: &std::path::Path) -> std::path::PathBuf {
     append_suffix(base, ".compacting.new")
+}
+
+fn stale_marker(base: &std::path::Path) -> std::path::PathBuf {
+    append_suffix(base, ".stale")
+}
+
+fn write_stale_marker(base: &std::path::Path, reason: &str) -> Result<()> {
+    let marker = stale_marker(base);
+    if marker.is_file() {
+        return Ok(());
+    }
+    let temporary = append_suffix(&marker, ".new");
+    let _ = std::fs::remove_file(&temporary);
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = options.open(&temporary)?;
+    let reason = reason.as_bytes();
+    file.write_all(&reason[..reason.len().min(4096)])?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, &marker)?;
+    sync_parent(&marker)
+}
+
+fn acquire_rebuild_lock(base: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+    let mut delta = base.to_path_buf();
+    delta.set_extension("delta");
+    let lock_path = append_suffix(&delta, ".lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("open rebuild lock {}", lock_path.display()))?;
+    let metadata = lock.metadata()?;
+    if !metadata.is_file() {
+        anyhow::bail!(
+            "rebuild lock is not a regular file: {}",
+            lock_path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 || metadata.mode() & 0o077 != 0 {
+            anyhow::bail!(
+                "rebuild lock must be private and single-linked: {}",
+                lock_path.display()
+            );
+        }
+    }
+    fs2::FileExt::try_lock_exclusive(&lock).with_context(|| {
+        format!(
+            "index is in use by a writer; stop the serving helper before rebuilding {}",
+            base.display()
+        )
+    })?;
+    Ok((lock, delta))
 }
 
 fn append_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
@@ -484,10 +579,23 @@ fn main() -> Result<()> {
                     .into_iter()
                     .find(|m| m.mountpoint == std::path::Path::new(&target))
                     .with_context(|| format!("no supported mount at {target}"))?;
+                let (_rebuild_lock, delta_path) = acquire_rebuild_lock(&output)?;
                 let mut records = Vec::new();
-                let scan = dispatch_lane(&mount, &mut |record| records.push(record))?;
+                let mountpoint = mount.mountpoint.clone();
+                let scan = dispatch_lane(&mount, &mut |record| {
+                    if !default_path_excluded(&mountpoint, record.path.as_ref()) {
+                        records.push(record);
+                    }
+                })?;
                 let built = CompactIndex::build(&records, &output)?;
-                println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),scan.records,scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
+                match std::fs::remove_file(&delta_path) {
+                    Ok(()) => sync_parent(&delta_path)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).context("remove obsolete delta WAL after rebuild")
+                    }
+                }
+                println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),records.len(),scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
                 return Ok(());
             }
             #[cfg(not(target_os = "linux"))]
@@ -587,14 +695,23 @@ fn main() -> Result<()> {
     let mut scan_threads = Vec::new();
     loop {
         let msg: Option<ClientMsg> = read_frame(&mut rin).context("reading command")?;
+        reap_scan_threads(&mut scan_threads);
         match msg {
             None | Some(ClientMsg::Shutdown) => break,
             Some(ClientMsg::Hello { .. }) => {
                 send(&out, &HelperMsg::Error("duplicate Hello".into()))?;
             }
-            Some(ClientMsg::Scan { mounts }) => launch_scans(mounts, &out, None, &mut scan_threads),
+            Some(ClientMsg::Scan { mounts }) => {
+                match prepare_scan(mounts, scan_threads.is_empty()) {
+                    Ok(mounts) => launch_scans(mounts, &out, None, &mut scan_threads),
+                    Err(error) => send(&out, &HelperMsg::Error(error.to_string()))?,
+                }
+            }
             Some(ClientMsg::ScanResident { mounts }) => {
-                launch_scans(mounts, &out, Some(&index), &mut scan_threads)
+                match prepare_scan(mounts, scan_threads.is_empty()) {
+                    Ok(mounts) => launch_scans(mounts, &out, Some(&index), &mut scan_threads),
+                    Err(error) => send(&out, &HelperMsg::Error(error.to_string()))?,
+                }
             }
             Some(ClientMsg::Search { query }) => {
                 if stale.load(Ordering::Acquire) {
@@ -604,6 +721,10 @@ fn main() -> Result<()> {
                             "index is stale; run a full native reindex before searching".into(),
                         ),
                     )?;
+                    continue;
+                }
+                if let Err(error) = validate_query(&query) {
+                    send(&out, &HelperMsg::Error(error.to_string()))?;
                     continue;
                 }
                 let (hits, stats) = if let Some(store) = &durable {
@@ -631,6 +752,10 @@ fn main() -> Result<()> {
                 )?;
             }
             Some(ClientMsg::ApplyDelta { changes }) => {
+                if let Err(error) = validate_delta_changes(&changes) {
+                    send(&out, &HelperMsg::Error(error.to_string()))?;
+                    continue;
+                }
                 if stale.load(Ordering::Acquire) {
                     send(
                         &out,
@@ -681,6 +806,11 @@ fn main() -> Result<()> {
                     }
                     Err(error) => {
                         stale.store(true, Ordering::Release);
+                        if let Err(marker_error) =
+                            write_stale_marker(&store.path, &error.to_string())
+                        {
+                            tracing::error!("failed to persist stale marker: {marker_error:#}");
+                        }
                         send(
                             &out,
                             &HelperMsg::Error(format!(
@@ -710,6 +840,8 @@ fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf> {
     let staged_temporary = append_suffix(&staged, ".new");
     let marker = compaction_marker(base);
     let marker_temporary = compaction_marker_temp(base);
+    let stale = stale_marker(base);
+    let stale_temporary = append_suffix(&stale, ".new");
     vec![
         base.to_path_buf(),
         delta,
@@ -719,6 +851,8 @@ fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf> {
         staged_temporary,
         marker,
         marker_temporary,
+        stale,
+        stale_temporary,
     ]
 }
 
@@ -728,6 +862,14 @@ fn start_native_watch(
     store: Arc<RwLock<DurableStore>>,
     stale: Arc<AtomicBool>,
 ) {
+    let base_path = match store.read() {
+        Ok(store) => store.path.clone(),
+        Err(_) => {
+            stale.store(true, Ordering::Release);
+            tracing::error!("cannot start native watch: durable store lock poisoned");
+            return;
+        }
+    };
     std::thread::spawn(move || loop {
         match watcher.read_batch() {
             Ok(watch_linux::WatchBatch::Changes(changes)) if changes.is_empty() => {}
@@ -765,6 +907,11 @@ fn start_native_watch(
                     }
                     Err(error) => {
                         stale.store(true, Ordering::Release);
+                        if let Err(marker_error) =
+                            write_stale_marker(&base_path, &error.to_string())
+                        {
+                            tracing::error!("failed to persist stale marker: {marker_error:#}");
+                        }
                         tracing::error!("native watch stopped: {error:#}");
                         break;
                     }
@@ -772,16 +919,118 @@ fn start_native_watch(
             }
             Ok(watch_linux::WatchBatch::RescanRequired(reason)) => {
                 stale.store(true, Ordering::Release);
+                if let Err(error) = write_stale_marker(&base_path, reason) {
+                    tracing::error!("failed to persist stale marker: {error:#}");
+                }
                 tracing::error!(reason, "native watch requires a full native reindex");
                 break;
             }
             Err(error) => {
                 stale.store(true, Ordering::Release);
+                if let Err(marker_error) = write_stale_marker(&base_path, &error.to_string()) {
+                    tracing::error!("failed to persist stale marker: {marker_error:#}");
+                }
                 tracing::error!("native watch stopped: {error:#}");
                 break;
             }
         }
     });
+}
+
+fn prepare_scan(requested: Vec<MountInfo>, idle: bool) -> Result<Vec<MountInfo>> {
+    resolve_scan_mounts(requested, discover_local_mounts(), idle)
+}
+
+fn resolve_scan_mounts(
+    requested: Vec<MountInfo>,
+    trusted: Vec<MountInfo>,
+    idle: bool,
+) -> Result<Vec<MountInfo>> {
+    if !idle {
+        anyhow::bail!("a native scan is already running");
+    }
+    if requested.len() > MAX_SCAN_MOUNTS {
+        anyhow::bail!("scan request exceeds the {MAX_SCAN_MOUNTS}-mount limit");
+    }
+    if requested.is_empty() {
+        return Ok(trusted.into_iter().take(MAX_SCAN_MOUNTS).collect());
+    }
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::with_capacity(requested.len());
+    for request in requested {
+        let mount = trusted
+            .iter()
+            .find(|mount| mount.mountpoint == request.mountpoint)
+            .with_context(|| {
+                format!(
+                    "requested mount {} is not present in the trusted OS mount table",
+                    request.mountpoint.display()
+                )
+            })?;
+        let key = mount.mountpoint.to_string_lossy().into_owned();
+        if seen.insert(key) {
+            resolved.push(mount.clone());
+        }
+    }
+    Ok(resolved)
+}
+
+fn validate_query(query: &Query) -> Result<()> {
+    if query.limit == 0 || query.limit > MAX_QUERY_RESULTS {
+        anyhow::bail!("query limit must be between 1 and {MAX_QUERY_RESULTS}");
+    }
+    if query.terms.len() > MAX_QUERY_TERMS {
+        anyhow::bail!("query exceeds the {MAX_QUERY_TERMS}-term limit");
+    }
+    if query.scope_roots.len() > MAX_SCAN_MOUNTS
+        || query
+            .scope_roots
+            .iter()
+            .any(|root| !std::path::Path::new(root).is_absolute())
+    {
+        anyhow::bail!("query scopes must be absolute and limited to {MAX_SCAN_MOUNTS} roots");
+    }
+    let text_bytes = query.terms.iter().map(String::len).sum::<usize>()
+        + query.exts.iter().map(String::len).sum::<usize>()
+        + query.scope_roots.iter().map(String::len).sum::<usize>()
+        + query.under.as_ref().map_or(0, String::len);
+    if text_bytes > MAX_QUERY_TEXT_BYTES {
+        anyhow::bail!("query text exceeds the {MAX_QUERY_TEXT_BYTES}-byte limit");
+    }
+    Ok(())
+}
+
+fn validate_delta_changes(changes: &[DeltaChange]) -> Result<()> {
+    if changes.len() > MAX_DELTA_CHANGES {
+        anyhow::bail!("delta batch exceeds the {MAX_DELTA_CHANGES}-change limit");
+    }
+    for change in changes {
+        let path = match change {
+            DeltaChange::Upsert(record) => record.path.as_ref(),
+            DeltaChange::Remove(path) => path.as_ref(),
+        };
+        if path.is_empty() || path.len() > MAX_INDEX_PATH_BYTES {
+            anyhow::bail!("delta path length is outside the supported range");
+        }
+        if !safe_absolute_path(path) {
+            anyhow::bail!("delta paths must be absolute and normalized");
+        }
+    }
+    Ok(())
+}
+
+fn reap_scan_threads(threads: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < threads.len() {
+        if threads[index].is_finished() {
+            let thread = threads.swap_remove(index);
+            if thread.join().is_err() {
+                tracing::error!("native scan worker panicked");
+            }
+        } else {
+            index += 1;
+        }
+    }
 }
 
 fn launch_scans(
@@ -790,16 +1039,13 @@ fn launch_scans(
     index: Option<&Arc<RwLock<Index>>>,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
 ) {
-    let mounts = if mounts.is_empty() {
-        discover_local_mounts()
-    } else {
-        mounts
-    };
-    for mount in mounts {
-        let out = Arc::clone(out);
-        let index = index.map(Arc::clone);
-        threads.push(std::thread::spawn(move || run_scan(mount, out, index)));
-    }
+    let out = Arc::clone(out);
+    let index = index.map(Arc::clone);
+    threads.push(std::thread::spawn(move || {
+        for mount in mounts {
+            run_scan(mount, Arc::clone(&out), index.as_ref().map(Arc::clone));
+        }
+    }));
 }
 
 fn send(out: &Arc<Mutex<BufWriter<Stdout>>>, msg: &HelperMsg) -> Result<()> {
@@ -828,11 +1074,15 @@ fn run_scan(
     );
 
     let started = Instant::now();
+    let mountpoint = mount.mountpoint.clone();
     let mut batch: Vec<FileRecord> = Vec::with_capacity(RECORD_BATCH);
     let mut counts = (0u64, 0u64); // dirs, files
     let result = {
         let out = &out;
         let mut sink = |rec: FileRecord| {
+            if default_path_excluded(&mountpoint, rec.path.as_ref()) {
+                return;
+            }
             match rec.kind {
                 neutra_core::FileKind::Dir => counts.0 += 1,
                 _ => counts.1 += 1,
@@ -856,6 +1106,9 @@ fn run_scan(
                 }
                 send_lossy(&out, &HelperMsg::Records(std::mem::take(&mut batch)));
             }
+            stats.records = counts.0 + counts.1;
+            stats.dirs = counts.0;
+            stats.files = counts.1;
             stats.wall_ms = started.elapsed().as_millis() as u64;
             send_lossy(&out, &HelperMsg::ScanDone { mount, stats });
         }
@@ -869,6 +1122,27 @@ fn run_scan(
             );
         }
     }
+}
+
+fn safe_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let windows_absolute = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+        || path.starts_with("\\\\");
+    !path.contains('\0')
+        && (std::path::Path::new(path).is_absolute() || windows_absolute)
+        && !path
+            .split(['/', '\\'])
+            .any(|component| matches!(component, "." | ".."))
+}
+
+fn default_path_excluded(mountpoint: &std::path::Path, path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.starts_with(mountpoint.join(".snapshots"))
+        || (mountpoint == std::path::Path::new("/")
+            && (path.starts_with("/proc") || path.starts_with("/sys")))
 }
 
 fn discover_local_mounts() -> Vec<MountInfo> {
@@ -1149,6 +1423,109 @@ mod tests {
             drop(recovered);
             remove_store(&base_path, &delta_path);
         }
+    }
+
+    #[test]
+    fn corrupt_complete_wal_is_not_discarded_during_compaction_recovery() {
+        let (base_path, delta_path) = store_paths("reject-corrupt-recovery-wal");
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+        let mut store = DurableStore::open(&base_path).unwrap();
+        let staged_path = compaction_stage(&base_path);
+        let built = CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+        write_compaction_marker(&compaction_marker(&base_path), built.generation).unwrap();
+        store.delta.reset(built.generation).unwrap();
+        store
+            .delta
+            .apply(DeltaChange::Upsert(record("/later.txt", 3)))
+            .unwrap();
+        drop(store);
+
+        let mut wal = std::fs::read(&delta_path).unwrap();
+        *wal.last_mut().unwrap() ^= 0xff;
+        std::fs::write(&delta_path, wal).unwrap();
+        let error = DurableStore::open(&base_path)
+            .err()
+            .expect("corrupt complete WAL must fail closed");
+        assert!(format!("{error:#}").contains("checksum mismatch"));
+        assert!(compaction_marker(&base_path).exists());
+
+        remove_store(&base_path, &delta_path);
+    }
+
+    #[test]
+    fn scan_requests_use_trusted_mount_metadata() {
+        let trusted = MountInfo {
+            device: "/dev/trusted".into(),
+            mountpoint: "/mnt/data".into(),
+            fs: FsKind::Ext4,
+            source: neutra_core::MountSource::Local,
+        };
+        let spoofed = MountInfo {
+            device: "/dev/evil".into(),
+            mountpoint: "/mnt/data".into(),
+            fs: FsKind::Ntfs,
+            source: neutra_core::MountSource::Local,
+        };
+        let resolved = resolve_scan_mounts(vec![spoofed], vec![trusted], true).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].device, "/dev/trusted");
+        assert!(matches!(resolved[0].fs, FsKind::Ext4));
+        assert!(resolve_scan_mounts(
+            vec![MountInfo {
+                mountpoint: "/unknown".into(),
+                device: "/dev/evil".into(),
+                fs: FsKind::Ntfs,
+                source: neutra_core::MountSource::Local,
+            }],
+            Vec::new(),
+            true,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn default_snapshot_directory_is_excluded_by_component() {
+        assert!(default_path_excluded(
+            std::path::Path::new("/"),
+            "/.snapshots/42/file"
+        ));
+        assert!(default_path_excluded(
+            std::path::Path::new("/home"),
+            "/home/.snapshots/42/file"
+        ));
+        assert!(!default_path_excluded(
+            std::path::Path::new("/"),
+            "/.snapshots-old/file"
+        ));
+        assert!(default_path_excluded(
+            std::path::Path::new("/"),
+            "/proc/self/status"
+        ));
+        assert!(default_path_excluded(
+            std::path::Path::new("/"),
+            "/sys/kernel"
+        ));
+        assert!(!default_path_excluded(
+            std::path::Path::new("/home"),
+            "/home/system/file"
+        ));
+    }
+
+    #[test]
+    fn protocol_work_is_bounded_before_execution() {
+        let mut query = Query::parse("needle");
+        query.limit = 0;
+        assert!(validate_query(&query).is_err());
+        query.limit = MAX_QUERY_RESULTS + 1;
+        assert!(validate_query(&query).is_err());
+        query.limit = 1;
+        query.scope_roots = vec!["relative/scope".into()];
+        assert!(validate_query(&query).is_err());
+        assert!(validate_delta_changes(&[DeltaChange::Remove("relative/path".into())]).is_err());
+        assert!(
+            validate_delta_changes(&[DeltaChange::Remove("/allowed/../secret".into())]).is_err()
+        );
+        assert!(resolve_scan_mounts(Vec::new(), Vec::new(), false).is_err());
     }
 
     #[test]

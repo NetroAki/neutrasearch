@@ -3,11 +3,12 @@
 //! This replaces broad filename/path grep/find calls. It does not claim to
 //! replace content grep: Neutrasearch intentionally indexes names + metadata.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use neutra_core::{CompactIndex, DeltaIndex, Index, Query, SearchHit, SearchStats};
 use serde_json::{json, Value};
+use std::ffi::OsString;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 enum Store {
     Compact {
@@ -15,41 +16,52 @@ enum Store {
         base: CompactIndex,
         delta: Option<Box<DeltaIndex>>,
     },
-    Legacy(Index),
+    Legacy {
+        path: PathBuf,
+        index: Index,
+    },
 }
 impl Store {
-    fn open() -> Result<Self> {
-        let compact = compact_path();
-        if looks_compact(&compact) {
-            let (base, delta) = CompactIndex::open_with_delta_snapshot(&compact)
-                .with_context(|| format!("open {}", compact.display()))?;
+    fn open(path: PathBuf) -> Result<Self> {
+        if looks_compact(&path) {
+            let (base, delta) = CompactIndex::open_with_delta_snapshot(&path)
+                .with_context(|| format!("open {}", path.display()))?;
             return Ok(Self::Compact {
-                path: compact,
+                path,
                 base,
                 delta: delta.map(Box::new),
             });
         }
-        let legacy = legacy_path();
-        match std::fs::read(&legacy) {
-            Ok(bytes) => Ok(Self::Legacy(
-                Index::restore(&bytes).with_context(|| format!("decode {}", legacy.display()))?,
-            )),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::Legacy(Index::new())),
-            Err(e) => Err(e.into()),
-        }
+
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("read configured index {}", path.display()))?;
+        let index = Index::restore(&bytes)
+            .with_context(|| format!("decode configured index {}", path.display()))?;
+        Ok(Self::Legacy { path, index })
     }
     fn search(&mut self, q: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
         let reopen = match self {
             Self::Compact {
-                delta: Some(delta), ..
-            } => delta.refresh().is_err(),
+                path,
+                base,
+                delta: Some(delta),
+            } => {
+                CompactIndex::generation_on_disk(path)? != base.generation()
+                    || delta.refresh().is_err()
+            }
             Self::Compact {
-                path, delta: None, ..
-            } => delta_path(path).is_file(),
-            Self::Legacy(_) => false,
+                path,
+                base,
+                delta: None,
+            } => {
+                CompactIndex::generation_on_disk(path)? != base.generation()
+                    || delta_path(path).is_file()
+            }
+            Self::Legacy { .. } => false,
         };
         if reopen {
-            *self = Self::open().context("reopen compact index after replacement")?;
+            let path = self.path().to_path_buf();
+            *self = Self::open(path).context("reopen compact index after replacement")?;
         }
         match self {
             Self::Compact {
@@ -60,20 +72,25 @@ impl Store {
             Self::Compact {
                 base, delta: None, ..
             } => Ok(base.search(q)?),
-            Self::Legacy(index) => Ok(index.search(q)),
+            Self::Legacy { index, .. } => Ok(index.search(q)),
+        }
+    }
+    fn path(&self) -> &Path {
+        match self {
+            Self::Compact { path, .. } | Self::Legacy { path, .. } => path,
         }
     }
     fn len(&self) -> u64 {
         match self {
             Self::Compact { base, .. } => base.len(),
-            Self::Legacy(index) => index.len() as u64,
+            Self::Legacy { index, .. } => index.len() as u64,
         }
     }
     fn kind(&self) -> &'static str {
         match self {
             Self::Compact { delta: Some(_), .. } => "compact-mmap+delta",
             Self::Compact { delta: None, .. } => "compact-mmap",
-            Self::Legacy(_) => "legacy-resident",
+            Self::Legacy { .. } => "legacy-resident",
         }
     }
     fn bytes(&self) -> u64 {
@@ -81,22 +98,31 @@ impl Store {
             Self::Compact { base, delta, .. } => {
                 base.mapped_bytes() as u64 + delta.as_ref().map_or(0, |delta| delta.wal_bytes())
             }
-            Self::Legacy(_) => std::fs::metadata(legacy_path())
-                .map(|m| m.len())
-                .unwrap_or(0),
+            Self::Legacy { path, .. } => std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
         }
     }
 }
 
 fn main() -> Result<()> {
+    let index_path = configured_index_from(
+        std::env::var_os("NEUTRASEARCH_INDEX"),
+        std::env::var_os("NEUTRA_INDEX"),
+    )?;
+    let allowed_roots = allowed_roots_from(std::env::var_os("NEUTRASEARCH_MCP_ALLOWED_ROOTS"))?;
     serve(
-        Store::open()?,
+        Store::open(index_path)?,
+        &allowed_roots,
         &mut std::io::stdin().lock(),
         &mut std::io::stdout().lock(),
     )
 }
 
-fn serve<R: BufRead, W: Write>(mut index: Store, r: &mut R, w: &mut W) -> Result<()> {
+fn serve<R: BufRead, W: Write>(
+    mut index: Store,
+    allowed_roots: &[PathBuf],
+    r: &mut R,
+    w: &mut W,
+) -> Result<()> {
     for line in r.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -113,10 +139,11 @@ fn serve<R: BufRead, W: Write>(mut index: Store, r: &mut R, w: &mut W) -> Result
             }
             "tools/list" => json!({"tools":[
                 {"name":"neutra_search","description":"Search the resident filename/path index without filesystem I/O.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text + filters: ext:rs kind:file under:/src"},"limit":{"type":"integer","minimum":1,"maximum":1000,"default":50},"metadata":{"type":"boolean","default":false,"description":"Include kind/size/mtime/fs; false returns path lines only"}},"required":["query"]}},
-                {"name":"neutra_status","description":"Report resident index size and cache path.","inputSchema":{"type":"object","properties":{}}}
+                {"name":"neutra_status","description":"Report resident index status.","inputSchema":{"type":"object","properties":{}}}
             ]}),
             "tools/call" => call_tool(
                 &mut index,
+                allowed_roots,
                 req.pointer("/params/name")
                     .and_then(Value::as_str)
                     .unwrap_or(""),
@@ -138,7 +165,7 @@ fn serve<R: BufRead, W: Write>(mut index: Store, r: &mut R, w: &mut W) -> Result
     Ok(())
 }
 
-fn call_tool(index: &mut Store, name: &str, args: Value) -> Value {
+fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args: Value) -> Value {
     match name {
         "neutra_search" => {
             let raw = args.get("query").and_then(Value::as_str).unwrap_or("");
@@ -148,6 +175,10 @@ fn call_tool(index: &mut Store, name: &str, args: Value) -> Value {
                 .and_then(Value::as_u64)
                 .unwrap_or(50)
                 .clamp(1, 1000) as usize;
+            q.scope_roots = allowed_roots
+                .iter()
+                .map(|root| root.to_string_lossy().to_lowercase())
+                .collect();
             let metadata = args
                 .get("metadata")
                 .and_then(Value::as_bool)
@@ -158,6 +189,12 @@ fn call_tool(index: &mut Store, name: &str, args: Value) -> Value {
                     return json!({"isError":true,"content":[{"type":"text","text":format!("index search failed: {error}")}]})
                 }
             };
+            // Defense in depth: trusted scopes are already applied by the query
+            // engine before ranking and limiting.
+            let hits = hits
+                .into_iter()
+                .filter(|hit| path_is_allowed(Path::new(hit.record.path.as_ref()), allowed_roots))
+                .collect::<Vec<_>>();
             let returned = hits.len();
             let paths = hits
                 .iter()
@@ -182,17 +219,16 @@ fn call_tool(index: &mut Store, name: &str, args: Value) -> Value {
             };
             let header = format!(
                 "# matched={} returned={} search_us={}",
-                stats.matched, returned, stats.wall_us
+                returned, returned, stats.wall_us
             );
-            json!({"content":[{"type":"text","text":if text.is_empty(){header}else{format!("{header}\n{text}")}}],"structuredContent":{"paths":paths,"matched":stats.matched,"returned":returned,"search_us":stats.wall_us}})
+            json!({"content":[{"type":"text","text":if text.is_empty(){header}else{format!("{header}\n{text}")}}],"structuredContent":{"paths":paths,"matched":returned,"returned":returned,"search_us":stats.wall_us}})
         }
         "neutra_status" => {
-            let path = if matches!(index, Store::Compact { .. }) {
-                compact_path()
-            } else {
-                legacy_path()
-            };
-            json!({"content":[{"type":"text","text":format!("{} indexed entries; {} store; {} bytes",index.len(),index.kind(),index.bytes())}],"structuredContent":{"records":index.len(),"store":index.kind(),"bytes":index.bytes(),"cache":path}})
+            let basename = index
+                .path()
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            json!({"content":[{"type":"text","text":format!("{} indexed entries; {} store; {} bytes",index.len(),index.kind(),index.bytes())}],"structuredContent":{"records":index.len(),"store":index.kind(),"bytes":index.bytes(),"index_configured":true,"index_name":basename}})
         }
         _ => {
             json!({"isError":true,"content":[{"type":"text","text":format!("unknown tool {name}")}]})
@@ -205,53 +241,60 @@ fn write_json(w: &mut impl Write, v: &Value) -> Result<()> {
     w.flush()?;
     Ok(())
 }
-fn legacy_path() -> PathBuf {
-    if let Some(path) = configured_index() {
-        return path;
+
+fn configured_index_from(primary: Option<OsString>, legacy: Option<OsString>) -> Result<PathBuf> {
+    let Some(path) = primary.or(legacy) else {
+        bail!("NEUTRASEARCH_INDEX (or legacy NEUTRA_INDEX) must be configured for MCP");
+    };
+    if path.is_empty() {
+        bail!("configured MCP index path must not be empty");
     }
-    #[cfg(target_os = "windows")]
-    {
-        return std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Neutrasearch/index.bin");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Caches/Neutrasearch/index.bin");
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("neutrasearch/index.bin")
-    }
+    Ok(PathBuf::from(path))
 }
-fn configured_index() -> Option<PathBuf> {
-    std::env::var_os("NEUTRASEARCH_INDEX")
-        .or_else(|| std::env::var_os("NEUTRA_INDEX"))
-        .map(PathBuf::from)
-}
-fn compact_path() -> PathBuf {
-    if let Some(path) = configured_index() {
-        return path;
+
+fn allowed_roots_from(value: Option<OsString>) -> Result<Vec<PathBuf>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let roots = std::env::split_paths(&value).collect::<Vec<_>>();
+    if roots.is_empty() || roots.iter().any(|root| root.as_os_str().is_empty()) {
+        bail!("NEUTRASEARCH_MCP_ALLOWED_ROOTS contains an empty path");
     }
-    let mut path = legacy_path();
-    path.set_extension("nsx");
-    path
+    roots
+        .into_iter()
+        .map(|root| {
+            if !safe_absolute_path(&root) {
+                bail!("MCP allowed roots must be absolute and must not contain '..'");
+            }
+            std::fs::canonicalize(&root)
+                .with_context(|| format!("resolve MCP allowed root {}", root.display()))
+        })
+        .collect()
 }
-fn delta_path(base: &std::path::Path) -> PathBuf {
+
+fn path_is_allowed(path: &Path, allowed_roots: &[PathBuf]) -> bool {
+    safe_absolute_path(path)
+        && (allowed_roots.is_empty() || allowed_roots.iter().any(|root| path.starts_with(root)))
+}
+
+fn safe_absolute_path(path: &Path) -> bool {
+    !path.to_string_lossy().contains('\0')
+        && path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+}
+
+fn delta_path(base: &Path) -> PathBuf {
     let mut path = base.to_path_buf();
     path.set_extension("delta");
     path
 }
 
-fn looks_compact(path: &std::path::Path) -> bool {
+fn looks_compact(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
@@ -263,13 +306,76 @@ fn looks_compact(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use neutra_core::{FileKind, FileRecord, FsKind};
     use std::io::Cursor;
+
+    fn empty_store() -> Store {
+        Store::Legacy {
+            path: PathBuf::from("test-index.bin"),
+            index: Index::new(),
+        }
+    }
+
     #[test]
     fn mcp_lists_tools() {
         let mut input = Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
         let mut out = Vec::new();
-        serve(Store::Legacy(Index::new()), &mut input, &mut out).unwrap();
+        serve(empty_store(), &[], &mut input, &mut out).unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["result"]["tools"][0]["name"], "neutra_search");
+    }
+
+    #[test]
+    fn index_configuration_and_missing_file_fail() {
+        assert!(configured_index_from(None, None).is_err());
+
+        let missing = std::env::temp_dir().join(format!(
+            "neutrasearch-mcp-missing-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        assert!(Store::open(missing).is_err());
+    }
+
+    #[test]
+    fn allowed_roots_apply_before_query_limit() {
+        let mut index = Index::new();
+        for path in ["/denied/needle.txt", "/allowed/path/has-needle-here.txt"] {
+            index.push(FileRecord {
+                path: path.into(),
+                size: 1,
+                mtime: 0,
+                mode: 0,
+                kind: FileKind::File,
+                fs: FsKind::Ext4,
+                native_id: 0,
+                native_parent: 0,
+                source: 0,
+            });
+        }
+        let mut store = Store::Legacy {
+            path: PathBuf::from("test-index.bin"),
+            index,
+        };
+        let result = call_tool(
+            &mut store,
+            &[PathBuf::from("/allowed")],
+            "neutra_search",
+            json!({"query":"needle", "limit":1}),
+        );
+        assert_eq!(
+            result["structuredContent"]["paths"][0],
+            "/allowed/path/has-needle-here.txt"
+        );
+    }
+
+    #[test]
+    fn allowed_roots_use_path_component_boundaries() {
+        let roots = vec![PathBuf::from("/home/a")];
+        assert!(path_is_allowed(Path::new("/home/a/file.txt"), &roots));
+        assert!(path_is_allowed(Path::new("/home/a"), &roots));
+        assert!(!path_is_allowed(Path::new("/home/ab/file.txt"), &roots));
+        assert!(!path_is_allowed(Path::new("/home/a/../secret"), &roots));
+        assert!(!path_is_allowed(Path::new("relative/file.txt"), &roots));
     }
 }
