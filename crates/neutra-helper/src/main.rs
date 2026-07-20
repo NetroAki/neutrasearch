@@ -20,9 +20,10 @@ use neutra_core::proto::{
 };
 use neutra_core::{
     CompactIndex, DeltaChange, DeltaIndex, FileRecord, Index, Query, ScanStats, SearchHit,
-    SearchStats,
+    SearchStats, DELTA_HEADER_BYTES,
 };
-use std::io::{BufWriter, Stdout};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufWriter, Read, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -30,27 +31,50 @@ use std::time::Instant;
 const RECORD_BATCH: usize = 4096;
 
 struct DurableStore {
-    base: CompactIndex,
+    path: std::path::PathBuf,
+    base: Option<CompactIndex>,
     delta: DeltaIndex,
+}
+
+struct CompactionResult {
+    records: u64,
+    bytes: u64,
+}
+
+struct ApplyResult {
+    changes: u32,
+    wal_bytes: u64,
+    compacted: Option<CompactionResult>,
 }
 
 impl DurableStore {
     fn open(path: &std::path::Path) -> Result<Self> {
-        let base = CompactIndex::open(path)
-            .with_context(|| format!("open compact index {}", path.display()))?;
-        let mut delta_path = path.to_path_buf();
+        Self::open_inner(path, None)
+    }
+
+    #[cfg(test)]
+    fn open_with_threshold(path: &std::path::Path, compact_at: u64) -> Result<Self> {
+        Self::open_inner(path, Some(compact_at))
+    }
+
+    fn open_inner(path: &std::path::Path, compact_at: Option<u64>) -> Result<Self> {
+        let path = path.to_path_buf();
+        let mut delta_path = path.clone();
         delta_path.set_extension("delta");
-        let delta = DeltaIndex::open(&delta_path, base.generation())
-            .with_context(|| format!("open delta index {}", delta_path.display()))?;
-        Ok(Self { base, delta })
+        let (base, delta) = open_durable_pair(&path, &delta_path, compact_at)?;
+        Ok(Self {
+            path,
+            base: Some(base),
+            delta,
+        })
     }
 
     fn search(&self, query: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
-        Ok(self.base.search_with_delta(query, &self.delta)?)
-    }
-
-    fn needs_compaction(&self) -> bool {
-        self.delta.needs_compaction()
+        let base = self
+            .base
+            .as_ref()
+            .context("compact base is unavailable after a failed replacement")?;
+        Ok(base.search_with_delta(query, &self.delta)?)
     }
 
     fn apply(&mut self, changes: Vec<DeltaChange>) -> Result<(u32, u64, bool)> {
@@ -61,6 +85,314 @@ impl DurableStore {
         self.delta.sync()?;
         Ok((count, self.delta.wal_bytes(), self.delta.needs_compaction()))
     }
+
+    fn apply_bounded(&mut self, changes: Vec<DeltaChange>) -> Result<ApplyResult> {
+        let mut compacted = None;
+        if self.delta.needs_compaction() {
+            compacted = Some(self.compact()?);
+        }
+        let (changes, _, needs_compaction) = self.apply(changes)?;
+        if needs_compaction {
+            compacted = Some(self.compact()?);
+        }
+        Ok(ApplyResult {
+            changes,
+            wal_bytes: self.delta.wal_bytes(),
+            compacted,
+        })
+    }
+
+    /// Merge base+delta into a replacement base and reset the WAL. The caller
+    /// holds the store write lock, so searches wait until the pair is coherent.
+    fn compact(&mut self) -> Result<CompactionResult> {
+        let base = self
+            .base
+            .as_ref()
+            .context("compact base is unavailable after a failed replacement")?;
+        let mut records = base.records().context("read base records for compaction")?;
+        let removed = self
+            .delta
+            .removed()
+            .map(|path| path.as_ref())
+            .collect::<HashSet<&str>>();
+        let upserts = self
+            .delta
+            .upserts()
+            .map(|record| (record.path.as_ref(), record))
+            .collect::<HashMap<&str, &FileRecord>>();
+        records.retain(|record| {
+            !removed.contains(record.path.as_ref()) && !upserts.contains_key(record.path.as_ref())
+        });
+        records.extend(upserts.values().map(|record| (*record).clone()));
+        drop(upserts);
+        drop(removed);
+
+        self.delta.sync().context("sync delta before compaction")?;
+        let staged = compaction_stage(&self.path);
+        let marker = compaction_marker(&self.path);
+        let built = CompactIndex::build(&records, &staged)
+            .context("build staged replacement compact base")?;
+        write_compaction_marker(&marker, built.generation)?;
+        self.delta
+            .reset(built.generation)
+            .context("reset delta for replacement base")?;
+        // Windows does not permit replacing a file while our old mmap is live.
+        drop(self.base.take());
+        CompactIndex::publish(&staged, &self.path).context("publish replacement compact base")?;
+        let base = CompactIndex::open(&self.path).context("open replacement compact base")?;
+        if base.generation() != built.generation {
+            anyhow::bail!("published compact base generation changed unexpectedly");
+        }
+        self.base = Some(base);
+        remove_compaction_marker(&marker)?;
+        let _ = std::fs::remove_file(&staged);
+        Ok(CompactionResult {
+            records: built.records,
+            bytes: built.bytes,
+        })
+    }
+}
+
+fn open_durable_pair(
+    base_path: &std::path::Path,
+    delta_path: &std::path::Path,
+    compact_at: Option<u64>,
+) -> Result<(CompactIndex, DeltaIndex)> {
+    let marker = compaction_marker(base_path);
+    if !marker.is_file() {
+        let base = CompactIndex::open(base_path)
+            .with_context(|| format!("open compact index {}", base_path.display()))?;
+        let staged_path = compaction_stage(base_path);
+        let short_wal_with_stage = staged_path.is_file()
+            && std::fs::metadata(delta_path)
+                .is_ok_and(|metadata| metadata.len() < DELTA_HEADER_BYTES);
+        let current_delta = if short_wal_with_stage {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "short WAL beside an unmarked compaction stage",
+            ))
+        } else {
+            open_delta_writer(delta_path, base.generation(), compact_at)
+        };
+        let pair = match current_delta {
+            Ok(delta) => (base, delta),
+            Err(error) if recoverable_delta_error(&error) && staged_path.is_file() => {
+                let staged =
+                    CompactIndex::open(&staged_path).context("open unmarked compaction stage")?;
+                let generation = staged.generation();
+                let delta = match open_delta_writer(delta_path, generation, compact_at) {
+                    Ok(delta) => delta,
+                    Err(error) if recoverable_delta_error(&error) => {
+                        replace_empty_delta(delta_path, generation, compact_at)
+                            .context("replace torn WAL matching unmarked compaction stage")?
+                    }
+                    Err(error) => {
+                        return Err(error).context("open WAL matching unmarked compaction stage");
+                    }
+                };
+                drop(staged);
+                drop(base);
+                CompactIndex::publish(&staged_path, base_path)
+                    .context("recover marker-lost base publication")?;
+                let base =
+                    CompactIndex::open(base_path).context("open marker-lost recovered base")?;
+                if base.generation() != generation {
+                    anyhow::bail!("marker-lost recovered base generation changed unexpectedly");
+                }
+                (base, delta)
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("open delta index {}", delta_path.display()));
+            }
+        };
+        for stale in [staged_path, compaction_marker_temp(base_path)] {
+            let _ = std::fs::remove_file(stale);
+        }
+        return Ok(pair);
+    }
+
+    let expected_generation = read_compaction_marker(&marker)?;
+    let staged_path = compaction_stage(base_path);
+    let base = CompactIndex::open(base_path)
+        .with_context(|| format!("open compact index {}", base_path.display()))?;
+    if base.generation() == expected_generation {
+        let delta = match open_delta_writer(delta_path, expected_generation, compact_at) {
+            Ok(delta) => delta,
+            Err(error) if recoverable_delta_error(&error) => {
+                replace_empty_delta(delta_path, expected_generation, compact_at)
+                    .context("replace torn WAL after completed compaction")?
+            }
+            Err(error) => return Err(error).context("open delta after completed compaction"),
+        };
+        if staged_path.is_file() {
+            let _ = std::fs::remove_file(&staged_path);
+        }
+        remove_compaction_marker(&marker)?;
+        return Ok((base, delta));
+    }
+
+    let staged = CompactIndex::open(&staged_path)
+        .with_context(|| format!("open compaction stage {}", staged_path.display()))?;
+    if staged.generation() != expected_generation {
+        anyhow::bail!("compaction marker and staged base generations differ");
+    }
+    drop(staged);
+
+    let wal_needs_direct_replacement = match std::fs::metadata(delta_path) {
+        Ok(metadata) => metadata.len() < DELTA_HEADER_BYTES,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error).context("inspect WAL during compaction recovery"),
+    };
+    let mut delta = if wal_needs_direct_replacement {
+        replace_empty_delta(delta_path, expected_generation, compact_at)
+            .context("replace short compaction WAL")?
+    } else {
+        match open_delta_writer(delta_path, base.generation(), compact_at) {
+            Ok(mut delta) => {
+                delta
+                    .reset(expected_generation)
+                    .context("finish compaction WAL reset")?;
+                delta
+            }
+            Err(error) if recoverable_delta_error(&error) => {
+                match open_delta_writer(delta_path, expected_generation, compact_at) {
+                    Ok(delta) => delta,
+                    Err(error) if recoverable_delta_error(&error) => {
+                        replace_empty_delta(delta_path, expected_generation, compact_at)
+                            .context("replace torn compaction WAL")?
+                    }
+                    Err(error) => {
+                        return Err(error).context("reopen already-reset compaction WAL");
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error).context("acquire delta writer during compaction recovery");
+            }
+        }
+    };
+    delta.sync()?;
+    drop(base);
+    CompactIndex::publish(&staged_path, base_path).context("finish staged base publication")?;
+    let base = CompactIndex::open(base_path).context("open recovered compact base")?;
+    if base.generation() != expected_generation {
+        anyhow::bail!("recovered compact base generation changed unexpectedly");
+    }
+    remove_compaction_marker(&marker)?;
+    let _ = std::fs::remove_file(&staged_path);
+    Ok((base, delta))
+}
+
+fn open_delta_writer(
+    path: &std::path::Path,
+    generation: u64,
+    compact_at: Option<u64>,
+) -> std::io::Result<DeltaIndex> {
+    match compact_at {
+        Some(threshold) => DeltaIndex::open_with_threshold(path, generation, threshold),
+        None => DeltaIndex::open(path, generation),
+    }
+}
+
+fn replace_empty_delta(
+    path: &std::path::Path,
+    generation: u64,
+    compact_at: Option<u64>,
+) -> std::io::Result<DeltaIndex> {
+    match compact_at {
+        Some(threshold) => DeltaIndex::replace_empty_with_threshold(path, generation, threshold),
+        None => DeltaIndex::replace_empty(path, generation),
+    }
+}
+
+fn recoverable_delta_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+fn compaction_stage(base: &std::path::Path) -> std::path::PathBuf {
+    append_suffix(base, ".compact")
+}
+
+fn compaction_marker(base: &std::path::Path) -> std::path::PathBuf {
+    append_suffix(base, ".compacting")
+}
+
+fn compaction_marker_temp(base: &std::path::Path) -> std::path::PathBuf {
+    append_suffix(base, ".compacting.new")
+}
+
+fn append_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    value.into()
+}
+
+fn write_compaction_marker(path: &std::path::Path, generation: u64) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!("compaction marker already exists: {}", path.display());
+    }
+    let temporary = append_suffix(path, ".new");
+    let _ = std::fs::remove_file(&temporary);
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .with_context(|| format!("create compaction marker {}", temporary.display()))?;
+    file.write_all(&generation.to_le_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, path).with_context(|| {
+        format!(
+            "publish compaction marker {} -> {}",
+            temporary.display(),
+            path.display()
+        )
+    })?;
+    sync_parent(path)
+}
+
+fn read_compaction_marker(path: &std::path::Path) -> Result<u64> {
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("open compaction marker {}", path.display()))?;
+    if file.metadata()?.len() != 8 {
+        anyhow::bail!("invalid compaction marker length");
+    }
+    let mut generation = [0u8; 8];
+    file.read_exact(&mut generation)?;
+    let generation = u64::from_le_bytes(generation);
+    if generation == 0 {
+        anyhow::bail!("invalid zero compaction generation");
+    }
+    Ok(generation)
+}
+
+fn remove_compaction_marker(path: &std::path::Path) -> Result<()> {
+    std::fs::remove_file(path)
+        .with_context(|| format!("remove compaction marker {}", path.display()))?;
+    let _ = std::fs::remove_file(append_suffix(path, ".new"));
+    sync_parent(path)
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &std::path::Path) -> Result<()> {
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -329,30 +661,30 @@ fn main() -> Result<()> {
                     )?;
                     continue;
                 }
-                if store.needs_compaction() {
-                    send(
-                        &out,
-                        &HelperMsg::Error(
-                            "delta reached its compaction threshold; compact or rebuild the index before applying more changes".into(),
-                        ),
-                    )?;
-                    continue;
-                }
-                match store.apply(changes) {
-                    Ok((changes, wal_bytes, needs_compaction)) => send(
-                        &out,
-                        &HelperMsg::DeltaApplied {
-                            changes,
-                            wal_bytes,
-                            needs_compaction,
-                        },
-                    )?,
+                match store.apply_bounded(changes) {
+                    Ok(applied) => {
+                        if let Some(compacted) = applied.compacted {
+                            tracing::info!(
+                                records = compacted.records,
+                                bytes = compacted.bytes,
+                                "compacted delta into replacement base"
+                            );
+                        }
+                        send(
+                            &out,
+                            &HelperMsg::DeltaApplied {
+                                changes: applied.changes,
+                                wal_bytes: applied.wal_bytes,
+                                needs_compaction: false,
+                            },
+                        )?;
+                    }
                     Err(error) => {
                         stale.store(true, Ordering::Release);
                         send(
                             &out,
                             &HelperMsg::Error(format!(
-                                "delta commit failed; index disabled until rebuild: {error:#}"
+                                "delta commit or compaction failed; index disabled until rebuild: {error:#}"
                             )),
                         )?;
                     }
@@ -373,9 +705,21 @@ fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf> {
     delta.set_extension("delta");
     let mut lock = delta.as_os_str().to_os_string();
     lock.push(".lock");
-    let mut temporary = base.as_os_str().to_os_string();
-    temporary.push(".new");
-    vec![base.to_path_buf(), delta, lock.into(), temporary.into()]
+    let temporary = append_suffix(base, ".new");
+    let staged = compaction_stage(base);
+    let staged_temporary = append_suffix(&staged, ".new");
+    let marker = compaction_marker(base);
+    let marker_temporary = compaction_marker_temp(base);
+    vec![
+        base.to_path_buf(),
+        delta,
+        lock.into(),
+        temporary,
+        staged,
+        staged_temporary,
+        marker,
+        marker_temporary,
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -389,13 +733,8 @@ fn start_native_watch(
             Ok(watch_linux::WatchBatch::Changes(changes)) if changes.is_empty() => {}
             Ok(watch_linux::WatchBatch::Changes(changes)) => {
                 let applied = match store.write() {
-                    Ok(mut store) => match store.apply(changes) {
-                        Ok(applied) => {
-                            if applied.2 {
-                                stale.store(true, Ordering::Release);
-                            }
-                            Ok(applied)
-                        }
+                    Ok(mut store) => match store.apply_bounded(changes) {
+                        Ok(applied) => Ok(applied),
                         Err(error) => {
                             // Publish the failure while the write lock is still
                             // held. Searches recheck stale after acquiring their
@@ -410,16 +749,19 @@ fn start_native_watch(
                     }
                 };
                 match applied {
-                    Ok((changes, wal_bytes, false)) => {
-                        tracing::debug!(changes, wal_bytes, "native watch batch committed")
-                    }
-                    Ok((_, wal_bytes, true)) => {
-                        stale.store(true, Ordering::Release);
-                        tracing::error!(
-                            wal_bytes,
-                            "native watch stopped at the compaction threshold"
+                    Ok(applied) => {
+                        if let Some(compacted) = applied.compacted {
+                            tracing::info!(
+                                records = compacted.records,
+                                bytes = compacted.bytes,
+                                "compacted delta into replacement base"
+                            );
+                        }
+                        tracing::debug!(
+                            changes = applied.changes,
+                            wal_bytes = applied.wal_bytes,
+                            "native watch batch committed"
                         );
-                        break;
                     }
                     Err(error) => {
                         stale.store(true, Ordering::Release);
@@ -613,16 +955,37 @@ mod tests {
         }
     }
 
-    #[test]
-    fn durable_store_syncs_and_searches_delta() {
-        let base_path = std::env::temp_dir().join(format!(
-            "neutrasearch-helper-store-{}.nsx",
+    fn store_paths(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "neutrasearch-helper-{label}-{}.nsx",
             std::process::id()
         ));
-        let mut delta_path = base_path.clone();
-        delta_path.set_extension("delta");
-        let _ = std::fs::remove_file(&base_path);
-        let _ = std::fs::remove_file(&delta_path);
+        let mut delta = base.clone();
+        delta.set_extension("delta");
+        remove_store(&base, &delta);
+        (base, delta)
+    }
+
+    fn remove_store(base: &std::path::Path, delta: &std::path::Path) {
+        let mut lock = delta.as_os_str().to_os_string();
+        lock.push(".lock");
+        for path in [
+            base.to_path_buf(),
+            delta.to_path_buf(),
+            lock.into(),
+            append_suffix(base, ".new"),
+            compaction_stage(base),
+            append_suffix(&compaction_stage(base), ".new"),
+            compaction_marker(base),
+            compaction_marker_temp(base),
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn durable_store_syncs_and_searches_delta() {
+        let (base_path, delta_path) = store_paths("store");
         CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
 
         let mut store = DurableStore::open(&base_path).unwrap();
@@ -642,7 +1005,182 @@ mod tests {
         let (hits, _) = reopened.search(&Query::parse("new")).unwrap();
         assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
         drop(reopened);
-        std::fs::remove_file(base_path).unwrap();
-        std::fs::remove_file(delta_path).unwrap();
+        remove_store(&base_path, &delta_path);
+    }
+
+    #[test]
+    fn ignores_unpublished_partial_marker_and_staged_base() {
+        let (base_path, delta_path) = store_paths("partial-marker");
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+        drop(DurableStore::open(&base_path).unwrap());
+        let staged_path = compaction_stage(&base_path);
+        CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+        std::fs::write(compaction_marker_temp(&base_path), [1, 2, 3]).unwrap();
+
+        let store = DurableStore::open(&base_path).unwrap();
+        let (hits, stats) = store.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/old.txt");
+        assert!(!staged_path.exists());
+        assert!(!compaction_marker_temp(&base_path).exists());
+        drop(store);
+        remove_store(&base_path, &delta_path);
+    }
+
+    #[test]
+    fn recovers_compaction_after_marker_before_wal_reset() {
+        let (base_path, delta_path) = store_paths("recover-before-reset");
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+        let mut store = DurableStore::open(&base_path).unwrap();
+        store
+            .apply(vec![
+                DeltaChange::Remove("/old.txt".into()),
+                DeltaChange::Upsert(record("/new.txt", 2)),
+            ])
+            .unwrap();
+        drop(store);
+
+        let staged_path = compaction_stage(&base_path);
+        let built = CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+        write_compaction_marker(&compaction_marker(&base_path), built.generation).unwrap();
+
+        let recovered = DurableStore::open(&base_path).unwrap();
+        let (hits, stats) = recovered.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        assert_eq!(recovered.delta.generation(), built.generation);
+        assert!(!compaction_marker(&base_path).exists());
+        drop(recovered);
+        remove_store(&base_path, &delta_path);
+    }
+
+    #[test]
+    fn recovers_compaction_after_wal_reset_before_base_publish() {
+        let (base_path, delta_path) = store_paths("recover-after-reset");
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+        let mut store = DurableStore::open(&base_path).unwrap();
+        store
+            .apply(vec![
+                DeltaChange::Remove("/old.txt".into()),
+                DeltaChange::Upsert(record("/new.txt", 2)),
+            ])
+            .unwrap();
+        let staged_path = compaction_stage(&base_path);
+        let built = CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+        write_compaction_marker(&compaction_marker(&base_path), built.generation).unwrap();
+        store.delta.reset(built.generation).unwrap();
+        drop(store);
+
+        let recovered = DurableStore::open(&base_path).unwrap();
+        let (hits, stats) = recovered.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        assert_eq!(recovered.delta.generation(), built.generation);
+        assert!(!compaction_marker(&base_path).exists());
+        drop(recovered);
+        remove_store(&base_path, &delta_path);
+    }
+
+    #[test]
+    fn recovers_when_marker_is_lost_with_a_torn_reset_wal() {
+        for length in [0, 1, 7, 15] {
+            let (base_path, delta_path) = store_paths(&format!("recover-marker-lost-{length}"));
+            CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+            let mut store = DurableStore::open(&base_path).unwrap();
+            store
+                .apply(vec![
+                    DeltaChange::Remove("/old.txt".into()),
+                    DeltaChange::Upsert(record("/new.txt", 2)),
+                ])
+                .unwrap();
+            let staged_path = compaction_stage(&base_path);
+            let built = CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+            let marker = compaction_marker(&base_path);
+            write_compaction_marker(&marker, built.generation).unwrap();
+            store.delta.reset(built.generation).unwrap();
+            drop(store);
+            std::fs::remove_file(marker).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&delta_path)
+                .unwrap()
+                .set_len(length)
+                .unwrap();
+
+            let recovered = DurableStore::open(&base_path).unwrap();
+            let (hits, stats) = recovered.search(&Query::parse("ext:txt")).unwrap();
+            assert_eq!(stats.matched, 1);
+            assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+            assert_eq!(recovered.delta.generation(), built.generation);
+            drop(recovered);
+            remove_store(&base_path, &delta_path);
+        }
+    }
+
+    #[test]
+    fn recovers_torn_wal_header_when_staged_base_is_verified() {
+        for length in [0, 1, 7, 15] {
+            let (base_path, delta_path) = store_paths(&format!("recover-torn-{length}"));
+            CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+            let mut store = DurableStore::open(&base_path).unwrap();
+            store
+                .apply(vec![
+                    DeltaChange::Remove("/old.txt".into()),
+                    DeltaChange::Upsert(record("/new.txt", 2)),
+                ])
+                .unwrap();
+            let staged_path = compaction_stage(&base_path);
+            let built = CompactIndex::build(&[record("/new.txt", 2)], &staged_path).unwrap();
+            write_compaction_marker(&compaction_marker(&base_path), built.generation).unwrap();
+            store.delta.reset(built.generation).unwrap();
+            drop(store);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&delta_path)
+                .unwrap()
+                .set_len(length)
+                .unwrap();
+
+            let recovered = DurableStore::open(&base_path).unwrap();
+            let (hits, stats) = recovered.search(&Query::parse("ext:txt")).unwrap();
+            assert_eq!(stats.matched, 1);
+            assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+            assert_eq!(recovered.delta.generation(), built.generation);
+            drop(recovered);
+            remove_store(&base_path, &delta_path);
+        }
+    }
+
+    #[test]
+    fn durable_store_compacts_base_and_resets_delta_generation() {
+        let (base_path, delta_path) = store_paths("compact");
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+        let original_generation = CompactIndex::open(&base_path).unwrap().generation();
+
+        let mut store = DurableStore::open_with_threshold(&base_path, 17).unwrap();
+        let applied = store
+            .apply_bounded(vec![
+                DeltaChange::Remove("/old.txt".into()),
+                DeltaChange::Upsert(record("/new.txt", 2)),
+            ])
+            .unwrap();
+        assert_eq!(applied.changes, 2);
+        assert_eq!(applied.wal_bytes, 16);
+        assert!(applied.compacted.is_some());
+        let replacement_generation = store.base.as_ref().unwrap().generation();
+        assert_ne!(replacement_generation, original_generation);
+        assert_eq!(store.delta.generation(), replacement_generation);
+        assert_eq!(store.delta.change_count(), 0);
+        let (hits, stats) = store.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        drop(store);
+
+        let reopened = DurableStore::open(&base_path).unwrap();
+        let (hits, stats) = reopened.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        drop(reopened);
+        remove_store(&base_path, &delta_path);
     }
 }

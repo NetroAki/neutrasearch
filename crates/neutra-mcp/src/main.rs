@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 enum Store {
     Compact {
+        path: PathBuf,
         base: CompactIndex,
         delta: Option<Box<DeltaIndex>>,
     },
@@ -20,18 +21,13 @@ impl Store {
     fn open() -> Result<Self> {
         let compact = compact_path();
         if looks_compact(&compact) {
-            let base = CompactIndex::open(&compact)
+            let (base, delta) = CompactIndex::open_with_delta_snapshot(&compact)
                 .with_context(|| format!("open {}", compact.display()))?;
-            let delta_path = delta_path(&compact);
-            let delta = if delta_path.is_file() {
-                Some(Box::new(
-                    DeltaIndex::open_snapshot(&delta_path, base.generation())
-                        .with_context(|| format!("open {}", delta_path.display()))?,
-                ))
-            } else {
-                None
-            };
-            return Ok(Self::Compact { base, delta });
+            return Ok(Self::Compact {
+                path: compact,
+                base,
+                delta: delta.map(Box::new),
+            });
         }
         let legacy = legacy_path();
         match std::fs::read(&legacy) {
@@ -43,15 +39,27 @@ impl Store {
         }
     }
     fn search(&mut self, q: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
+        let reopen = match self {
+            Self::Compact {
+                delta: Some(delta), ..
+            } => delta.refresh().is_err(),
+            Self::Compact {
+                path, delta: None, ..
+            } => delta_path(path).is_file(),
+            Self::Legacy(_) => false,
+        };
+        if reopen {
+            *self = Self::open().context("reopen compact index after replacement")?;
+        }
         match self {
             Self::Compact {
                 base,
                 delta: Some(delta),
-            } => {
-                delta.refresh()?;
-                Ok(base.search_with_delta(q, delta)?)
-            }
-            Self::Compact { base, delta: None } => Ok(base.search(q)?),
+                ..
+            } => Ok(base.search_with_delta(q, delta)?),
+            Self::Compact {
+                base, delta: None, ..
+            } => Ok(base.search(q)?),
             Self::Legacy(index) => Ok(index.search(q)),
         }
     }
@@ -70,7 +78,7 @@ impl Store {
     }
     fn bytes(&self) -> u64 {
         match self {
-            Self::Compact { base, delta } => {
+            Self::Compact { base, delta, .. } => {
                 base.mapped_bytes() as u64 + delta.as_ref().map_or(0, |delta| delta.wal_bytes())
             }
             Self::Legacy(_) => std::fs::metadata(legacy_path())
