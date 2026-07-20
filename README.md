@@ -1,39 +1,53 @@
 # Neutrasearch
 
-Neutrasearch is a fast, cross-platform filename and folder search application written in Rust. It builds a compact index from native filesystem metadata and searches it without repeatedly scanning directories.
+Neutrasearch is a fast filename and folder search application written in Rust. It builds a compact index from native filesystem metadata and searches that index without repeatedly scanning directories.
 
-> Neutrasearch is in early development. Native scanning and packaging still need broader real-hardware testing.
+Neutrasearch is pre-1.0. Linux is the primary platform; Windows and macOS builds are available as previews. See the [verified support matrix](docs/production.md#support-matrix) before deploying it.
 
 ## Highlights
 
-- Fast filename, path, type, size, and filesystem filtering
-- Compact memory-mapped index with a durable update log
-- No directory-walking fallback in native scanner lanes
-- Desktop GUI for Linux, Windows, and macOS
-- CLI and MCP server for agent use; Pi package distributed separately
+- Fast filename, path, type, size, and filesystem filters
+- Checksummed compact index with a CRC-protected durable update log
+- Explicit failure instead of a hidden directory-walking fallback in native scanner lanes
+- Desktop GUI plus CLI and MCP integration
 - No telemetry
+- Owner-only index/WAL state and persisted stale-index refusal
 
-## Native index sources
+## Native metadata lanes
 
 - **Btrfs:** tree-search ioctl
 - **EXT2/3/4:** libext2fs
 - **NTFS:** MFT metadata
-- **macOS:** Spotlight, with `getattrlistbulk` fallback
-- **ZFS:** experimental snapshot/diff lane
-- **Network shares:** server-side helper over SSH
+- **macOS:** Spotlight, with native `getattrlistbulk` bulk traversal when explicitly selected
+- **ZFS:** experimental; unsupported initial-index paths fail explicitly
+- **Network shares:** preview server-side helper provisioning over the user's existing SSH identity
 
-Unsupported native lanes fail explicitly rather than silently walking the filesystem.
+## Install
 
-## Build
+Tagged releases provide portable archives containing four sibling executables:
 
-Install Rust, then run:
+- `neutrasearch`
+- `neutrasearch-helper`
+- `neutrasearch-query`
+- `neutrasearch-mcp`
+
+Verify the release `SHA256SUMS` and GitHub artifact attestation, extract the archive, and keep its binaries together. Linux archives require the distribution's libext2fs runtime package (for example `libext2fs2` on Debian/Ubuntu or `e2fsprogs` on Arch). Windows and macOS artifacts remain unsigned until signing/notarization credentials and hardware smoke evidence are configured.
+
+For Linux elevation, install the verified sibling binaries as root rather than making the helper setuid:
 
 ```sh
-cargo build --release --workspace
-cargo test --workspace
+sudo install -o root -g root -m 0755 neutrasearch neutrasearch-helper \
+  neutrasearch-query neutrasearch-mcp /usr/local/bin/
 ```
 
-Linux also needs libext2fs development files:
+Build from source with:
+
+```sh
+cargo build --release --workspace --locked
+cargo test --workspace --locked
+```
+
+Linux builds also need libext2fs development files:
 
 ```sh
 # Debian/Ubuntu
@@ -43,47 +57,57 @@ sudo apt install libext2fs-dev
 sudo pacman -S e2fsprogs
 ```
 
-## Run
+## First launch and privileges
 
 ```sh
-cargo run --release --bin neutrasearch
+./neutrasearch
 ```
 
-Some native metadata sources require elevated permissions. Development-only Linux launch:
+Neutrasearch does not scan or modify remote hosts merely because the GUI opened. Choose **Rescan native index** to approve local metadata indexing. Choose **Enable network helpers** separately before SSH/SCP provisioning is allowed.
+
+Some native metadata sources require elevated access. Never make the helper setuid. On Linux, opt in by setting `NEUTRASEARCH_PKEXEC=1`; elevated launch only accepts an installed, root-owned sibling helper that is not writable by group/others, and environment-selected helpers are refused. On Windows, launch the application **as Administrator** when raw NTFS metadata access requires it; automatic UAC relaunch is not implemented. Portable archives intentionally do not install a permissive polkit policy or system service.
+
+## CLI
+
+Search an existing index:
 
 ```sh
-NEUTRASEARCH_PKEXEC=1 cargo run --release -p neutra-gui
+neutrasearch search 'report ext:pdf' --index /path/to/index.nsx --json
 ```
 
-## Search syntax
+Build an index from one mounted native filesystem (currently a Linux CLI path):
+
+```sh
+neutrasearch index /mnt/data --output /path/to/index.nsx
+```
+
+Query syntax examples:
 
 ```text
-report
 ext:rs,toml under:/home/user/projects
 kind:dir photos
 size:>1G
 ```
 
-Build and query an index from the command line:
+Linux fanotify update mode exists but its initial scan-to-watch handoff is not yet race-free. It is an experimental foreground mode, not a production daemon. Any uncertain event persists `INDEX.nsx.stale`; all readers then refuse the index until a full rebuild.
+
+## MCP and agent integration
+
+MCP fails startup unless an index is explicitly configured:
 
 ```sh
-neutrasearch index /mnt/data --output /path/to/index.nsx
-neutrasearch search 'report ext:pdf' --index /path/to/index.nsx --json
+NEUTRASEARCH_INDEX=/path/to/index.nsx \
+NEUTRASEARCH_MCP_ALLOWED_ROOTS=/home/user/projects \
+neutrasearch-mcp
 ```
 
-On Linux, a live update service is available for supported local filesystems:
+`NEUTRASEARCH_MCP_ALLOWED_ROOTS` uses the platform path-list separator and limits paths visible to agents. Omitting it allows the entire configured index. MCP returns filename/path metadata only; Neutrasearch is not a content-search replacement.
 
-```sh
-sudo neutrasearch serve --index /path/to/index.nsx --watch /mnt/data
-```
+A Pi package that installs and drives Neutrasearch is distributed separately through [pi.dev/packages](https://pi.dev/packages).
 
-## Agent integration
+## Security, operations, and recovery
 
-Neutrasearch includes an MCP server so agents can search an existing index instead of enumerating folders with grep or find. A Pi plugin that installs and drives Neutrasearch is published separately at [pi.dev/packages](https://pi.dev/packages).
-
-## Documentation
-
-Implementation notes and format details live in [`docs/`](docs/), including the [index format](docs/index-format.md).
+Indexes contain privacy-sensitive absolute paths and metadata. Read [SECURITY.md](SECURITY.md) before enabling elevated scans, MCP, or remote provisioning. Deployment, data-location, recovery, uninstall, and release limitations are documented in [`docs/production.md`](docs/production.md). The on-disk format and freshness model are documented in [`docs/index-format.md`](docs/index-format.md).
 
 ## Support
 

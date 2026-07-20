@@ -1,0 +1,66 @@
+# Production and release guide
+
+This document separates verified support from experimental lanes. A successful build is not proof that a native scanner works on real hardware.
+
+## Support matrix
+
+| Platform | Portable archive | Native initial indexing | Live updates | Release status |
+|---|---:|---|---|---|
+| Linux x86_64 | Yes | Btrfs, EXT2/3/4, NTFS; privileges commonly required | fanotify, experimental | Supported pre-1.0 |
+| Linux ARM64 | Yes, native ARM runner | Same compiled lanes; hardware evidence still limited | fanotify, experimental | Preview |
+| Windows x86_64 | Yes | NTFS MFT lane; Administrator access may be required | Not implemented | Preview |
+| macOS x86_64 | Yes | Spotlight; native bulk fallback | Not implemented | Preview |
+| macOS ARM64 | Yes | Spotlight; native bulk fallback | Not implemented | Preview |
+| Windows ARM64 | No release artifact yet | Unverified | Not implemented | Unsupported |
+| ZFS | Included as experimental code only | Initial indexing intentionally refuses unsupported paths | Not implemented | Unsupported |
+
+Release archives are currently unsigned. Stable Windows/macOS distribution requires code-signing/notarization credentials and real-hardware smoke evidence. Verify archive checksums and GitHub attestations.
+
+## Archive layout
+
+Every portable archive contains sibling binaries:
+
+- `neutrasearch`
+- `neutrasearch-helper`
+- `neutrasearch-query`
+- `neutrasearch-mcp`
+
+It also contains `README.md`, `LICENSE`, `SECURITY.md`, this guide, `CHANGELOG.md`, and an inner `SHA256SUMS`. Keep the binaries together so companion discovery works.
+
+## Privilege model
+
+Run the desktop, CLI, query, and MCP processes as the normal user. Native metadata APIs may require elevated access. Neutrasearch refuses to elevate a helper selected through an environment variable; an elevated helper must be the root-owned sibling of the installed application and must not be group/world writable.
+
+Portable archives do not install a setuid binary, system service, or permissive polkit policy. Those mechanisms are deliberately absent until a separately reviewed service boundary exists.
+
+## Index privacy and data locations
+
+Indexes contain absolute paths, sizes, mtimes, modes, filesystem kinds, and native identifiers. Backups, logs, bug reports, and MCP output can therefore disclose private filenames.
+
+Set `NEUTRASEARCH_INDEX` to choose an explicit index. Default GUI/query data locations are `%LOCALAPPDATA%\Neutrasearch\index.nsx` on Windows, `~/Library/Application Support/Neutrasearch/index.nsx` on macOS, and `$XDG_DATA_HOME/neutrasearch/index.nsx` (or `~/.local/share/neutrasearch/index.nsx`) on Linux. MCP requires an explicit index variable and can be constrained with `NEUTRASEARCH_MCP_ALLOWED_ROOTS`, using the operating system path-list separator (`:` on Unix, `;` on Windows).
+
+A successful full rebuild creates compact format v3 and clears an existing `.stale` marker. Readers reject corrupt, generation-mismatched, or stale index pairs. The helper takes the delta-writer lock and refuses a rebuild while a serving writer is active; stop long-lived readers too before replacing an index, which is required by Windows file-sharing semantics.
+
+## Network helpers
+
+Opening the GUI does not modify remote hosts. Selecting **Enable network helpers** starts network-mount detection; matching servers may then receive an atomic helper update over the existing SSH identity. `NEUTRASEARCH_AUTO_PROVISION_REMOTE=1` is the explicit unattended opt-in. Set `NEUTRASEARCH_HELPER_ARTIFACTS` if helpers are not in the executable's sibling `helpers/` directory.
+
+Each archive includes its matching target helper and `.sha256` sidecar under `helpers/`. Provisioning refuses a missing/mismatched sidecar and verifies the uploaded temporary file on the server before atomic installation. To manage servers on other operating systems/architectures, collect their release helper+sidecar files into the configured helper directory. Remote auto-provisioning remains preview functionality until remote install/uninstall smoke tests and signed release manifests exist.
+
+## Live-update limitation
+
+Linux fanotify updates persist a `.stale` marker after overflow, directory rename, commit failure, or an uncertain event. CLI/MCP/GUI readers then refuse the index until a full rebuild.
+
+The initial scan-to-watch handoff is not yet race-free. Do not promise continuous freshness or install `neutrasearch serve --watch` as an unattended production daemon. For authoritative results, rebuild the index after mounting/startup and after any stale error.
+
+## Release procedure
+
+1. Run the full CI suite on a clean commit.
+2. Update `CHANGELOG.md` and the workspace version.
+3. Create an annotated `v<workspace-version>` tag.
+4. The release workflow validates the tag, builds on native runners, packages deterministic archives, writes `SHA256SUMS`, and creates attestations.
+5. Do not call unsigned Windows/macOS artifacts stable. Add signing and notarization before that claim.
+
+## Uninstall
+
+Portable builds have no installer-owned state. Remove the extracted application directory. Delete indexes only if their absolute-path metadata is no longer needed. Remote helpers are stored under `~/.local/lib/neutrasearch/` on Unix servers and `%LOCALAPPDATA%\Neutrasearch\` on Windows servers; remove those explicitly over the same trusted administrative channel.
