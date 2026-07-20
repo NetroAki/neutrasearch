@@ -621,7 +621,7 @@ impl NeutraApp {
             .into_iter()
             .map(|(name, (bytes, count))| MapBlock { name, bytes, count })
             .collect::<Vec<_>>();
-        groups.sort_unstable_by(|a, b| b.bytes.cmp(&a.bytes));
+        groups.sort_unstable_by_key(|group| std::cmp::Reverse(group.bytes));
         groups.truncate(96);
         let mut laid = Vec::new();
         layout_map(&groups, rect.shrink(3.0), &mut laid);

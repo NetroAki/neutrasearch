@@ -119,10 +119,7 @@ pub fn parse_mountinfo(raw: &str) -> Vec<MountInfo> {
             continue;
         };
         let fs = FsKind::from_fstype(fstype);
-        let interesting = match &fs {
-            FsKind::Unsupported(_) => false,
-            _ => true,
-        };
+        let interesting = !matches!(&fs, FsKind::Unsupported(_));
         if !interesting {
             continue;
         }

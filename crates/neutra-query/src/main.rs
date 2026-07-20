@@ -145,7 +145,7 @@ fn response(hits: Vec<SearchHit>, stats: SearchStats, metadata: bool) -> Respons
                 kind: format!("{:?}", h.record.kind).to_ascii_lowercase(),
                 size: h.record.size,
                 mtime: h.record.mtime,
-                fs: h.record.fs.label().into(),
+                fs: h.record.fs.label(),
             })
             .collect()
     });

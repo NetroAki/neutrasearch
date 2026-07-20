@@ -82,7 +82,7 @@ impl Query {
                 q.fss.extend(
                     rest.split(',')
                         .filter(|s| !s.is_empty())
-                        .map(|s| FsKind::from_fstype(s)),
+                        .map(FsKind::from_fstype),
                 );
             } else if let Some(rest) = tok.strip_prefix("size:") {
                 parse_size(rest, &mut q);
