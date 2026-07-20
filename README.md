@@ -46,7 +46,7 @@ sudo pacman -S e2fsprogs
 ## Run
 
 ```sh
-cargo run --release -p neutra-gui
+cargo run --release --bin neutrasearch
 ```
 
 Some native metadata sources require elevated permissions. Development-only Linux launch:
@@ -64,10 +64,17 @@ kind:dir photos
 size:>1G
 ```
 
-Query an existing index from the command line:
+Build and query an index from the command line:
 
 ```sh
+neutrasearch index /mnt/data --output /path/to/index.nsx
 neutrasearch search 'report ext:pdf' --index /path/to/index.nsx --json
+```
+
+On Linux, a live update service is available for supported local filesystems:
+
+```sh
+sudo neutrasearch serve --index /path/to/index.nsx --watch /mnt/data
 ```
 
 ## Agent integration
