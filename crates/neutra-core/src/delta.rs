@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"NEUTDLT1";
@@ -68,73 +68,32 @@ impl DeltaIndex {
         } else {
             None
         };
-        let mut owned_file = if writable {
-            Some(open_append_private(path)?)
-        } else {
-            None
-        };
-        let file_bytes = if let Some(file) = &owned_file {
-            file.metadata()?.len()
-        } else {
-            std::fs::metadata(path)?.len()
+        let file_bytes = match std::fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if writable && error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
         };
         let mut upserts = HashMap::new();
         let mut removed = HashSet::new();
         let mut wal_bytes = file_bytes;
         if file_bytes > 0 {
             let mut reader = BufReader::new(File::open(path)?.take(file_bytes));
-            let mut magic = [0u8; 8];
-            reader.read_exact(&mut magic)?;
-            if &magic != MAGIC {
-                return Err(invalid("not a Neutrasearch delta log"));
-            }
-            let mut stored_generation = [0u8; 8];
-            reader.read_exact(&mut stored_generation)?;
-            if u64::from_le_bytes(stored_generation) != generation {
-                return Err(invalid("delta log belongs to a different base generation"));
-            }
+            read_header(&mut reader, generation)?;
             let mut verified_bytes = HEADER;
-            loop {
-                let mut len = [0u8; 4];
-                match reader.read_exact(&mut len) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e),
-                }
-                let len = u32::from_le_bytes(len) as usize;
-                if len > MAX_FRAME {
-                    return Err(invalid("delta frame exceeds safety cap"));
-                }
-                let mut expected_crc = [0u8; 4];
-                match reader.read_exact(&mut expected_crc) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e),
-                }
-                let mut payload = vec![0; len];
-                match reader.read_exact(&mut payload) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e),
-                }
-                let frame_end = verified_bytes + 8 + len as u64;
-                if crc32fast::hash(&payload) != u32::from_le_bytes(expected_crc) {
-                    if frame_end == file_bytes {
-                        break;
-                    }
-                    return Err(invalid("delta frame checksum mismatch"));
-                }
-                let change: DeltaChange = bincode::deserialize(&payload).map_err(codec)?;
-                apply_memory(&mut upserts, &mut removed, change);
-                verified_bytes = frame_end;
-            }
+            replay_frames(
+                &mut reader,
+                file_bytes,
+                &mut verified_bytes,
+                &mut upserts,
+                &mut removed,
+            )?;
             wal_bytes = verified_bytes;
         }
-        let writer = if let Some(mut file) = owned_file.take() {
+        let writer = if writable {
             if file_bytes > wal_bytes {
-                file.set_len(wal_bytes)?;
-                file.sync_data()?;
+                truncate_private(path, wal_bytes)?;
             }
+            let mut file = open_append_private(path)?;
             if wal_bytes == 0 {
                 file.write_all(MAGIC)?;
                 file.write_all(&generation.to_le_bytes())?;
@@ -179,6 +138,34 @@ impl DeltaIndex {
         writer.flush()?;
         writer.get_ref().sync_data()
     }
+    /// Tail complete CRC-verified frames appended since this read-only snapshot
+    /// was opened. A concurrently written partial final frame remains invisible
+    /// until a later refresh.
+    pub fn refresh(&mut self) -> io::Result<u64> {
+        if self.writer.is_some() {
+            return Ok(0);
+        }
+        let file_bytes = std::fs::metadata(&self.path)?.len();
+        if file_bytes < self.wal_bytes {
+            return Err(invalid("delta log was replaced or truncated"));
+        }
+        if file_bytes == self.wal_bytes {
+            return Ok(0);
+        }
+        let mut file = File::open(&self.path)?;
+        read_header(&mut file, self.generation)?;
+        file.seek(SeekFrom::Start(self.wal_bytes))?;
+        let mut reader = BufReader::new(file.take(file_bytes - self.wal_bytes));
+        let old_bytes = self.wal_bytes;
+        replay_frames(
+            &mut reader,
+            file_bytes,
+            &mut self.wal_bytes,
+            &mut self.upserts,
+            &mut self.removed,
+        )?;
+        Ok(self.wal_bytes - old_bytes)
+    }
     pub fn upserts(&self) -> impl Iterator<Item = &FileRecord> {
         self.upserts.values()
     }
@@ -204,6 +191,64 @@ impl DeltaIndex {
         &self.path
     }
 }
+fn read_header(reader: &mut impl Read, generation: u64) -> io::Result<()> {
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != MAGIC {
+        return Err(invalid("not a Neutrasearch delta log"));
+    }
+    let mut stored_generation = [0u8; 8];
+    reader.read_exact(&mut stored_generation)?;
+    if u64::from_le_bytes(stored_generation) != generation {
+        return Err(invalid("delta log belongs to a different base generation"));
+    }
+    Ok(())
+}
+
+fn replay_frames(
+    reader: &mut impl Read,
+    file_bytes: u64,
+    verified_bytes: &mut u64,
+    upserts: &mut HashMap<Box<str>, FileRecord>,
+    removed: &mut HashSet<Box<str>>,
+) -> io::Result<()> {
+    loop {
+        let mut len = [0u8; 4];
+        match reader.read_exact(&mut len) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let len = u32::from_le_bytes(len) as usize;
+        if len > MAX_FRAME {
+            return Err(invalid("delta frame exceeds safety cap"));
+        }
+        let mut expected_crc = [0u8; 4];
+        match reader.read_exact(&mut expected_crc) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let mut payload = vec![0; len];
+        match reader.read_exact(&mut payload) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let frame_end = *verified_bytes + 8 + len as u64;
+        if crc32fast::hash(&payload) != u32::from_le_bytes(expected_crc) {
+            if frame_end == file_bytes {
+                break;
+            }
+            return Err(invalid("delta frame checksum mismatch"));
+        }
+        let change: DeltaChange = bincode::deserialize(&payload).map_err(codec)?;
+        apply_memory(upserts, removed, change);
+        *verified_bytes = frame_end;
+    }
+    Ok(())
+}
+
 fn apply_memory(
     upserts: &mut HashMap<Box<str>, FileRecord>,
     removed: &mut HashSet<Box<str>>,
@@ -225,10 +270,15 @@ fn lock_path(path: &Path) -> PathBuf {
     lock.push(".lock");
     lock.into()
 }
+fn truncate_private(path: &Path, len: u64) -> io::Result<()> {
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(len)?;
+    file.sync_data()
+}
 fn open_append_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    // `write(true)` is required for SetEndOfFile during torn-tail recovery on
-    // Windows; append still keeps normal frame writes at the end.
+    // Windows append access alone cannot truncate a torn tail with SetEndOfFile.
+    // Keep append semantics for frames while also requesting general write access.
     options.create(true).append(true).write(true).read(true);
     #[cfg(unix)]
     {
@@ -271,14 +321,25 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("neutra-delta-lock-{}.wal", std::process::id()));
         remove_log(&path);
-        let writer = DeltaIndex::open(&path, 10).unwrap();
-        let snapshot = DeltaIndex::open_snapshot(&path, 10).unwrap();
+        let mut writer = DeltaIndex::open(&path, 10).unwrap();
+        writer
+            .apply(DeltaChange::Upsert(record("/first", 1)))
+            .unwrap();
+        writer.sync().unwrap();
+        let mut snapshot = DeltaIndex::open_snapshot(&path, 10).unwrap();
         assert_eq!(snapshot.generation(), 10);
+        assert_eq!(snapshot.upserts().count(), 1);
         let error = match DeltaIndex::open(&path, 10) {
             Ok(_) => panic!("second delta writer unexpectedly acquired the lock"),
             Err(error) => error,
         };
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        writer
+            .apply(DeltaChange::Upsert(record("/second", 2)))
+            .unwrap();
+        writer.sync().unwrap();
+        assert!(snapshot.refresh().unwrap() > 0);
+        assert_eq!(snapshot.upserts().count(), 2);
         drop(snapshot);
         drop(writer);
         remove_log(&path);
@@ -295,12 +356,10 @@ mod tests {
             delta.sync().unwrap();
         }
         let verified_bytes = std::fs::metadata(&path).unwrap().len();
-        OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(&[4, 0])
-            .unwrap();
+        let mut torn = OpenOptions::new().write(true).open(&path).unwrap();
+        torn.seek(SeekFrom::End(0)).unwrap();
+        torn.write_all(&[4, 0]).unwrap();
+        drop(torn);
         {
             let mut recovered = DeltaIndex::open(&path, 9).unwrap();
             assert_eq!(recovered.wal_bytes(), verified_bytes);

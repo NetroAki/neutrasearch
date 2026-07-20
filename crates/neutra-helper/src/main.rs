@@ -23,6 +23,7 @@ use neutra_core::{
     SearchStats,
 };
 use std::io::{BufWriter, Stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
@@ -46,6 +47,10 @@ impl DurableStore {
 
     fn search(&self, query: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
         Ok(self.base.search_with_delta(query, &self.delta)?)
+    }
+
+    fn needs_compaction(&self) -> bool {
+        self.delta.needs_compaction()
     }
 
     fn apply(&mut self, changes: Vec<DeltaChange>) -> Result<(u32, u64, bool)> {
@@ -162,6 +167,20 @@ fn main() -> Result<()> {
         _ => {}
     }
 
+    let serve_index = serve_index
+        .map(|path| {
+            std::fs::canonicalize(&path)
+                .with_context(|| format!("resolve compact index {}", path.display()))
+        })
+        .transpose()?;
+    let watch_mount = watch_mount
+        .map(|(path, source)| {
+            std::fs::canonicalize(&path)
+                .with_context(|| format!("resolve watched mount {}", path.display()))
+                .map(|path| (path, source))
+        })
+        .transpose()?;
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -210,6 +229,7 @@ fn main() -> Result<()> {
         .as_ref()
         .map(|path| DurableStore::open(path).map(|store| Arc::new(RwLock::new(store))))
         .transpose()?;
+    let stale = Arc::new(AtomicBool::new(false));
     #[cfg(target_os = "linux")]
     if let Some((mountpoint, source)) = watch_mount {
         let mount = neutra_core::mounts::system_mounts()?
@@ -222,7 +242,7 @@ fn main() -> Result<()> {
         start_native_watch(
             watcher,
             Arc::clone(durable.as_ref().expect("watch mode has a durable store")),
-            Arc::clone(&out),
+            Arc::clone(&stale),
         );
     }
     #[cfg(not(target_os = "linux"))]
@@ -245,8 +265,28 @@ fn main() -> Result<()> {
                 launch_scans(mounts, &out, Some(&index), &mut scan_threads)
             }
             Some(ClientMsg::Search { query }) => {
+                if stale.load(Ordering::Acquire) {
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "index is stale; run a full native reindex before searching".into(),
+                        ),
+                    )?;
+                    continue;
+                }
                 let (hits, stats) = if let Some(store) = &durable {
-                    store.read().unwrap().search(&query)?
+                    let store = store.read().unwrap();
+                    if stale.load(Ordering::Acquire) {
+                        send(
+                            &out,
+                            &HelperMsg::Error(
+                                "index became stale during the query; rebuild and restart the service"
+                                    .into(),
+                            ),
+                        )?;
+                        continue;
+                    }
+                    store.search(&query)?
                 } else {
                     index.read().unwrap().search(&query)
                 };
@@ -259,6 +299,16 @@ fn main() -> Result<()> {
                 )?;
             }
             Some(ClientMsg::ApplyDelta { changes }) => {
+                if stale.load(Ordering::Acquire) {
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "index is stale; run a full native reindex before applying changes"
+                                .into(),
+                        ),
+                    )?;
+                    continue;
+                }
                 let Some(store) = &durable else {
                     send(
                         &out,
@@ -268,16 +318,45 @@ fn main() -> Result<()> {
                     )?;
                     continue;
                 };
-                let (changes, wal_bytes, needs_compaction) =
-                    store.write().unwrap().apply(changes)?;
-                send(
-                    &out,
-                    &HelperMsg::DeltaApplied {
-                        changes,
-                        wal_bytes,
-                        needs_compaction,
-                    },
-                )?;
+                let mut store = store.write().unwrap();
+                if stale.load(Ordering::Acquire) {
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "index became stale before the update; rebuild and restart the service"
+                                .into(),
+                        ),
+                    )?;
+                    continue;
+                }
+                if store.needs_compaction() {
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "delta reached its compaction threshold; compact or rebuild the index before applying more changes".into(),
+                        ),
+                    )?;
+                    continue;
+                }
+                match store.apply(changes) {
+                    Ok((changes, wal_bytes, needs_compaction)) => send(
+                        &out,
+                        &HelperMsg::DeltaApplied {
+                            changes,
+                            wal_bytes,
+                            needs_compaction,
+                        },
+                    )?,
+                    Err(error) => {
+                        stale.store(true, Ordering::Release);
+                        send(
+                            &out,
+                            &HelperMsg::Error(format!(
+                                "delta commit failed; index disabled until rebuild: {error:#}"
+                            )),
+                        )?;
+                    }
+                }
             }
         }
     }
@@ -303,48 +382,60 @@ fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn start_native_watch(
     mut watcher: watch_linux::FanotifyWatcher,
     store: Arc<RwLock<DurableStore>>,
-    out: Arc<Mutex<BufWriter<Stdout>>>,
+    stale: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || loop {
         match watcher.read_batch() {
             Ok(watch_linux::WatchBatch::Changes(changes)) if changes.is_empty() => {}
             Ok(watch_linux::WatchBatch::Changes(changes)) => {
-                let applied = store
-                    .write()
-                    .map_err(|_| anyhow::anyhow!("durable store lock poisoned"))
-                    .and_then(|mut store| store.apply(changes));
+                let applied = match store.write() {
+                    Ok(mut store) => match store.apply(changes) {
+                        Ok(applied) => {
+                            if applied.2 {
+                                stale.store(true, Ordering::Release);
+                            }
+                            Ok(applied)
+                        }
+                        Err(error) => {
+                            // Publish the failure while the write lock is still
+                            // held. Searches recheck stale after acquiring their
+                            // read lock, so non-durable memory is never served.
+                            stale.store(true, Ordering::Release);
+                            Err(error)
+                        }
+                    },
+                    Err(_) => {
+                        stale.store(true, Ordering::Release);
+                        Err(anyhow::anyhow!("durable store lock poisoned"))
+                    }
+                };
                 match applied {
-                    Ok((changes, wal_bytes, needs_compaction)) => send_lossy(
-                        &out,
-                        &HelperMsg::DeltaApplied {
-                            changes,
+                    Ok((changes, wal_bytes, false)) => {
+                        tracing::debug!(changes, wal_bytes, "native watch batch committed")
+                    }
+                    Ok((_, wal_bytes, true)) => {
+                        stale.store(true, Ordering::Release);
+                        tracing::error!(
                             wal_bytes,
-                            needs_compaction,
-                        },
-                    ),
-                    Err(error) => {
-                        send_lossy(
-                            &out,
-                            &HelperMsg::Error(format!("native watch stopped: {error:#}")),
+                            "native watch stopped at the compaction threshold"
                         );
+                        break;
+                    }
+                    Err(error) => {
+                        stale.store(true, Ordering::Release);
+                        tracing::error!("native watch stopped: {error:#}");
                         break;
                     }
                 }
             }
-            Ok(watch_linux::WatchBatch::Overflow) => {
-                send_lossy(
-                    &out,
-                    &HelperMsg::Error(
-                        "native watch queue overflowed; a full native reindex is required".into(),
-                    ),
-                );
+            Ok(watch_linux::WatchBatch::RescanRequired(reason)) => {
+                stale.store(true, Ordering::Release);
+                tracing::error!(reason, "native watch requires a full native reindex");
                 break;
             }
             Err(error) => {
-                send_lossy(
-                    &out,
-                    &HelperMsg::Error(format!("native watch stopped: {error:#}")),
-                );
+                stale.store(true, Ordering::Release);
+                tracing::error!("native watch stopped: {error:#}");
                 break;
             }
         }

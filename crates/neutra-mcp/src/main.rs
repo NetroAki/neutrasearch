@@ -42,12 +42,15 @@ impl Store {
             Err(e) => Err(e.into()),
         }
     }
-    fn search(&self, q: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
+    fn search(&mut self, q: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
         match self {
             Self::Compact {
                 base,
                 delta: Some(delta),
-            } => Ok(base.search_with_delta(q, delta)?),
+            } => {
+                delta.refresh()?;
+                Ok(base.search_with_delta(q, delta)?)
+            }
             Self::Compact { base, delta: None } => Ok(base.search(q)?),
             Self::Legacy(index) => Ok(index.search(q)),
         }
@@ -85,7 +88,7 @@ fn main() -> Result<()> {
     )
 }
 
-fn serve<R: BufRead, W: Write>(index: Store, r: &mut R, w: &mut W) -> Result<()> {
+fn serve<R: BufRead, W: Write>(mut index: Store, r: &mut R, w: &mut W) -> Result<()> {
     for line in r.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -105,7 +108,7 @@ fn serve<R: BufRead, W: Write>(index: Store, r: &mut R, w: &mut W) -> Result<()>
                 {"name":"neutra_status","description":"Report resident index size and cache path.","inputSchema":{"type":"object","properties":{}}}
             ]}),
             "tools/call" => call_tool(
-                &index,
+                &mut index,
                 req.pointer("/params/name")
                     .and_then(Value::as_str)
                     .unwrap_or(""),
@@ -127,7 +130,7 @@ fn serve<R: BufRead, W: Write>(index: Store, r: &mut R, w: &mut W) -> Result<()>
     Ok(())
 }
 
-fn call_tool(index: &Store, name: &str, args: Value) -> Value {
+fn call_tool(index: &mut Store, name: &str, args: Value) -> Value {
     match name {
         "neutra_search" => {
             let raw = args.get("query").and_then(Value::as_str).unwrap_or("");
