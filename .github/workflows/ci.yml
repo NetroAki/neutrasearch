@@ -13,8 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libext2fs-dev
       - run: cargo test --workspace --locked
+      - if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - if: runner.os == 'Linux'
         run: bash scripts/check-no-walk.sh

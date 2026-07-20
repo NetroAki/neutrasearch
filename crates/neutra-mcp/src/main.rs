@@ -12,7 +12,7 @@ use std::path::PathBuf;
 enum Store {
     Compact {
         base: CompactIndex,
-        delta: Option<DeltaIndex>,
+        delta: Option<Box<DeltaIndex>>,
     },
     Legacy(Index),
 }
@@ -24,10 +24,10 @@ impl Store {
                 .with_context(|| format!("open {}", compact.display()))?;
             let delta_path = delta_path(&compact);
             let delta = if delta_path.is_file() {
-                Some(
+                Some(Box::new(
                     DeltaIndex::open_snapshot(&delta_path, base.generation())
                         .with_context(|| format!("open {}", delta_path.display()))?,
-                )
+                ))
             } else {
                 None
             };
@@ -68,7 +68,7 @@ impl Store {
     fn bytes(&self) -> u64 {
         match self {
             Self::Compact { base, delta } => {
-                base.mapped_bytes() as u64 + delta.as_ref().map_or(0, DeltaIndex::wal_bytes)
+                base.mapped_bytes() as u64 + delta.as_ref().map_or(0, |delta| delta.wal_bytes())
             }
             Self::Legacy(_) => std::fs::metadata(legacy_path())
                 .map(|m| m.len())

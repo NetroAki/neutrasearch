@@ -197,6 +197,9 @@ impl CompactIndex {
     pub fn len(&self) -> u64 {
         self.record_count
     }
+    pub fn is_empty(&self) -> bool {
+        self.record_count == 0
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }
