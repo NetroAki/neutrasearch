@@ -5,7 +5,7 @@
 - A filesystem-native bulk scan builds the base index once.
 - Normal searches never scan a filesystem and never linearly scan every indexed record.
 - Steady state is event-driven and uses effectively zero CPU while idle.
-- The read-only base is memory-mapped, so clean pages are reclaimable by the OS.
+- The read-only base is memory-mapped on Unix, so clean pages are reclaimable by the OS. Windows snapshots currently use owned immutable bytes because Windows blocks atomic replacement of files with live mapped views; this cross-platform compaction trade-off must be optimized before claiming large-index Windows memory parity.
 - Mutable state is bounded: 32 MiB delta target, 64 MiB hard compaction threshold, 32 MiB decompression cache, and bounded per-query scratch space.
 - Compaction runs only after the hard threshold is crossed. The current implementation runs synchronously while holding the durable-store write lock, so searches wait; low-priority and interruptible scheduling remain future work.
 

@@ -1,8 +1,10 @@
 //! Compact read-optimized index: compressed path blocks plus trigram postings.
 //!
-//! The base is immutable and mmapped. Clean mapped pages are reclaimable, so
-//! opening a large index does not imply keeping it resident while idle.
+//! The base is immutable and mmapped on Unix. Windows snapshots use owned
+//! bytes because Windows forbids atomically replacing a file with live mapped
+//! views; this keeps compaction compatible with persistent readers.
 use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats, SortKey};
+#[cfg(not(windows))]
 use memmap2::Mmap;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -30,8 +32,13 @@ struct DictEntry {
     offset: u64,
 }
 
+#[cfg(not(windows))]
+type IndexBytes = Mmap;
+#[cfg(windows)]
+type IndexBytes = Vec<u8>;
+
 pub struct CompactIndex {
-    map: Mmap,
+    map: IndexBytes,
     generation: u64,
     record_count: u64,
     blocks: Vec<BlockDesc>,
@@ -160,8 +167,13 @@ impl CompactIndex {
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let map = unsafe { Mmap::map(&file)? };
+        #[cfg(not(windows))]
+        let map = {
+            let file = File::open(path)?;
+            unsafe { Mmap::map(&file)? }
+        };
+        #[cfg(windows)]
+        let map = std::fs::read(path)?;
         if map.len() < HEADER as usize || &map[..8] != MAGIC {
             return Err(invalid("not a Neutrasearch compact index"));
         }
