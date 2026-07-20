@@ -97,7 +97,9 @@ fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) 
         if rc < 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EPERM) || e.raw_os_error() == Some(libc::EACCES) {
-                bail!("BTRFS_IOC_TREE_SEARCH denied; run neutra-helper as root/CAP_SYS_ADMIN");
+                bail!(
+                    "BTRFS_IOC_TREE_SEARCH denied; run 'neutrasearch index' as root/CAP_SYS_ADMIN"
+                );
             }
             return Err(e).context("BTRFS_IOC_TREE_SEARCH");
         }

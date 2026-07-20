@@ -1,3 +1,5 @@
+mod terminal;
+
 use eframe::egui;
 use egui::{Color32, FontId, RichText, Stroke};
 use egui_expressive::widgets::SearchField;
@@ -64,6 +66,10 @@ struct NeutraApp {
 }
 
 fn main() -> eframe::Result<()> {
+    match terminal::action() {
+        terminal::Action::Gui => {}
+        terminal::Action::Exit(code) => std::process::exit(code),
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
@@ -125,11 +131,11 @@ impl NeutraApp {
                 },
             );
         }
-        if std::env::var_os("NEUTRA_NO_REMOTE").is_none() {
+        if !env_flag("NEUTRASEARCH_NO_REMOTE", "NEUTRA_NO_REMOTE") {
             spawn_network_watcher(app.tx.clone());
         }
-        if !has_durable_index && std::env::var_os("NEUTRA_NO_AUTOSCAN").is_none()
-            || std::env::var_os("NEUTRA_FORCE_RESCAN").is_some()
+        if !has_durable_index && !env_flag("NEUTRASEARCH_NO_AUTOSCAN", "NEUTRA_NO_AUTOSCAN")
+            || env_flag("NEUTRASEARCH_FORCE_RESCAN", "NEUTRA_FORCE_RESCAN")
         {
             app.begin_scan();
         }
@@ -824,19 +830,22 @@ impl eframe::App for NeutraApp {
 
 fn spawn_local_helper(tx: Sender<Event>) {
     std::thread::spawn(move || {
-        let helper = std::env::var_os("NEUTRA_HELPER")
+        let helper = std::env::var_os("NEUTRASEARCH_HELPER")
+            .or_else(|| std::env::var_os("NEUTRA_HELPER"))
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::current_exe().ok().map(|p| {
                     p.with_file_name(if cfg!(windows) {
-                        "neutra-helper.exe"
+                        "neutrasearch-helper.exe"
                     } else {
-                        "neutra-helper"
+                        "neutrasearch-helper"
                     })
                 })
             })
-            .unwrap_or_else(|| PathBuf::from("neutra-helper"));
-        let mut cmd = if cfg!(target_os = "linux") && std::env::var_os("NEUTRA_PKEXEC").is_some() {
+            .unwrap_or_else(|| PathBuf::from("neutrasearch-helper"));
+        let elevated = std::env::var_os("NEUTRASEARCH_PKEXEC").is_some()
+            || std::env::var_os("NEUTRA_PKEXEC").is_some();
+        let mut cmd = if cfg!(target_os = "linux") && elevated {
             let mut c = Command::new("pkexec");
             c.arg(helper);
             c
@@ -851,7 +860,9 @@ fn spawn_local_helper(tx: Sender<Event>) {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(Event::Fatal(format!("cannot start neutra-helper: {e}")));
+                let _ = tx.send(Event::Fatal(format!(
+                    "cannot start neutrasearch-helper: {e}"
+                )));
                 return;
             }
         };
@@ -1009,9 +1020,17 @@ fn apply_theme(ctx: &egui::Context) {
     s.visuals.widgets.inactive.corner_radius = 5.into();
     ctx.set_global_style(s);
 }
+fn env_flag(current: &str, legacy: &str) -> bool {
+    std::env::var_os(current).is_some() || std::env::var_os(legacy).is_some()
+}
+fn configured_index() -> Option<PathBuf> {
+    std::env::var_os("NEUTRASEARCH_INDEX")
+        .or_else(|| std::env::var_os("NEUTRA_INDEX"))
+        .map(PathBuf::from)
+}
 fn legacy_cache_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("NEUTRA_INDEX") {
-        return p.into();
+    if let Some(path) = configured_index() {
+        return path;
     }
     #[cfg(target_os = "windows")]
     {
@@ -1037,8 +1056,8 @@ fn legacy_cache_path() -> PathBuf {
     }
 }
 fn compact_cache_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("NEUTRA_INDEX") {
-        return path.into();
+    if let Some(path) = configured_index() {
+        return path;
     }
     let mut path = legacy_cache_path();
     path.set_extension("nsx");

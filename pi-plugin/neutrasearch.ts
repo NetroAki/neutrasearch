@@ -15,14 +15,15 @@ class PersistentNeutraClient {
     if (this.child && !this.child.killed) return;
     if (this.starting) return this.starting;
     this.starting = new Promise<void>((resolve, reject) => {
-      const command = process.env.NEUTRA_MCP ?? "neutra-mcp";
+      const command =
+        process.env.NEUTRASEARCH_MCP ?? process.env.NEUTRA_MCP ?? "neutrasearch-mcp";
       const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
       this.child = child;
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => this.onData(chunk));
       child.stderr.setEncoding("utf8").on("data", () => {}); // protocol stays stdout-only
       child.on("error", reject);
       child.on("close", (code) => {
-        const error = new Error(`neutra-mcp exited ${code ?? "by signal"}`);
+        const error = new Error(`neutrasearch-mcp exited ${code ?? "by signal"}`);
         for (const waiter of this.pending.values()) waiter.reject(error);
         this.pending.clear();
         this.child = undefined;
@@ -58,7 +59,7 @@ class PersistentNeutraClient {
   private requestRaw(method: string, params: unknown): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      if (!this.child) return reject(new Error("neutra-mcp is not running"));
+      if (!this.child) return reject(new Error("neutrasearch-mcp is not running"));
       this.pending.set(id, { resolve, reject });
       this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });

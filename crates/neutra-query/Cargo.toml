@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "neutrasearch-query"
+path = "src/main.rs"
+
 [dependencies]
 neutra-core.workspace = true
 serde.workspace = true

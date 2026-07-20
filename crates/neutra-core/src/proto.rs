@@ -1,8 +1,8 @@
 //! Framed wire protocol between clients (GUI / MCP / Pi plugin) and
-//! neutra-helper (local privileged process or remote server helper).
+//! neutrasearch-helper (local privileged process or remote server helper).
 //!
 //! Framing: 4-byte little-endian length + bincode payload. Identical over a
-//! child's stdout pipe, an `ssh host neutra-helper` channel, or a TCP socket.
+//! child's stdout pipe, an `ssh host neutrasearch-helper` channel, or a TCP socket.
 
 use crate::delta::DeltaChange;
 use crate::mounts::MountInfo;

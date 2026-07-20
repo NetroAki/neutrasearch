@@ -44,7 +44,9 @@ struct Alias {
 pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
     let path = volume_path(mount);
     let file = std::fs::File::open(&path).with_context(|| {
-        format!("open NTFS volume {path} (run neutra-helper with root/administrator privileges)")
+        format!(
+            "open NTFS volume {path} (run 'neutrasearch index' with root/administrator privileges)"
+        )
     })?;
     let volume_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     scan_reader(file, volume_size, &mount.mountpoint.to_string_lossy(), sink)

@@ -129,7 +129,7 @@ mod linux {
         let (nodes, names, batches) = if force_serial {
             let file = File::open(&mount.mountpoint).with_context(|| {
                 format!(
-                    "open Btrfs mount {} (run neutra-helper privileged)",
+                    "open Btrfs mount {} (run 'neutrasearch index' with the required privileges)",
                     mount.mountpoint.display()
                 )
             })?;
@@ -181,7 +181,7 @@ mod linux {
                         || e.raw_os_error() == Some(libc::EACCES)
                     {
                         bail!(
-                            "BTRFS_IOC_TREE_SEARCH denied; run neutra-helper as root/CAP_SYS_ADMIN"
+                            "BTRFS_IOC_TREE_SEARCH denied; run 'neutrasearch index' as root/CAP_SYS_ADMIN"
                         );
                     }
                     return Err(e).context("BTRFS_IOC_TREE_SEARCH");

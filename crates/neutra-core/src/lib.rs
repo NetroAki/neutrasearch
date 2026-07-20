@@ -4,7 +4,7 @@
 //! - No filesystem walking anywhere in this workspace. Index sources are
 //!   filesystem-native metadata structures (NTFS $MFT, ext4 inode/dir blocks
 //!   via libext2fs, Btrfs TREE_SEARCH ioctl, ZFS snapshot ZAP enumeration) or
-//!   a remote neutra-helper for network mounts.
+//!   a remote neutrasearch-helper for network mounts.
 //! - The index is filename/metadata only (Everything/FSearch scope).
 
 pub mod compact;

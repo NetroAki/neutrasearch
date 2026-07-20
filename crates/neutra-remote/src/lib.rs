@@ -32,7 +32,8 @@ pub struct Provisioner {
 
 impl Provisioner {
     pub fn from_env() -> Self {
-        let artifacts = std::env::var_os("NEUTRA_HELPER_ARTIFACTS")
+        let artifacts = std::env::var_os("NEUTRASEARCH_HELPER_ARTIFACTS")
+            .or_else(|| std::env::var_os("NEUTRA_HELPER_ARTIFACTS"))
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("helpers"));
         Self {
@@ -97,7 +98,7 @@ impl Provisioner {
                     .arg("mkdir -p ~/.local/lib/neutrasearch")
                     .status()
                     .context("create remote helper dir")?;
-                let target = format!("{host}:~/.local/lib/neutrasearch/neutra-helper.new");
+                let target = format!("{host}:~/.local/lib/neutrasearch/neutrasearch-helper.new");
                 checked(
                     Command::new("scp")
                         .args(self.ssh_options())
@@ -105,11 +106,11 @@ impl Provisioner {
                         .arg(&target),
                     "scp helper",
                 )?;
-                checked(self.ssh(host).arg("chmod 700 ~/.local/lib/neutrasearch/neutra-helper.new && mv ~/.local/lib/neutrasearch/neutra-helper.new ~/.local/lib/neutrasearch/neutra-helper"),"install helper")?;
+                checked(self.ssh(host).arg("chmod 700 ~/.local/lib/neutrasearch/neutrasearch-helper.new && mv ~/.local/lib/neutrasearch/neutrasearch-helper.new ~/.local/lib/neutrasearch/neutrasearch-helper"),"install helper")?;
             }
             RemoteOs::Windows => {
                 self.ssh(host).args(["powershell","-NoProfile","-Command","New-Item -ItemType Directory -Force $env:LOCALAPPDATA\\Neutrasearch | Out-Null"]).status()?;
-                let target = format!("{host}:Neutrasearch/neutra-helper.exe");
+                let target = format!("{host}:Neutrasearch/neutrasearch-helper.exe");
                 checked(
                     Command::new("scp")
                         .args(self.ssh_options())
@@ -133,7 +134,7 @@ impl Provisioner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("start remote neutra-helper")
+            .context("start remote neutrasearch-helper")
     }
 
     pub fn provision_mount(&self, mount: &MountInfo) -> Result<RemotePlatform> {
@@ -170,12 +171,12 @@ pub fn artifact_name(p: &RemotePlatform) -> String {
     } else {
         ""
     };
-    format!("neutra-helper-{os}-{}{ext}", p.arch)
+    format!("neutrasearch-helper-{os}-{}{ext}", p.arch)
 }
 fn remote_helper_path(p: &RemotePlatform) -> String {
     match p.os {
-        RemoteOs::Windows => r#"%LOCALAPPDATA%\Neutrasearch\neutra-helper.exe"#.into(),
-        _ => "~/.local/lib/neutrasearch/neutra-helper".into(),
+        RemoteOs::Windows => r#"%LOCALAPPDATA%\Neutrasearch\neutrasearch-helper.exe"#.into(),
+        _ => "~/.local/lib/neutrasearch/neutrasearch-helper".into(),
     }
 }
 fn normalize_arch(s: &str) -> String {
@@ -227,14 +228,14 @@ mod tests {
                 os: RemoteOs::Windows,
                 arch: "x86_64".into()
             }),
-            "neutra-helper-windows-x86_64.exe"
+            "neutrasearch-helper-windows-x86_64.exe"
         );
         assert_eq!(
             artifact_name(&RemotePlatform {
                 os: RemoteOs::Macos,
                 arch: "aarch64".into()
             }),
-            "neutra-helper-macos-aarch64"
+            "neutrasearch-helper-macos-aarch64"
         );
     }
     #[test]

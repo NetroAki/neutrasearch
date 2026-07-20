@@ -52,7 +52,7 @@ cargo run --release -p neutra-gui
 Some native metadata sources require elevated permissions. Development-only Linux launch:
 
 ```sh
-NEUTRA_PKEXEC=1 cargo run --release -p neutra-gui
+NEUTRASEARCH_PKEXEC=1 cargo run --release -p neutra-gui
 ```
 
 ## Search syntax
@@ -67,7 +67,7 @@ size:>1G
 Query an existing index from the command line:
 
 ```sh
-neutra-query --index /path/to/index.nsx --json 'report ext:pdf'
+neutrasearch search 'report ext:pdf' --index /path/to/index.nsx --json
 ```
 
 ## Agent integration
