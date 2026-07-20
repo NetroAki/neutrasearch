@@ -4,23 +4,34 @@
 //! replace content grep: Neutrasearch intentionally indexes names + metadata.
 
 use anyhow::{Context, Result};
-use neutra_core::{CompactIndex, Index, Query, SearchHit, SearchStats};
+use neutra_core::{CompactIndex, DeltaIndex, Index, Query, SearchHit, SearchStats};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 enum Store {
-    Compact(CompactIndex),
+    Compact {
+        base: CompactIndex,
+        delta: Option<DeltaIndex>,
+    },
     Legacy(Index),
 }
 impl Store {
     fn open() -> Result<Self> {
         let compact = compact_path();
         if looks_compact(&compact) {
-            return Ok(Self::Compact(
-                CompactIndex::open(&compact)
-                    .with_context(|| format!("open {}", compact.display()))?,
-            ));
+            let base = CompactIndex::open(&compact)
+                .with_context(|| format!("open {}", compact.display()))?;
+            let delta_path = delta_path(&compact);
+            let delta = if delta_path.is_file() {
+                Some(
+                    DeltaIndex::open(&delta_path, base.generation())
+                        .with_context(|| format!("open {}", delta_path.display()))?,
+                )
+            } else {
+                None
+            };
+            return Ok(Self::Compact { base, delta });
         }
         let legacy = legacy_path();
         match std::fs::read(&legacy) {
@@ -33,25 +44,32 @@ impl Store {
     }
     fn search(&self, q: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
         match self {
-            Self::Compact(index) => Ok(index.search(q)?),
+            Self::Compact {
+                base,
+                delta: Some(delta),
+            } => Ok(base.search_with_delta(q, delta)?),
+            Self::Compact { base, delta: None } => Ok(base.search(q)?),
             Self::Legacy(index) => Ok(index.search(q)),
         }
     }
     fn len(&self) -> u64 {
         match self {
-            Self::Compact(index) => index.len(),
+            Self::Compact { base, .. } => base.len(),
             Self::Legacy(index) => index.len() as u64,
         }
     }
     fn kind(&self) -> &'static str {
         match self {
-            Self::Compact(_) => "compact-mmap",
+            Self::Compact { delta: Some(_), .. } => "compact-mmap+delta",
+            Self::Compact { delta: None, .. } => "compact-mmap",
             Self::Legacy(_) => "legacy-resident",
         }
     }
     fn bytes(&self) -> u64 {
         match self {
-            Self::Compact(index) => index.mapped_bytes() as u64,
+            Self::Compact { base, delta } => {
+                base.mapped_bytes() as u64 + delta.as_ref().map_or(0, DeltaIndex::wal_bytes)
+            }
             Self::Legacy(_) => std::fs::metadata(legacy_path())
                 .map(|m| m.len())
                 .unwrap_or(0),
@@ -158,7 +176,7 @@ fn call_tool(index: &Store, name: &str, args: Value) -> Value {
             json!({"content":[{"type":"text","text":if text.is_empty(){header}else{format!("{header}\n{text}")}}],"structuredContent":{"paths":paths,"matched":stats.matched,"returned":returned,"search_us":stats.wall_us}})
         }
         "neutra_status" => {
-            let path = if matches!(index, Store::Compact(_)) {
+            let path = if matches!(index, Store::Compact { .. }) {
                 compact_path()
             } else {
                 legacy_path()
@@ -211,6 +229,12 @@ fn compact_path() -> PathBuf {
     path.set_extension("nsx");
     path
 }
+fn delta_path(base: &std::path::Path) -> PathBuf {
+    let mut path = base.to_path_buf();
+    path.set_extension("delta");
+    path
+}
+
 fn looks_compact(path: &std::path::Path) -> bool {
     use std::io::Read;
     let Ok(mut file) = std::fs::File::open(path) else {
