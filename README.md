@@ -107,6 +107,14 @@ neutra-helper --build-index /mount/point /chosen/private/location/index.nsx
 
 The GUI also publishes `index.nsx` after its first successful scan, then drops the decoded bulk records and searches the mmap store.
 
+Run the durable query/update helper against an existing base with:
+
+```sh
+neutra-helper --serve-index /path/to/index.nsx
+```
+
+It opens the mmap base plus a generation-bound sibling `index.delta`, answers framed `Search` commands, and accepts framed `ApplyDelta` batches. An update acknowledgement is sent only after the WAL is synced. Platform event producers are still an active implementation area; this service command is infrastructure, not a claim that every OS watcher is complete.
+
 ## Network mounts
 
 The GUI polls mounted NFS/CIFS/SSHFS volumes. On first sight it uses `ssh -o BatchMode=yes` and the user's existing SSH key/agent to:
@@ -130,7 +138,7 @@ Remote share-to-local-path mapping and merged remote result streaming are the ne
 
 ## MCP and Pi
 
-`neutra-mcp` opens `index.nsx` once with mmap and stays available. Each call is one newline JSON request and one compact response. Path-only output is the default, the default limit is 50, and metadata is opt-in. Clean mapped pages remain OS-reclaimable; legacy `index.bin` remains a migration fallback.
+`neutra-mcp` opens `index.nsx` once with mmap and stays available. If a generation-matched `index.delta` exists beside it, MCP and `neutra-query` merge its upserts/tombstones into every search. Each call is one newline JSON request and one compact response. Path-only output is the default, the default limit is 50, and metadata is opt-in. Clean mapped pages remain OS-reclaimable; legacy `index.bin` remains a migration fallback.
 
 ```json
 {"name":"neutra_search","arguments":{"query":"parser ext:rs under:/src","limit":30,"metadata":false}}

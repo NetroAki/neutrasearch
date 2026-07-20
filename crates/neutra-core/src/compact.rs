@@ -510,6 +510,7 @@ mod tests {
         assert_eq!(hits[0].record.native_parent, 11);
         let (hits, _) = index.search(&Query::parse("gamma")).unwrap();
         assert_eq!(hits[0].record.path.as_ref(), "/opt/gamma/notes.txt");
+        drop(index);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -549,6 +550,7 @@ mod tests {
             .any(|hit| hit.record.path.as_ref() == "/c/gamma.txt"));
 
         drop(delta);
+        drop(base);
         std::fs::remove_file(base_path).unwrap();
         std::fs::remove_file(delta_path).unwrap();
     }

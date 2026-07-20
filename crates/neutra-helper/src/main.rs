@@ -15,17 +15,59 @@ use neutra_core::mounts::{FsKind, MountInfo};
 use neutra_core::proto::{
     read_frame, write_frame, ClientMsg, HelperMsg, HELPER_BUILD, PROTO_VERSION,
 };
-use neutra_core::{CompactIndex, FileRecord, Index, ScanStats};
+use neutra_core::{
+    CompactIndex, DeltaChange, DeltaIndex, FileRecord, Index, Query, ScanStats, SearchHit,
+    SearchStats,
+};
 use std::io::{BufWriter, Stdout};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 const RECORD_BATCH: usize = 4096;
 
+struct DurableStore {
+    base: CompactIndex,
+    delta: DeltaIndex,
+}
+
+impl DurableStore {
+    fn open(path: &std::path::Path) -> Result<Self> {
+        let base = CompactIndex::open(path)
+            .with_context(|| format!("open compact index {}", path.display()))?;
+        let mut delta_path = path.to_path_buf();
+        delta_path.set_extension("delta");
+        let delta = DeltaIndex::open(&delta_path, base.generation())
+            .with_context(|| format!("open delta index {}", delta_path.display()))?;
+        Ok(Self { base, delta })
+    }
+
+    fn search(&self, query: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
+        Ok(self.base.search_with_delta(query, &self.delta)?)
+    }
+
+    fn apply(&mut self, changes: Vec<DeltaChange>) -> Result<(u32, u64, bool)> {
+        let count = u32::try_from(changes.len()).context("delta batch is too large")?;
+        for change in changes {
+            self.delta.apply(change)?;
+        }
+        self.delta.sync()?;
+        Ok((count, self.delta.wal_bytes(), self.delta.needs_compaction()))
+    }
+}
+
 fn main() -> Result<()> {
     // `--version`/`--build` are used by auto-provisioning to decide whether a
     // remote copy is stale. Keep them dependency-free and instant.
     let arg = std::env::args().nth(1);
+    let serve_index = if arg.as_deref() == Some("--serve-index") {
+        Some(std::path::PathBuf::from(
+            std::env::args()
+                .nth(2)
+                .context("usage: neutra-helper --serve-index INDEX.nsx")?,
+        ))
+    } else {
+        std::env::var_os("NEUTRA_SERVE_INDEX").map(std::path::PathBuf::from)
+    };
     match arg.as_deref() {
         Some("--version") | Some("-V") => {
             println!(
@@ -39,6 +81,7 @@ fn main() -> Result<()> {
             println!("{HELPER_BUILD}");
             return Ok(());
         }
+        Some("--serve-index") => {}
         Some("--scan-summary") => {
             let target = std::env::args()
                 .nth(2)
@@ -138,6 +181,9 @@ fn main() -> Result<()> {
 
     // Scans populate one resident index; searches never trigger a rescan.
     let index = Arc::new(RwLock::new(Index::default()));
+    let durable = serve_index
+        .map(|path| DurableStore::open(&path).map(|store| Arc::new(RwLock::new(store))))
+        .transpose()?;
     let mut scan_threads = Vec::new();
     loop {
         let msg: Option<ClientMsg> = read_frame(&mut rin).context("reading command")?;
@@ -151,12 +197,37 @@ fn main() -> Result<()> {
                 launch_scans(mounts, &out, Some(&index), &mut scan_threads)
             }
             Some(ClientMsg::Search { query }) => {
-                let (hits, stats) = index.read().unwrap().search(&query);
+                let (hits, stats) = if let Some(store) = &durable {
+                    store.read().unwrap().search(&query)?
+                } else {
+                    index.read().unwrap().search(&query)
+                };
                 send(
                     &out,
                     &HelperMsg::SearchResult {
                         hits: hits.into_iter().map(|hit| hit.record).collect(),
                         wall_us: stats.wall_us,
+                    },
+                )?;
+            }
+            Some(ClientMsg::ApplyDelta { changes }) => {
+                let Some(store) = &durable else {
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "ApplyDelta requires neutra-helper --serve-index INDEX.nsx".into(),
+                        ),
+                    )?;
+                    continue;
+                };
+                let (changes, wal_bytes, needs_compaction) =
+                    store.write().unwrap().apply(changes)?;
+                send(
+                    &out,
+                    &HelperMsg::DeltaApplied {
+                        changes,
+                        wal_bytes,
+                        needs_compaction,
                     },
                 )?;
             }
@@ -318,5 +389,56 @@ fn dispatch_lane(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
             other.label(),
             std::env::consts::OS
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use neutra_core::{FileKind, FsKind};
+
+    fn record(path: &str, size: u64) -> FileRecord {
+        FileRecord {
+            path: path.into(),
+            size,
+            mtime: size as i64,
+            mode: 0,
+            kind: FileKind::File,
+            fs: FsKind::Btrfs,
+            native_id: size,
+            native_parent: 1,
+            source: 0,
+        }
+    }
+
+    #[test]
+    fn durable_store_syncs_and_searches_delta() {
+        let base_path =
+            std::env::temp_dir().join(format!("neutra-helper-store-{}.nsx", std::process::id()));
+        let mut delta_path = base_path.clone();
+        delta_path.set_extension("delta");
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&delta_path);
+        CompactIndex::build(&[record("/old.txt", 1)], &base_path).unwrap();
+
+        let mut store = DurableStore::open(&base_path).unwrap();
+        let applied = store
+            .apply(vec![
+                DeltaChange::Remove("/old.txt".into()),
+                DeltaChange::Upsert(record("/new.txt", 2)),
+            ])
+            .unwrap();
+        assert_eq!(applied.0, 2);
+        let (hits, stats) = store.search(&Query::parse("ext:txt")).unwrap();
+        assert_eq!(stats.matched, 1);
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        drop(store);
+
+        let reopened = DurableStore::open(&base_path).unwrap();
+        let (hits, _) = reopened.search(&Query::parse("new")).unwrap();
+        assert_eq!(hits[0].record.path.as_ref(), "/new.txt");
+        drop(reopened);
+        std::fs::remove_file(base_path).unwrap();
+        std::fs::remove_file(delta_path).unwrap();
     }
 }

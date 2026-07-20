@@ -4,6 +4,7 @@
 //! Framing: 4-byte little-endian length + bincode payload. Identical over a
 //! child's stdout pipe, an `ssh host neutra-helper` channel, or a TCP socket.
 
+use crate::delta::DeltaChange;
 use crate::mounts::MountInfo;
 use crate::query::Query;
 use crate::types::{FileRecord, ScanStats};
@@ -11,12 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol version; helper and client refuse to talk across major versions.
-pub const PROTO_VERSION: u32 = 2;
+pub const PROTO_VERSION: u32 = 3;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 2;
+pub const HELPER_BUILD: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
@@ -28,6 +29,8 @@ pub enum ClientMsg {
     ScanResident { mounts: Vec<MountInfo> },
     /// Query the helper's explicitly resident index.
     Search { query: Query },
+    /// Persist a batch into the generation-bound delta WAL before publishing it.
+    ApplyDelta { changes: Vec<DeltaChange> },
     /// Ask the helper to stop scanning and exit cleanly.
     Shutdown,
 }
@@ -57,6 +60,11 @@ pub enum HelperMsg {
     SearchResult {
         hits: Vec<FileRecord>,
         wall_us: u64,
+    },
+    DeltaApplied {
+        changes: u32,
+        wal_bytes: u64,
+        needs_compaction: bool,
     },
     Error(String),
 }
