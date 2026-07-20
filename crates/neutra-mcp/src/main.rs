@@ -25,7 +25,7 @@ impl Store {
             let delta_path = delta_path(&compact);
             let delta = if delta_path.is_file() {
                 Some(
-                    DeltaIndex::open(&delta_path, base.generation())
+                    DeltaIndex::open_snapshot(&delta_path, base.generation())
                         .with_context(|| format!("open {}", delta_path.display()))?,
                 )
             } else {

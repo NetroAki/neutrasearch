@@ -108,7 +108,10 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             #[cfg(not(target_os = "linux"))]
-            anyhow::bail!("--scan-summary mount discovery is currently available on Linux");
+            {
+                let _ = target;
+                anyhow::bail!("--scan-summary mount discovery is currently available on Linux");
+            }
         }
         Some("--build-index") => {
             let target = std::env::args()
@@ -132,7 +135,10 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             #[cfg(not(target_os = "linux"))]
-            anyhow::bail!("--build-index mount discovery is currently available on Linux");
+            {
+                let _ = (target, output);
+                anyhow::bail!("--build-index mount discovery is currently available on Linux");
+            }
         }
         _ => {}
     }

@@ -129,7 +129,7 @@ impl CompactIndex {
         file.flush()?;
         file.get_ref().sync_all()?;
         drop(file);
-        std::fs::rename(&temp, path)?;
+        replace_file(&temp, path)?;
         sync_parent(path)?;
         let bytes = std::fs::metadata(path)?.len();
         Ok(BuildStats {
@@ -463,10 +463,51 @@ fn open_private(path: &Path) -> io::Result<BufWriter<File>> {
     }
     Ok(BufWriter::with_capacity(1024 * 1024, o.open(path)?))
 }
+#[cfg(not(windows))]
+fn replace_file(temp: &Path, path: &Path) -> io::Result<()> {
+    std::fs::rename(temp, path)
+}
+#[cfg(windows)]
+fn replace_file(temp: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    let existing = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            replacement.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+#[cfg(unix)]
 fn sync_parent(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         File::open(parent)?.sync_all()?;
     }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -498,9 +539,11 @@ mod tests {
             "neutra-compact-{}-roundtrip.idx",
             std::process::id()
         ));
+        let first = CompactIndex::build(&records, &path).unwrap();
         let stats = CompactIndex::build(&records, &path).unwrap();
         assert_eq!(stats.records, 3);
         assert_ne!(stats.generation, 0);
+        assert_ne!(stats.generation, first.generation);
         let index = CompactIndex::open(&path).unwrap();
         assert_eq!(index.generation(), stats.generation);
         let (hits, s) = index.search(&Query::parse("document ext:txt")).unwrap();

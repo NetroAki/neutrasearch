@@ -163,7 +163,7 @@ fn open_delta(base: &std::path::Path, generation: u64) -> Result<Option<DeltaInd
     if !path.is_file() {
         return Ok(None);
     }
-    DeltaIndex::open(&path, generation)
+    DeltaIndex::open_snapshot(&path, generation)
         .map(Some)
         .with_context(|| format!("open delta index {}", path.display()))
 }

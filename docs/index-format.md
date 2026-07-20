@@ -45,7 +45,7 @@ A trigram hit identifies candidate path blocks. Neutrasearch decompresses only t
 ## Incremental state
 
 - Append change events to an owner-only framed write-ahead log before publishing them. `neutra_core::DeltaIndex` implements replayable path upserts/tombstones, CRC32-protected frames, byte accounting, explicit syncing, and the 64 MiB compaction threshold; platform event feeds remain to be added.
-- Every base build carries a nonzero generation. The delta header must contain the same generation or opening fails; an old WAL is never replayed over a replacement base. `neutra-helper --serve-index` owns this pair and syncs each accepted update batch before acknowledging it.
+- Every base build carries a nonzero generation. The delta header must contain the same generation or opening fails; an old WAL is never replayed over a replacement base. `neutra-helper --serve-index` owns this pair under a cross-platform exclusive writer lock and syncs each accepted update batch before acknowledging it. CLI/MCP readers replay non-locking point-in-time snapshots. On writer recovery, an incomplete final frame is truncated to the last CRC-verified boundary; interior corruption still fails closed.
 - Keep additions/updates in a small mutable trigram segment and deletions in a tombstone set. CLI and MCP queries merge this overlay with the mmap base and suppress shadowed paths before ranking, so limits and match counts remain exact.
 - Windows uses the USN Journal checkpoint; macOS uses FSEvents/Spotlight state; Linux uses the strongest available event source and treats overflow as an explicit stale state requiring bounded reconciliation.
 - Build a replacement base only after the delta threshold is crossed. Publish it atomically, then truncate the WAL.

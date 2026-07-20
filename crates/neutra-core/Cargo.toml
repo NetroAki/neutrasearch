@@ -12,3 +12,4 @@ rayon.workspace = true
 memmap2.workspace = true
 zstd.workspace = true
 crc32fast.workspace = true
+fs2.workspace = true
