@@ -10,6 +10,9 @@
 //!   windows ntfs ($MFT via volume handle)
 //!   macos   Spotlight index (primary) · getattrlistbulk (labeled fallback)
 
+#[cfg(target_os = "linux")]
+mod watch_linux;
+
 use anyhow::{Context, Result};
 use neutra_core::mounts::{FsKind, MountInfo};
 use neutra_core::proto::{
@@ -59,7 +62,23 @@ fn main() -> Result<()> {
     // `--version`/`--build` are used by auto-provisioning to decide whether a
     // remote copy is stale. Keep them dependency-free and instant.
     let arg = std::env::args().nth(1);
-    let serve_index = if arg.as_deref() == Some("--serve-index") {
+    let watch_mount = if arg.as_deref() == Some("--watch-index") {
+        Some((
+            std::path::PathBuf::from(
+                std::env::args()
+                    .nth(3)
+                    .context("internal usage: --watch-index INDEX.nsx MOUNT [SOURCE]")?,
+            ),
+            std::env::args()
+                .nth(4)
+                .map(|source| source.parse::<u32>().context("invalid source ID"))
+                .transpose()?
+                .unwrap_or(0),
+        ))
+    } else {
+        None
+    };
+    let serve_index = if matches!(arg.as_deref(), Some("--serve-index" | "--watch-index")) {
         Some(std::path::PathBuf::from(std::env::args().nth(2).context(
             "internal usage: neutrasearch-helper --serve-index INDEX.nsx",
         )?))
@@ -81,7 +100,7 @@ fn main() -> Result<()> {
             println!("{HELPER_BUILD}");
             return Ok(());
         }
-        Some("--serve-index") => {}
+        Some("--serve-index") | Some("--watch-index") => {}
         Some("--scan-summary") => {
             let target = std::env::args()
                 .nth(2)
@@ -188,8 +207,31 @@ fn main() -> Result<()> {
     // Scans populate one resident index; searches never trigger a rescan.
     let index = Arc::new(RwLock::new(Index::default()));
     let durable = serve_index
-        .map(|path| DurableStore::open(&path).map(|store| Arc::new(RwLock::new(store))))
+        .as_ref()
+        .map(|path| DurableStore::open(path).map(|store| Arc::new(RwLock::new(store))))
         .transpose()?;
+    #[cfg(target_os = "linux")]
+    if let Some((mountpoint, source)) = watch_mount {
+        let mount = neutra_core::mounts::system_mounts()?
+            .into_iter()
+            .find(|mount| mount.mountpoint == mountpoint)
+            .with_context(|| format!("no supported mount at {}", mountpoint.display()))?;
+        let base_path = serve_index.as_ref().expect("watch mode has an index");
+        let watcher =
+            watch_linux::FanotifyWatcher::open(mount, source, watch_exclusions(base_path))?;
+        start_native_watch(
+            watcher,
+            Arc::clone(durable.as_ref().expect("watch mode has a durable store")),
+            Arc::clone(&out),
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    if watch_mount.is_some() {
+        anyhow::bail!(
+            "native watch mode is not implemented on {}",
+            std::env::consts::OS
+        );
+    }
     let mut scan_threads = Vec::new();
     loop {
         let msg: Option<ClientMsg> = read_frame(&mut rin).context("reading command")?;
@@ -244,6 +286,69 @@ fn main() -> Result<()> {
         let _ = t.join();
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut delta = base.to_path_buf();
+    delta.set_extension("delta");
+    let mut lock = delta.as_os_str().to_os_string();
+    lock.push(".lock");
+    let mut temporary = base.as_os_str().to_os_string();
+    temporary.push(".new");
+    vec![base.to_path_buf(), delta, lock.into(), temporary.into()]
+}
+
+#[cfg(target_os = "linux")]
+fn start_native_watch(
+    mut watcher: watch_linux::FanotifyWatcher,
+    store: Arc<RwLock<DurableStore>>,
+    out: Arc<Mutex<BufWriter<Stdout>>>,
+) {
+    std::thread::spawn(move || loop {
+        match watcher.read_batch() {
+            Ok(watch_linux::WatchBatch::Changes(changes)) if changes.is_empty() => {}
+            Ok(watch_linux::WatchBatch::Changes(changes)) => {
+                let applied = store
+                    .write()
+                    .map_err(|_| anyhow::anyhow!("durable store lock poisoned"))
+                    .and_then(|mut store| store.apply(changes));
+                match applied {
+                    Ok((changes, wal_bytes, needs_compaction)) => send_lossy(
+                        &out,
+                        &HelperMsg::DeltaApplied {
+                            changes,
+                            wal_bytes,
+                            needs_compaction,
+                        },
+                    ),
+                    Err(error) => {
+                        send_lossy(
+                            &out,
+                            &HelperMsg::Error(format!("native watch stopped: {error:#}")),
+                        );
+                        break;
+                    }
+                }
+            }
+            Ok(watch_linux::WatchBatch::Overflow) => {
+                send_lossy(
+                    &out,
+                    &HelperMsg::Error(
+                        "native watch queue overflowed; a full native reindex is required".into(),
+                    ),
+                );
+                break;
+            }
+            Err(error) => {
+                send_lossy(
+                    &out,
+                    &HelperMsg::Error(format!("native watch stopped: {error:#}")),
+                );
+                break;
+            }
+        }
+    });
 }
 
 fn launch_scans(

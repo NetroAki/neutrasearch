@@ -17,7 +17,7 @@ pub const PROTO_VERSION: u32 = 3;
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 3;
+pub const HELPER_BUILD: u32 = 4;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMsg {

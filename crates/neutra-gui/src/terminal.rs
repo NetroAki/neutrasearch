@@ -26,14 +26,7 @@ pub fn action() -> Action {
         }
         "search" => Action::Exit(search(args)),
         "index" => Action::Exit(index(args)),
-        "serve" => Action::Exit(with_index(args, "serve", |index| {
-            run_companion(
-                "NEUTRASEARCH_HELPER",
-                "neutrasearch-helper",
-                vec!["--serve-index".into(), index.into_os_string()],
-                None,
-            )
-        })),
+        "serve" => Action::Exit(serve(args)),
         "mcp" => Action::Exit(with_index(args, "mcp", |index| {
             run_companion(
                 "NEUTRASEARCH_MCP",
@@ -110,6 +103,69 @@ fn parse_index(mut args: Vec<std::ffi::OsString>) -> Result<(PathBuf, PathBuf), 
     let mount = mount.ok_or_else(|| "index requires a mount point".to_string())?;
     let output = output.ok_or_else(|| "index requires --output INDEX.nsx".to_string())?;
     Ok((mount, output))
+}
+
+fn serve(args: Vec<std::ffi::OsString>) -> i32 {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("Usage: neutrasearch serve --index INDEX.nsx [--watch MOUNT] [--source ID]");
+        return 0;
+    }
+    let (index, watch, source) = match parse_serve(args) {
+        Ok(config) => config,
+        Err(message) => return error(&message),
+    };
+    let helper_args = if let Some(mount) = watch {
+        vec![
+            "--watch-index".into(),
+            index.into_os_string(),
+            mount.into_os_string(),
+            source.to_string().into(),
+        ]
+    } else {
+        vec!["--serve-index".into(), index.into_os_string()]
+    };
+    run_companion(
+        "NEUTRASEARCH_HELPER",
+        "neutrasearch-helper",
+        helper_args,
+        None,
+    )
+}
+
+fn parse_serve(
+    mut args: Vec<std::ffi::OsString>,
+) -> Result<(PathBuf, Option<PathBuf>, u32), String> {
+    let mut index = None;
+    let mut watch = None;
+    let mut source = None;
+    while !args.is_empty() {
+        let option = args.remove(0);
+        if option == "--index" || option == "--watch" || option == "--source" {
+            if args.is_empty() {
+                return Err(format!("{} requires a value", option.to_string_lossy()));
+            }
+            let value = args.remove(0);
+            if option == "--index" {
+                index = Some(PathBuf::from(value));
+            } else if option == "--watch" {
+                watch = Some(PathBuf::from(value));
+            } else {
+                source = Some(
+                    value
+                        .to_string_lossy()
+                        .parse()
+                        .map_err(|_| "--source requires an unsigned integer".to_string())?,
+                );
+            }
+        } else {
+            return Err(format!("unknown serve option {}", option.to_string_lossy()));
+        }
+    }
+    let index = index.ok_or_else(|| "serve requires --index INDEX.nsx".to_string())?;
+    if source.is_some() && watch.is_none() {
+        return Err("--source requires --watch MOUNT".into());
+    }
+    Ok((index, watch, source.unwrap_or(0)))
 }
 
 fn with_index(
@@ -189,7 +245,7 @@ Usage:\n  \
   neutrasearch [gui]\n  \
   neutrasearch search QUERY [--index INDEX.nsx] [--limit N] [--json]\n  \
   neutrasearch index MOUNT --output INDEX.nsx\n  \
-  neutrasearch serve --index INDEX.nsx\n  \
+  neutrasearch serve --index INDEX.nsx [--watch MOUNT]\n  \
   neutrasearch mcp --index INDEX.nsx\n\n\
 Commands:\n  \
   gui      Open the desktop application (default)\n  \
@@ -234,5 +290,21 @@ mod tests {
             parse_index(vec!["/mnt/data".into()]).unwrap_err(),
             "index requires --output INDEX.nsx"
         );
+    }
+
+    #[test]
+    fn serve_watch_has_explicit_source() {
+        let (index, watch, source) = parse_serve(vec![
+            "--index".into(),
+            "files.nsx".into(),
+            "--watch".into(),
+            "/home".into(),
+            "--source".into(),
+            "4".into(),
+        ])
+        .unwrap();
+        assert_eq!(index, PathBuf::from("files.nsx"));
+        assert_eq!(watch, Some(PathBuf::from("/home")));
+        assert_eq!(source, 4);
     }
 }

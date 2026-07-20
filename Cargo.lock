@@ -2303,6 +2303,7 @@ name = "neutra-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "neutra-btrfs",
  "neutra-core",
  "neutra-ext4",
