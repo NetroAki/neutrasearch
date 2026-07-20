@@ -278,6 +278,27 @@ impl NeutraApp {
                         );
                     }
                     HelperMsg::SearchResult { .. } => {}
+                    HelperMsg::DeltaApplied {
+                        changes,
+                        wal_bytes,
+                        needs_compaction,
+                    } => {
+                        self.lanes.insert(
+                            "delta".into(),
+                            LaneState {
+                                label: "LIVE DELTA".into(),
+                                status: format!(
+                                    "{changes} changes · {wal_bytes} bytes{}",
+                                    if needs_compaction {
+                                        " · compaction due"
+                                    } else {
+                                        ""
+                                    }
+                                ),
+                                ..Default::default()
+                            },
+                        );
+                    }
                 },
             }
         }
