@@ -14,4 +14,4 @@ neutra-remote = { path = "../neutra-remote" }
 anyhow.workspace = true
 eframe = "0.34"
 egui = "0.34"
-egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", default-features = false }
+egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", rev = "10e4f801efab1e777efb02258327ca6b64aaefa7", default-features = false }

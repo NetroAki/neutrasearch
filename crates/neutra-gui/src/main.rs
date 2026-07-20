@@ -7,7 +7,7 @@ use egui_expressive::{M3Theme, StatusBar, StatusBarItem, Theme};
 use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
 use neutra_core::{CompactIndex, FileKind, Index, Query, SearchHit, SearchStats};
 use std::collections::BTreeMap;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -32,6 +32,11 @@ enum Event {
     },
     CompactReady(CompactIndex),
     CompactFailed(String, Index),
+}
+
+enum FileAction {
+    Open(PathBuf),
+    Reveal(PathBuf),
 }
 
 #[derive(Default, Clone)]
@@ -63,6 +68,7 @@ struct NeutraApp {
     treemap_height: f32,
     treemap_open: bool,
     about_open: bool,
+    remote_watcher_started: bool,
 }
 
 fn main() -> eframe::Result<()> {
@@ -88,7 +94,20 @@ impl NeutraApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_theme(&cc.egui_ctx);
         let cache_path = compact_cache_path();
-        let compact = CompactIndex::open(&cache_path).ok();
+        let (compact, cache_error) = if cache_path.is_file() {
+            match CompactIndex::open(&cache_path) {
+                Ok(index) => (Some(index), None),
+                Err(error) => (
+                    None,
+                    Some(format!(
+                        "cannot open durable index {}: {error}",
+                        cache_path.display()
+                    )),
+                ),
+            }
+        } else {
+            (None, None)
+        };
         let restored = if compact.is_none() {
             std::fs::read(legacy_cache_path())
                 .ok()
@@ -119,6 +138,7 @@ impl NeutraApp {
             treemap_height: 170.0,
             treemap_open: true,
             about_open: false,
+            remote_watcher_started: false,
         };
         if has_durable_index {
             app.lanes.insert(
@@ -131,10 +151,34 @@ impl NeutraApp {
                 },
             );
         }
-        if !env_flag("NEUTRASEARCH_NO_REMOTE", "NEUTRA_NO_REMOTE") {
-            spawn_network_watcher(app.tx.clone());
+        if let Some(error) = cache_error {
+            app.lanes.insert(
+                "cache-error".into(),
+                LaneState {
+                    label: "INDEX ERROR".into(),
+                    status: error,
+                    error: true,
+                    ..Default::default()
+                },
+            );
+        } else if !has_durable_index {
+            app.lanes.insert(
+                "welcome".into(),
+                LaneState {
+                    label: "READY".into(),
+                    status: "Choose RESCAN NATIVE INDEX to approve local metadata indexing".into(),
+                    ..Default::default()
+                },
+            );
         }
-        if !has_durable_index && !env_flag("NEUTRASEARCH_NO_AUTOSCAN", "NEUTRA_NO_AUTOSCAN")
+        if env_flag(
+            "NEUTRASEARCH_AUTO_PROVISION_REMOTE",
+            "NEUTRA_AUTO_PROVISION_REMOTE",
+        ) {
+            spawn_network_watcher(app.tx.clone());
+            app.remote_watcher_started = true;
+        }
+        if env_flag("NEUTRASEARCH_AUTOSCAN", "NEUTRA_AUTOSCAN")
             || env_flag("NEUTRASEARCH_FORCE_RESCAN", "NEUTRA_FORCE_RESCAN")
         {
             app.begin_scan();
@@ -354,6 +398,40 @@ impl NeutraApp {
         self.index_len() == 0
     }
     fn requery(&mut self) {
+        if let Some(current_generation) = self.compact.as_ref().map(CompactIndex::generation) {
+            match CompactIndex::generation_on_disk(&self.cache_path) {
+                Ok(on_disk) if on_disk == current_generation => {}
+                Ok(_) => match CompactIndex::open(&self.cache_path) {
+                    Ok(index) => self.compact = Some(index),
+                    Err(error) => {
+                        self.hits.clear();
+                        self.lanes.insert(
+                            "index".into(),
+                            LaneState {
+                                label: "Durable index".into(),
+                                status: format!("replacement rejected: {error}"),
+                                error: true,
+                                ..LaneState::default()
+                            },
+                        );
+                        return;
+                    }
+                },
+                Err(error) => {
+                    self.hits.clear();
+                    self.lanes.insert(
+                        "index".into(),
+                        LaneState {
+                            label: "Durable index".into(),
+                            status: format!("unavailable: {error}"),
+                            error: true,
+                            ..LaneState::default()
+                        },
+                    );
+                    return;
+                }
+            }
+        }
         if self.query.trim().is_empty() {
             self.hits.clear();
             self.search_stats = SearchStats {
@@ -401,6 +479,26 @@ impl NeutraApp {
             .clicked()
         {
             self.begin_scan();
+        }
+        ui.add_space(8.0);
+        if self.remote_watcher_started {
+            ui.label(
+                RichText::new("NETWORK HELPER AUTO-INSTALL ENABLED")
+                    .size(9.0)
+                    .color(WARN),
+            );
+        } else if ui
+            .add_sized(
+                [190.0, 28.0],
+                egui::Button::new("ENABLE NETWORK HELPERS")
+                    .fill(RAISED)
+                    .stroke(Stroke::new(1.0_f32, MUTED)),
+            )
+            .on_hover_text("Allows SSH/SCP installation on servers backing mounted network shares")
+            .clicked()
+        {
+            spawn_network_watcher(self.tx.clone());
+            self.remote_watcher_started = true;
         }
         ui.add_space(18.0);
         ui.label(RichText::new("LANES").size(10.0).color(MUTED).strong());
@@ -688,6 +786,7 @@ impl NeutraApp {
             });
             return;
         }
+        let mut file_action = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, row_h, count, |ui, range| {
@@ -766,15 +865,56 @@ impl NeutraApp {
                     if response.clicked() {
                         self.selected = Some(rec.path.to_string());
                     }
+                    if response.double_clicked() {
+                        file_action = Some(FileAction::Open(PathBuf::from(rec.path.as_ref())));
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button("Open").clicked() {
+                            file_action = Some(FileAction::Open(PathBuf::from(rec.path.as_ref())));
+                            ui.close();
+                        }
+                        if ui.button("Reveal in file manager").clicked() {
+                            file_action =
+                                Some(FileAction::Reveal(PathBuf::from(rec.path.as_ref())));
+                            ui.close();
+                        }
+                        if ui.button("Copy path").clicked() {
+                            ui.ctx().copy_text(rec.path.to_string());
+                            ui.close();
+                        }
+                    });
                 }
             });
+        if let Some(action) = file_action {
+            let description = match &action {
+                FileAction::Open(path) => format!("open {}", path.display()),
+                FileAction::Reveal(path) => format!("reveal {}", path.display()),
+            };
+            let result = launch_file_action(action);
+            self.lanes.insert(
+                "file-action".into(),
+                LaneState {
+                    label: "FILE ACTION".into(),
+                    status: match &result {
+                        Ok(()) => description,
+                        Err(error) => format!("{description}: {error}"),
+                    },
+                    error: result.is_err(),
+                    ..Default::default()
+                },
+            );
+        }
     }
 }
 
 impl eframe::App for NeutraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_events();
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
+        if self.scanning || self.building_cache {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        } else if self.remote_watcher_started {
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
         let size = ui.available_size();
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         ui.horizontal(|ui| {
@@ -828,27 +968,133 @@ impl eframe::App for NeutraApp {
     }
 }
 
+fn launch_file_action(action: FileAction) -> std::io::Result<()> {
+    let mut command = match action {
+        FileAction::Open(path) => {
+            #[cfg(target_os = "windows")]
+            {
+                let mut command = Command::new("explorer.exe");
+                command.arg(path);
+                command
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let mut command = Command::new("open");
+                command.arg(path);
+                command
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                let mut command = Command::new("xdg-open");
+                command.arg(path);
+                command
+            }
+        }
+        FileAction::Reveal(path) => {
+            #[cfg(target_os = "windows")]
+            {
+                let mut command = Command::new("explorer.exe");
+                command.arg(format!("/select,{}", path.display()));
+                command
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let mut command = Command::new("open");
+                command.arg("-R").arg(path);
+                command
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                let mut command = Command::new("xdg-open");
+                command.arg(path.parent().unwrap_or(&path));
+                command
+            }
+        }
+    };
+    command.spawn()?;
+    Ok(())
+}
+
+fn select_helper(
+    configured: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+    elevated: bool,
+) -> Result<PathBuf, String> {
+    if elevated && configured.is_some() {
+        return Err(
+            "refusing to elevate a helper selected through NEUTRASEARCH_HELPER; install trusted sibling binaries"
+                .into(),
+        );
+    }
+    let sibling = current_exe.map(|path| {
+        path.with_file_name(if cfg!(windows) {
+            "neutrasearch-helper.exe"
+        } else {
+            "neutrasearch-helper"
+        })
+    });
+    if elevated {
+        let helper = sibling.ok_or_else(|| "cannot locate installed helper sibling".to_string())?;
+        return validate_elevated_helper(&helper);
+    }
+    Ok(configured
+        .or(sibling)
+        .unwrap_or_else(|| PathBuf::from("neutrasearch-helper")))
+}
+
+#[cfg(unix)]
+fn validate_elevated_helper(path: &std::path::Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "cannot resolve installed helper {}: {error}",
+            path.display()
+        )
+    })?;
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        format!(
+            "cannot inspect installed helper {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(format!(
+            "refusing to elevate untrusted helper {}; it must be a root-owned regular file not writable by group/others",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(not(unix))]
+fn validate_elevated_helper(path: &std::path::Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path).map_err(|error| {
+        format!(
+            "cannot resolve installed helper {}: {error}",
+            path.display()
+        )
+    })
+}
+
 fn spawn_local_helper(tx: Sender<Event>) {
     std::thread::spawn(move || {
-        let helper = std::env::var_os("NEUTRASEARCH_HELPER")
+        let configured = std::env::var_os("NEUTRASEARCH_HELPER")
             .or_else(|| std::env::var_os("NEUTRA_HELPER"))
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::current_exe().ok().map(|p| {
-                    p.with_file_name(if cfg!(windows) {
-                        "neutrasearch-helper.exe"
-                    } else {
-                        "neutrasearch-helper"
-                    })
-                })
-            })
-            .unwrap_or_else(|| PathBuf::from("neutrasearch-helper"));
-        let elevated = std::env::var_os("NEUTRASEARCH_PKEXEC").is_some()
-            || std::env::var_os("NEUTRA_PKEXEC").is_some();
-        let mut cmd = if cfg!(target_os = "linux") && elevated {
-            let mut c = Command::new("pkexec");
-            c.arg(helper);
-            c
+            .map(PathBuf::from);
+        let elevated = cfg!(target_os = "linux")
+            && (std::env::var_os("NEUTRASEARCH_PKEXEC").is_some()
+                || std::env::var_os("NEUTRA_PKEXEC").is_some());
+        let helper = match select_helper(configured, std::env::current_exe().ok(), elevated) {
+            Ok(helper) => helper,
+            Err(error) => {
+                let _ = tx.send(Event::Fatal(error));
+                return;
+            }
+        };
+        let mut cmd = if elevated {
+            let mut command = Command::new("pkexec");
+            command.arg(helper);
+            command
         } else {
             Command::new(helper)
         };
@@ -866,6 +1112,13 @@ fn spawn_local_helper(tx: Sender<Event>) {
                 return;
             }
         };
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    eprintln!("neutrasearch-helper: {line}");
+                }
+            });
+        }
         let (mut input, mut output) = (
             BufWriter::new(child.stdin.take().unwrap()),
             BufReader::new(child.stdout.take().unwrap()),
@@ -1059,9 +1312,30 @@ fn compact_cache_path() -> PathBuf {
     if let Some(path) = configured_index() {
         return path;
     }
-    let mut path = legacy_cache_path();
-    path.set_extension("nsx");
-    path
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Neutrasearch/index.nsx");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Application Support/Neutrasearch/index.nsx");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("neutrasearch/index.nsx")
+    }
 }
 #[derive(Clone)]
 struct MapBlock {
@@ -1156,4 +1430,31 @@ fn shorten(s: &str, max: usize) -> String {
         .rev()
         .collect::<String>();
     format!("…{tail}")
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn elevated_helper_cannot_come_from_environment_override() {
+        let error = select_helper(
+            Some(PathBuf::from("/tmp/untrusted-helper")),
+            Some(PathBuf::from("/usr/bin/neutrasearch")),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("refusing to elevate"));
+    }
+
+    #[test]
+    fn normal_helper_override_remains_available_for_development() {
+        let helper = select_helper(
+            Some(PathBuf::from("custom-helper")),
+            Some(PathBuf::from("neutrasearch")),
+            false,
+        )
+        .unwrap();
+        assert_eq!(helper, PathBuf::from("custom-helper"));
+    }
 }

@@ -2,7 +2,8 @@
 //! neutrasearch-helper (local privileged process or remote server helper).
 //!
 //! Framing: 4-byte little-endian length + bincode payload. Identical over a
-//! child's stdout pipe, an `ssh host neutrasearch-helper` channel, or a TCP socket.
+//! child's stdout pipe or an authenticated SSH child process. This protocol is
+//! not a network authentication layer and must not be exposed as a TCP service.
 
 use crate::delta::DeltaChange;
 use crate::mounts::MountInfo;
@@ -12,12 +13,13 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol version; helper and client refuse to talk across major versions.
-pub const PROTO_VERSION: u32 = 3;
+pub const PROTO_VERSION: u32 = 4;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 4;
+pub const HELPER_BUILD: u32 = 5;
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
@@ -71,6 +73,12 @@ pub enum HelperMsg {
 
 pub fn write_frame<W: Write>(w: &mut W, msg: &impl Serialize) -> bincode::Result<()> {
     let payload = bincode::serialize(msg)?;
+    if payload.len() > MAX_FRAME_BYTES {
+        return Err(Box::new(bincode::ErrorKind::Custom(format!(
+            "frame length {} exceeds cap",
+            payload.len()
+        ))));
+    }
     let len = u32::try_from(payload.len())
         .map_err(|_| Box::new(bincode::ErrorKind::Custom("frame too large".into())))?;
     w.write_all(&len.to_le_bytes())?;
@@ -91,8 +99,8 @@ where
         Err(e) => return Err(Box::new(bincode::ErrorKind::Io(e))),
     }
     let len = u32::from_le_bytes(len_buf) as usize;
-    // 64 MiB hard cap: a malicious or corrupted peer must not OOM us.
-    if len > 64 * 1024 * 1024 {
+    // Hard cap: a malicious or corrupted peer must not force an unbounded allocation.
+    if len > MAX_FRAME_BYTES {
         return Err(Box::new(bincode::ErrorKind::Custom(format!(
             "frame length {len} exceeds cap"
         ))));
@@ -106,6 +114,13 @@ where
 mod tests {
     use super::*;
     use crate::query::Query;
+
+    #[test]
+    fn oversized_frame_is_rejected_before_payload_allocation() {
+        let length = u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_le_bytes();
+        let error = read_frame::<_, ClientMsg>(&mut &length[..]).unwrap_err();
+        assert!(error.to_string().contains("exceeds cap"));
+    }
 
     #[test]
     fn frame_roundtrip() {

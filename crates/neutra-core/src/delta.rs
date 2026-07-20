@@ -117,13 +117,7 @@ impl DeltaIndex {
             let mut reader = BufReader::new(File::open(path)?.take(file_bytes));
             read_header(&mut reader, generation)?;
             let mut verified_bytes = HEADER;
-            replay_frames(
-                &mut reader,
-                file_bytes,
-                &mut verified_bytes,
-                &mut upserts,
-                &mut removed,
-            )?;
+            replay_frames(&mut reader, &mut verified_bytes, &mut upserts, &mut removed)?;
             wal_bytes = verified_bytes;
         }
         let writer = if writable {
@@ -222,7 +216,6 @@ impl DeltaIndex {
         let old_bytes = self.wal_bytes;
         replay_frames(
             &mut reader,
-            file_bytes,
             &mut self.wal_bytes,
             &mut self.upserts,
             &mut self.removed,
@@ -273,7 +266,6 @@ fn read_header(reader: &mut impl Read, generation: u64) -> io::Result<()> {
 
 fn replay_frames(
     reader: &mut impl Read,
-    file_bytes: u64,
     verified_bytes: &mut u64,
     upserts: &mut HashMap<Box<str>, FileRecord>,
     removed: &mut HashSet<Box<str>>,
@@ -303,9 +295,6 @@ fn replay_frames(
         }
         let frame_end = *verified_bytes + 8 + len as u64;
         if crc32fast::hash(&payload) != u32::from_le_bytes(expected_crc) {
-            if frame_end == file_bytes {
-                break;
-            }
             return Err(invalid("delta frame checksum mismatch"));
         }
         let change: DeltaChange = bincode::deserialize(&payload).map_err(codec)?;
@@ -337,11 +326,12 @@ fn lock_path(path: &Path) -> PathBuf {
     lock.into()
 }
 fn truncate_private(path: &Path, len: u64) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?;
+    reject_symlink(path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    configure_private_options(&mut options);
+    let file = options.open(path)?;
+    validate_private_file(&file)?;
     file.set_len(len)?;
     file.sync_data()
 }
@@ -354,16 +344,64 @@ fn open_reset_writer(path: &Path, generation: u64) -> io::Result<BufWriter<File>
     Ok(BufWriter::with_capacity(64 * 1024, file))
 }
 fn open_append_private(path: &Path) -> io::Result<File> {
+    reject_symlink(path)?;
     let mut options = OpenOptions::new();
     // Windows append access alone cannot truncate a torn tail with SetEndOfFile.
     // Keep append semantics for frames while also requesting general write access.
     options.create(true).append(true).write(true).read(true);
+    configure_private_options(&mut options);
+    let file = options.open(path)?;
+    validate_private_file(&file)?;
+    Ok(file)
+}
+
+fn configure_private_options(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
-    options.open(path)
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+}
+
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing symlinked private state file {}", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_private_file(file: &File) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "private state path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "private state file must be owner-only and have exactly one link",
+            ));
+        }
+    }
+    Ok(())
 }
 fn codec(error: impl std::fmt::Display) -> io::Error {
     invalid(format!("delta codec: {error}"))
@@ -424,6 +462,23 @@ mod tests {
     }
 
     #[test]
+    fn complete_frame_with_bad_checksum_fails_closed() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-delta-corrupt-{}.wal", std::process::id()));
+        remove_log(&path);
+        let mut delta = DeltaIndex::open(&path, 11).unwrap();
+        delta.apply(DeltaChange::Upsert(record("/a", 1))).unwrap();
+        delta.sync().unwrap();
+        drop(delta);
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 0x80;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(DeltaIndex::open(&path, 11).is_err());
+        remove_log(&path);
+    }
+
+    #[test]
     fn torn_tail_is_truncated_before_new_appends() {
         let path =
             std::env::temp_dir().join(format!("neutra-delta-tail-{}.wal", std::process::id()));
@@ -451,6 +506,32 @@ mod tests {
         assert_eq!(reopened.upserts().count(), 2);
         drop(reopened);
         remove_log(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_refuses_symlinked_wal_and_lock_files() {
+        use std::os::unix::fs::symlink;
+
+        let path =
+            std::env::temp_dir().join(format!("neutra-delta-symlink-{}.wal", std::process::id()));
+        let victim = path.with_extension("victim");
+        remove_log(&path);
+        let _ = std::fs::remove_file(&victim);
+        std::fs::write(&victim, b"do not truncate").unwrap();
+        symlink(&victim, &path).unwrap();
+        assert!(DeltaIndex::replace_empty(&path, 7).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not truncate");
+        std::fs::remove_file(&path).unwrap();
+        remove_log(&path);
+
+        let lock = lock_path(&path);
+        symlink(&victim, &lock).unwrap();
+        assert!(DeltaIndex::open(&path, 7).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not truncate");
+        std::fs::remove_file(lock).unwrap();
+        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(victim).unwrap();
     }
 
     #[test]

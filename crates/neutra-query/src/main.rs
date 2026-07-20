@@ -116,10 +116,12 @@ fn serve(
         }
         let request: Request = serde_json::from_str(&line)?;
         let response = (|| {
-            let reopen = match &mut delta {
-                Some(delta) => delta.refresh().is_err(),
-                None => delta_path(path).is_file(),
-            };
+            let base_replaced = CompactIndex::generation_on_disk(path)? != index.generation();
+            let reopen = base_replaced
+                || match &mut delta {
+                    Some(delta) => delta.refresh().is_err(),
+                    None => delta_path(path).is_file(),
+                };
             if reopen {
                 (index, delta) =
                     open_pair(path).context("reopen compact index after replacement")?;
@@ -197,13 +199,15 @@ fn default_index_path() -> PathBuf {
         return std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default()
-            .join("Library/Caches/Neutrasearch/index.nsx");
+            .join("Library/Application Support/Neutrasearch/index.nsx");
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        std::env::var_os("XDG_CACHE_HOME")
+        std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
             .unwrap_or_default()
             .join("neutrasearch/index.nsx")
     }
