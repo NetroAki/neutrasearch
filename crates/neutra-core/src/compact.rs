@@ -142,6 +142,23 @@ impl CompactIndex {
         })
     }
 
+    /// Atomically publish a fully built sibling index at the destination.
+    /// The caller must release destination mmaps first on platforms that do
+    /// not permit replacing a mapped file.
+    pub fn publish(staged: &Path, destination: &Path) -> io::Result<()> {
+        let verified = Self::open(staged)?;
+        drop(verified);
+        let temporary = temp_path(destination);
+        let mut source = File::open(staged)?;
+        let mut copy = open_private(&temporary)?;
+        std::io::copy(&mut source, &mut copy)?;
+        copy.flush()?;
+        copy.get_ref().sync_all()?;
+        drop(copy);
+        replace_file(&temporary, destination)?;
+        sync_parent(destination)
+    }
+
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
         let map = unsafe { Mmap::map(&file)? };
@@ -194,6 +211,35 @@ impl CompactIndex {
         })
     }
 
+    /// Open a coherent read-only base+delta pair, including either side of an
+    /// in-progress journaled compaction. Readers prefer the current pair and
+    /// use the staged base only when its generation matches the reset WAL.
+    pub fn open_with_delta_snapshot(path: &Path) -> io::Result<(Self, Option<DeltaIndex>)> {
+        let base = Self::open(path)?;
+        let mut delta_path = path.to_path_buf();
+        delta_path.set_extension("delta");
+        if !delta_path.is_file() {
+            return Ok((base, None));
+        }
+        match DeltaIndex::open_snapshot(&delta_path, base.generation()) {
+            Ok(delta) => Ok((base, Some(delta))),
+            Err(current_error) => {
+                let marker = suffix_path(path, ".compacting");
+                let staged_path = suffix_path(path, ".compact");
+                if !marker.is_file() || !staged_path.is_file() {
+                    return Err(current_error);
+                }
+                let staged = Self::open(&staged_path)?;
+                match DeltaIndex::open_snapshot(&delta_path, staged.generation()) {
+                    Ok(delta) => Ok((staged, Some(delta))),
+                    Err(staged_error) => Err(invalid(format!(
+                        "neither current nor staged base matches the delta: current={current_error}; staged={staged_error}"
+                    ))),
+                }
+            }
+        }
+    }
+
     pub fn len(&self) -> u64 {
         self.record_count
     }
@@ -205,6 +251,16 @@ impl CompactIndex {
     }
     pub fn mapped_bytes(&self) -> usize {
         self.map.len()
+    }
+
+    /// Return every base record in path order. Used by compaction to rewrite
+    /// the base from current logical content rather than a WAL snapshot.
+    pub fn records(&self) -> io::Result<Vec<FileRecord>> {
+        let mut out = Vec::with_capacity(self.record_count as usize);
+        for id in 0..self.blocks.len() as u32 {
+            out.extend(self.read_block(id)?);
+        }
+        Ok(out)
     }
 
     pub fn search(&self, q: &Query) -> io::Result<(Vec<SearchHit>, SearchStats)> {
@@ -452,9 +508,12 @@ fn new_generation() -> u64 {
 }
 
 fn temp_path(path: &Path) -> PathBuf {
-    let mut p = path.as_os_str().to_os_string();
-    p.push(".new");
-    p.into()
+    suffix_path(path, ".new")
+}
+fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    value.into()
 }
 fn open_private(path: &Path) -> io::Result<BufWriter<File>> {
     let mut o = OpenOptions::new();
@@ -558,6 +617,91 @@ mod tests {
         assert_eq!(hits[0].record.path.as_ref(), "/opt/gamma/notes.txt");
         drop(index);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn publishing_replacement_keeps_existing_mmap_readable() {
+        let stem = format!("neutra-publish-{}", std::process::id());
+        let base_path = std::env::temp_dir().join(format!("{stem}.idx"));
+        let staged_path = std::env::temp_dir().join(format!("{stem}.staged"));
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&staged_path);
+        CompactIndex::build(&[rec("/old.txt", 1)], &base_path).unwrap();
+        let old = CompactIndex::open(&base_path).unwrap();
+        CompactIndex::build(&[rec("/new.txt", 2)], &staged_path).unwrap();
+        let staged_reader = CompactIndex::open(&staged_path).unwrap();
+
+        CompactIndex::publish(&staged_path, &base_path).unwrap();
+        let new = CompactIndex::open(&base_path).unwrap();
+        assert_eq!(
+            old.search(&Query::parse("old")).unwrap().0[0]
+                .record
+                .path
+                .as_ref(),
+            "/old.txt"
+        );
+        assert_eq!(
+            new.search(&Query::parse("new")).unwrap().0[0]
+                .record
+                .path
+                .as_ref(),
+            "/new.txt"
+        );
+        assert_eq!(
+            staged_reader.search(&Query::parse("new")).unwrap().0[0]
+                .record
+                .path
+                .as_ref(),
+            "/new.txt"
+        );
+        drop(new);
+        drop(old);
+        drop(staged_reader);
+        std::fs::remove_file(base_path).unwrap();
+        std::fs::remove_file(staged_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_reader_selects_coherent_side_of_compaction_marker() {
+        let stem = format!("neutra-pair-{}", std::process::id());
+        let base_path = std::env::temp_dir().join(format!("{stem}.idx"));
+        let mut delta_path = base_path.clone();
+        delta_path.set_extension("delta");
+        let staged_path = suffix_path(&base_path, ".compact");
+        let marker_path = suffix_path(&base_path, ".compacting");
+        for path in [&base_path, &delta_path, &staged_path, &marker_path] {
+            let _ = std::fs::remove_file(path);
+        }
+        CompactIndex::build(&[rec("/old.txt", 1)], &base_path).unwrap();
+        let old_generation = CompactIndex::open(&base_path).unwrap().generation();
+        let mut delta = DeltaIndex::open(&delta_path, old_generation).unwrap();
+        let staged = CompactIndex::build(&[rec("/new.txt", 2)], &staged_path).unwrap();
+        std::fs::write(&marker_path, staged.generation.to_le_bytes()).unwrap();
+
+        let (current, current_delta) = CompactIndex::open_with_delta_snapshot(&base_path).unwrap();
+        assert_eq!(current.generation(), old_generation);
+        assert_eq!(current_delta.unwrap().generation(), old_generation);
+        drop(current);
+
+        delta.reset(staged.generation).unwrap();
+        let (replacement, replacement_delta) =
+            CompactIndex::open_with_delta_snapshot(&base_path).unwrap();
+        assert_eq!(replacement.generation(), staged.generation);
+        assert_eq!(replacement_delta.unwrap().generation(), staged.generation);
+        drop(replacement);
+        drop(delta);
+
+        let mut lock_path = delta_path.as_os_str().to_os_string();
+        lock_path.push(".lock");
+        for path in [
+            base_path,
+            delta_path,
+            staged_path,
+            marker_path,
+            lock_path.into(),
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

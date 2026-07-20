@@ -73,12 +73,11 @@ fn main() -> Result<()> {
         }
     }
     let path = index_path.unwrap_or_else(default_index_path);
-    let index = CompactIndex::open(&path)
-        .with_context(|| format!("open compact index {}", path.display()))?;
-    let delta = open_delta(&path, index.generation())?;
+    let (index, delta) = open_pair(&path)?;
     if stdio {
         return serve(
-            &index,
+            &path,
+            index,
             delta,
             std::io::stdin().lock(),
             std::io::stdout().lock(),
@@ -104,7 +103,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 fn serve(
-    index: &CompactIndex,
+    path: &std::path::Path,
+    mut index: CompactIndex,
     mut delta: Option<DeltaIndex>,
     input: impl BufRead,
     mut output: impl Write,
@@ -115,10 +115,18 @@ fn serve(
             continue;
         }
         let request: Request = serde_json::from_str(&line)?;
-        if let Some(delta) = &mut delta {
-            delta.refresh()?;
-        }
-        match run(index, delta.as_ref(), request) {
+        let response = (|| {
+            let reopen = match &mut delta {
+                Some(delta) => delta.refresh().is_err(),
+                None => delta_path(path).is_file(),
+            };
+            if reopen {
+                (index, delta) =
+                    open_pair(path).context("reopen compact index after replacement")?;
+            }
+            run(&index, delta.as_ref(), request)
+        })();
+        match response {
             Ok(response) => serde_json::to_writer(&mut output, &response)?,
             Err(error) => {
                 serde_json::to_writer(&mut output, &serde_json::json!({"error":error.to_string()}))?
@@ -160,15 +168,15 @@ fn response(hits: Vec<SearchHit>, stats: SearchStats, metadata: bool) -> Respons
         records,
     }
 }
-fn open_delta(base: &std::path::Path, generation: u64) -> Result<Option<DeltaIndex>> {
+fn open_pair(path: &std::path::Path) -> Result<(CompactIndex, Option<DeltaIndex>)> {
+    CompactIndex::open_with_delta_snapshot(path)
+        .with_context(|| format!("open compact index pair {}", path.display()))
+}
+
+fn delta_path(base: &std::path::Path) -> PathBuf {
     let mut path = base.to_path_buf();
     path.set_extension("delta");
-    if !path.is_file() {
-        return Ok(None);
-    }
-    DeltaIndex::open_snapshot(&path, generation)
-        .map(Some)
-        .with_context(|| format!("open delta index {}", path.display()))
+    path
 }
 
 fn default_index_path() -> PathBuf {
@@ -224,7 +232,8 @@ mod tests {
         let index = CompactIndex::open(&path).unwrap();
         let mut output = Vec::new();
         serve(
-            &index,
+            &path,
+            index,
             None,
             "{\"query\":\"needle\",\"limit\":5}\n".as_bytes(),
             &mut output,
@@ -232,7 +241,6 @@ mod tests {
         .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(value["paths"][0], "/src/needle.rs");
-        drop(index);
         std::fs::remove_file(path).unwrap();
     }
 }

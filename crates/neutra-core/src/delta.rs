@@ -10,7 +10,8 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"NEUTDLT1";
-const HEADER: u64 = 16;
+pub const DELTA_HEADER_BYTES: u64 = 16;
+const HEADER: u64 = DELTA_HEADER_BYTES;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const DEFAULT_COMPACT_AT: u64 = 64 * 1024 * 1024;
 
@@ -41,6 +42,46 @@ impl DeltaIndex {
     }
     pub fn open_with_threshold(path: &Path, generation: u64, compact_at: u64) -> io::Result<Self> {
         Self::open_mode(path, generation, compact_at, true)
+    }
+    /// Replace an unreadable/torn WAL with an empty generation-bound writer.
+    /// Only compaction recovery should call this after verifying that a staged
+    /// base already contains the logical overlay.
+    pub fn replace_empty(path: &Path, generation: u64) -> io::Result<Self> {
+        Self::replace_empty_with_threshold(path, generation, DEFAULT_COMPACT_AT)
+    }
+    pub fn replace_empty_with_threshold(
+        path: &Path,
+        generation: u64,
+        compact_at: u64,
+    ) -> io::Result<Self> {
+        if generation == 0 {
+            return Err(invalid("delta requires a nonzero base generation"));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lock_file = open_append_private(&lock_path(path))?;
+        lock_file.try_lock_exclusive().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("delta log already has a writer: {error}"),
+            )
+        })?;
+        let mut file = open_append_private(path)?;
+        file.set_len(0)?;
+        file.write_all(MAGIC)?;
+        file.write_all(&generation.to_le_bytes())?;
+        file.sync_all()?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            generation,
+            writer: Some(BufWriter::with_capacity(64 * 1024, file)),
+            _lock_file: Some(lock_file),
+            upserts: HashMap::new(),
+            removed: HashSet::new(),
+            wal_bytes: HEADER,
+            compact_at: compact_at.max(HEADER + 1),
+        })
     }
     fn open_mode(
         path: &Path,
@@ -138,6 +179,27 @@ impl DeltaIndex {
         writer.flush()?;
         writer.get_ref().sync_data()
     }
+    /// Reset this writer to an empty WAL for a replacement base generation.
+    /// The stable writer lock remains held throughout the transition.
+    pub fn reset(&mut self, generation: u64) -> io::Result<()> {
+        if generation == 0 {
+            return Err(invalid("delta requires a nonzero base generation"));
+        }
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "read-only delta snapshot")
+        })?;
+        writer.flush()?;
+        writer.get_mut().set_len(0)?;
+        writer.write_all(MAGIC)?;
+        writer.write_all(&generation.to_le_bytes())?;
+        writer.flush()?;
+        writer.get_ref().sync_data()?;
+        self.generation = generation;
+        self.upserts.clear();
+        self.removed.clear();
+        self.wal_bytes = HEADER;
+        Ok(())
+    }
     /// Tail complete CRC-verified frames appended since this read-only snapshot
     /// was opened. A concurrently written partial final frame remains invisible
     /// until a later refresh.
@@ -146,14 +208,17 @@ impl DeltaIndex {
             return Ok(0);
         }
         let file_bytes = std::fs::metadata(&self.path)?.len();
+        let mut file = File::open(&self.path)?;
+        // A compaction reset can keep an empty WAL at the same byte length.
+        // Validate the generation before the length fast path so persistent
+        // readers never continue serving the old mmap base silently.
+        read_header(&mut file, self.generation)?;
         if file_bytes < self.wal_bytes {
             return Err(invalid("delta log was replaced or truncated"));
         }
         if file_bytes == self.wal_bytes {
             return Ok(0);
         }
-        let mut file = File::open(&self.path)?;
-        read_header(&mut file, self.generation)?;
         file.seek(SeekFrom::Start(self.wal_bytes))?;
         let mut reader = BufReader::new(file.take(file_bytes - self.wal_bytes));
         let old_bytes = self.wal_bytes;
@@ -168,6 +233,9 @@ impl DeltaIndex {
     }
     pub fn upserts(&self) -> impl Iterator<Item = &FileRecord> {
         self.upserts.values()
+    }
+    pub fn removed(&self) -> impl Iterator<Item = &Box<str>> {
+        self.removed.iter()
     }
     pub fn is_removed(&self, path: &str) -> bool {
         self.removed.contains(path)
@@ -372,6 +440,36 @@ mod tests {
         let reopened = DeltaIndex::open(&path, 9).unwrap();
         assert_eq!(reopened.upserts().count(), 2);
         drop(reopened);
+        remove_log(&path);
+    }
+
+    #[test]
+    fn reset_rebinds_the_empty_wal_without_releasing_the_writer_lock() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-delta-reset-{}.wal", std::process::id()));
+        remove_log(&path);
+        let mut delta = DeltaIndex::open(&path, 7).unwrap();
+        let mut stale_snapshot = DeltaIndex::open_snapshot(&path, 7).unwrap();
+        delta.apply(DeltaChange::Upsert(record("/a", 1))).unwrap();
+        delta.sync().unwrap();
+
+        delta.reset(8).unwrap();
+        assert!(stale_snapshot.refresh().is_err());
+        drop(stale_snapshot);
+        assert_eq!(delta.generation(), 8);
+        assert_eq!(delta.wal_bytes(), HEADER);
+        assert_eq!(delta.change_count(), 0);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), HEADER);
+        assert!(matches!(
+            DeltaIndex::open(&path, 8),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        drop(delta);
+
+        let reopened = DeltaIndex::open(&path, 8).unwrap();
+        assert_eq!(reopened.change_count(), 0);
+        drop(reopened);
+        assert!(DeltaIndex::open(&path, 7).is_err());
         remove_log(&path);
     }
 
