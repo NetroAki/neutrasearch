@@ -67,15 +67,11 @@ impl DeltaIndex {
                 format!("delta log already has a writer: {error}"),
             )
         })?;
-        let mut file = open_append_private(path)?;
-        file.set_len(0)?;
-        file.write_all(MAGIC)?;
-        file.write_all(&generation.to_le_bytes())?;
-        file.sync_all()?;
+        let writer = open_reset_writer(path, generation)?;
         Ok(Self {
             path: path.to_path_buf(),
             generation,
-            writer: Some(BufWriter::with_capacity(64 * 1024, file)),
+            writer: Some(writer),
             _lock_file: Some(lock_file),
             upserts: HashMap::new(),
             removed: HashSet::new(),
@@ -185,15 +181,17 @@ impl DeltaIndex {
         if generation == 0 {
             return Err(invalid("delta requires a nonzero base generation"));
         }
-        let writer = self.writer.as_mut().ok_or_else(|| {
+        let mut old_writer = self.writer.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, "read-only delta snapshot")
         })?;
-        writer.flush()?;
-        writer.get_mut().set_len(0)?;
-        writer.write_all(MAGIC)?;
-        writer.write_all(&generation.to_le_bytes())?;
-        writer.flush()?;
-        writer.get_ref().sync_data()?;
+        old_writer.flush()?;
+        old_writer.get_ref().sync_data()?;
+        drop(old_writer);
+        // Windows cannot truncate through an append-mode handle. Keep the
+        // sibling writer lock, close append, truncate with a dedicated handle,
+        // then reopen append for subsequent frames.
+        let writer = open_reset_writer(&self.path, generation)?;
+        self.writer = Some(writer);
         self.generation = generation;
         self.upserts.clear();
         self.removed.clear();
@@ -339,9 +337,21 @@ fn lock_path(path: &Path) -> PathBuf {
     lock.into()
 }
 fn truncate_private(path: &Path, len: u64) -> io::Result<()> {
-    let file = OpenOptions::new().write(true).open(path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
     file.set_len(len)?;
     file.sync_data()
+}
+fn open_reset_writer(path: &Path, generation: u64) -> io::Result<BufWriter<File>> {
+    truncate_private(path, 0)?;
+    let mut file = open_append_private(path)?;
+    file.write_all(MAGIC)?;
+    file.write_all(&generation.to_le_bytes())?;
+    file.sync_all()?;
+    Ok(BufWriter::with_capacity(64 * 1024, file))
 }
 fn open_append_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
