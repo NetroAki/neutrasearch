@@ -1,0 +1,13 @@
+[package]
+name = "neutra-zfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+zfs-libzpool = []
+
+[dependencies]
+neutra-core.workspace = true
+anyhow.workspace = true
