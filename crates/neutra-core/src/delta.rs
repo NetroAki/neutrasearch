@@ -227,7 +227,9 @@ fn lock_path(path: &Path) -> PathBuf {
 }
 fn open_append_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.create(true).append(true).read(true);
+    // `write(true)` is required for SetEndOfFile during torn-tail recovery on
+    // Windows; append still keeps normal frame writes at the end.
+    options.create(true).append(true).write(true).read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
