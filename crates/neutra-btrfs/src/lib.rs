@@ -3,8 +3,12 @@
 //! No `read_dir`, `stat`, or mounted-tree walk exists in this crate. Tree id
 //! zero asks the kernel for the subvolume containing the opened mountpoint.
 
-use anyhow::{bail, Context, Result};
-use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
+#[cfg(target_os = "linux")]
+use anyhow::Context;
+use anyhow::{bail, Result};
+#[cfg(target_os = "linux")]
+use neutra_core::{FileKind, FsKind};
+use neutra_core::{FileRecord, MountInfo, ScanStats};
 
 #[cfg(target_os = "linux")]
 mod linux {
