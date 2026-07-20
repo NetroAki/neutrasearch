@@ -8,6 +8,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
+const MAGIC: &[u8; 8] = b"NEUTDLT1";
+const HEADER: u64 = 16;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const DEFAULT_COMPACT_AT: u64 = 64 * 1024 * 1024;
 
@@ -19,6 +21,7 @@ pub enum DeltaChange {
 
 pub struct DeltaIndex {
     path: PathBuf,
+    generation: u64,
     writer: BufWriter<File>,
     upserts: HashMap<Box<str>, FileRecord>,
     removed: HashSet<Box<str>>,
@@ -26,17 +29,31 @@ pub struct DeltaIndex {
     compact_at: u64,
 }
 impl DeltaIndex {
-    pub fn open(path: &Path) -> io::Result<Self> {
-        Self::open_with_threshold(path, DEFAULT_COMPACT_AT)
+    pub fn open(path: &Path, generation: u64) -> io::Result<Self> {
+        Self::open_with_threshold(path, generation, DEFAULT_COMPACT_AT)
     }
-    pub fn open_with_threshold(path: &Path, compact_at: u64) -> io::Result<Self> {
+    pub fn open_with_threshold(path: &Path, generation: u64, compact_at: u64) -> io::Result<Self> {
+        if generation == 0 {
+            return Err(invalid("delta requires a nonzero base generation"));
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut upserts = HashMap::new();
         let mut removed = HashSet::new();
-        if path.is_file() {
+        let mut wal_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if wal_bytes > 0 {
             let mut reader = BufReader::new(File::open(path)?);
+            let mut magic = [0u8; 8];
+            reader.read_exact(&mut magic)?;
+            if &magic != MAGIC {
+                return Err(invalid("not a Neutrasearch delta log"));
+            }
+            let mut stored_generation = [0u8; 8];
+            reader.read_exact(&mut stored_generation)?;
+            if u64::from_le_bytes(stored_generation) != generation {
+                return Err(invalid("delta log belongs to a different base generation"));
+            }
             loop {
                 let mut len = [0u8; 4];
                 match reader.read_exact(&mut len) {
@@ -59,15 +76,22 @@ impl DeltaIndex {
                 apply_memory(&mut upserts, &mut removed, change);
             }
         }
-        let wal_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let writer = BufWriter::with_capacity(64 * 1024, open_append_private(path)?);
+        let mut file = open_append_private(path)?;
+        if wal_bytes == 0 {
+            file.write_all(MAGIC)?;
+            file.write_all(&generation.to_le_bytes())?;
+            file.sync_data()?;
+            wal_bytes = HEADER;
+        }
+        let writer = BufWriter::with_capacity(64 * 1024, file);
         Ok(Self {
             path: path.to_path_buf(),
+            generation,
             writer,
             upserts,
             removed,
             wal_bytes,
-            compact_at: compact_at.max(1),
+            compact_at: compact_at.max(HEADER + 1),
         })
     }
     pub fn apply(&mut self, change: DeltaChange) -> io::Result<()> {
@@ -97,6 +121,9 @@ impl DeltaIndex {
     }
     pub fn shadows(&self, path: &str) -> bool {
         self.removed.contains(path) || self.upserts.contains_key(path)
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn wal_bytes(&self) -> u64 {
         self.wal_bytes
@@ -166,16 +193,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("neutra-delta-{}.wal", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
-            let mut delta = DeltaIndex::open_with_threshold(&path, 1).unwrap();
+            let mut delta = DeltaIndex::open_with_threshold(&path, 7, 1).unwrap();
             delta.apply(DeltaChange::Upsert(record("/a", 1))).unwrap();
             delta.apply(DeltaChange::Upsert(record("/b", 2))).unwrap();
             delta.apply(DeltaChange::Remove("/a".into())).unwrap();
             delta.sync().unwrap();
             assert!(delta.needs_compaction());
         }
-        let delta = DeltaIndex::open(&path).unwrap();
+        let delta = DeltaIndex::open(&path, 7).unwrap();
         assert!(delta.is_removed("/a"));
         assert_eq!(delta.upserts().next().unwrap().path.as_ref(), "/b");
+        drop(delta);
+        assert!(DeltaIndex::open(&path, 8).is_err());
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! The base is immutable and mmapped. Clean mapped pages are reclaimable, so
 //! opening a large index does not imply keeping it resident while idle.
-use crate::{FileRecord, Query, SearchHit, SearchStats, SortKey};
+use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats, SortKey};
 use memmap2::Mmap;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -32,6 +32,7 @@ struct DictEntry {
 
 pub struct CompactIndex {
     map: Mmap,
+    generation: u64,
     record_count: u64,
     blocks: Vec<BlockDesc>,
     dict: Vec<DictEntry>,
@@ -43,6 +44,7 @@ impl CompactIndex {
             return Err(invalid("compact index supports at most u32::MAX records"));
         }
         let started = Instant::now();
+        let generation = new_generation();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -123,7 +125,7 @@ impl CompactIndex {
         write_u64(&mut file, HEADER)?;
         write_u64(&mut file, postings_offset)?;
         write_u64(&mut file, dict_offset)?;
-        write_u64(&mut file, 0)?;
+        write_u64(&mut file, generation)?;
         file.flush()?;
         file.get_ref().sync_all()?;
         drop(file);
@@ -131,6 +133,7 @@ impl CompactIndex {
         sync_parent(path)?;
         let bytes = std::fs::metadata(path)?.len();
         Ok(BuildStats {
+            generation,
             records: records.len() as u64,
             blocks: descs.len() as u32,
             trigrams: dict.len() as u32,
@@ -152,6 +155,7 @@ impl CompactIndex {
             return Err(invalid("unsupported path block size"));
         }
         let record_count = u64_at(&map, 16)?;
+        let generation = u64_at(&map, 56)?;
         let block_count = u32_at(&map, 24)? as usize;
         let dict_count = u32_at(&map, 28)? as usize;
         let desc_offset = u64_at(&map, 32)? as usize;
@@ -183,6 +187,7 @@ impl CompactIndex {
         }
         Ok(Self {
             map,
+            generation,
             record_count,
             blocks,
             dict,
@@ -192,21 +197,56 @@ impl CompactIndex {
     pub fn len(&self) -> u64 {
         self.record_count
     }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
     pub fn mapped_bytes(&self) -> usize {
         self.map.len()
     }
 
     pub fn search(&self, q: &Query) -> io::Result<(Vec<SearchHit>, SearchStats)> {
+        self.search_overlay(q, None)
+    }
+
+    /// Search the immutable base and mutable WAL overlay as one logical index.
+    /// Shadowed base paths are suppressed before ranking, so matched counts and
+    /// result limits remain exact.
+    pub fn search_with_delta(
+        &self,
+        q: &Query,
+        delta: &DeltaIndex,
+    ) -> io::Result<(Vec<SearchHit>, SearchStats)> {
+        self.search_overlay(q, Some(delta))
+    }
+
+    fn search_overlay(
+        &self,
+        q: &Query,
+        delta: Option<&DeltaIndex>,
+    ) -> io::Result<(Vec<SearchHit>, SearchStats)> {
         let started = Instant::now();
         let candidates = self.candidate_blocks(q)?;
         let mut ranked = Vec::<(u32, FileRecord)>::new();
         let mut matched = 0u64;
         for block in candidates {
             for record in self.read_block(block)? {
+                if delta.is_some_and(|overlay| overlay.shadows(record.path.as_ref())) {
+                    continue;
+                }
                 if q.passes_filters(&record) {
                     if let Some(score) = q.score(&record) {
                         matched += 1;
                         ranked.push((score, record));
+                    }
+                }
+            }
+        }
+        if let Some(overlay) = delta {
+            for record in overlay.upserts() {
+                if q.passes_filters(record) {
+                    if let Some(score) = q.score(record) {
+                        matched += 1;
+                        ranked.push((score, record.clone()));
                     }
                 }
             }
@@ -234,7 +274,8 @@ impl CompactIndex {
         Ok((
             hits,
             SearchStats {
-                scanned: self.record_count,
+                scanned: self.record_count
+                    + delta.map_or(0, |overlay| overlay.change_count() as u64),
                 matched,
                 wall_us: started.elapsed().as_micros() as u64,
             },
@@ -300,6 +341,7 @@ impl CompactIndex {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BuildStats {
+    pub generation: u64,
     pub records: u64,
     pub blocks: u32,
     pub trigrams: u32,
@@ -387,6 +429,25 @@ fn binerr(e: impl std::fmt::Display) -> io::Error {
 fn invalid(e: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.into())
 }
+fn new_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ (u64::from(std::process::id()) << 32);
+    let mut current = NEXT.load(Ordering::Relaxed);
+    loop {
+        let candidate = current.max(seed).wrapping_add(1).max(1);
+        match NEXT.compare_exchange_weak(current, candidate, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return candidate,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 fn temp_path(path: &Path) -> PathBuf {
     let mut p = path.as_os_str().to_os_string();
     p.push(".new");
@@ -434,13 +495,14 @@ mod tests {
             rec("/opt/gamma/notes.txt", 3),
         ];
         let path = std::env::temp_dir().join(format!(
-            "neutra-compact-{}-{}.idx",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            "neutra-compact-{}-roundtrip.idx",
+            std::process::id()
         ));
         let stats = CompactIndex::build(&records, &path).unwrap();
         assert_eq!(stats.records, 3);
+        assert_ne!(stats.generation, 0);
         let index = CompactIndex::open(&path).unwrap();
+        assert_eq!(index.generation(), stats.generation);
         let (hits, s) = index.search(&Query::parse("document ext:txt")).unwrap();
         assert_eq!(s.matched, 1);
         assert_eq!(hits[0].record.path.as_ref(), "/home/a/AlphaDocument.txt");
@@ -449,5 +511,45 @@ mod tests {
         let (hits, _) = index.search(&Query::parse("gamma")).unwrap();
         assert_eq!(hits[0].record.path.as_ref(), "/opt/gamma/notes.txt");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delta_upserts_and_tombstones_shadow_the_base() {
+        let stem = format!("neutra-overlay-{}", std::process::id());
+        let base_path = std::env::temp_dir().join(format!("{stem}.idx"));
+        let delta_path = std::env::temp_dir().join(format!("{stem}.delta"));
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&delta_path);
+        CompactIndex::build(&[rec("/a/alpha.txt", 1), rec("/b/beta.txt", 2)], &base_path).unwrap();
+        let base = CompactIndex::open(&base_path).unwrap();
+        let mut delta = DeltaIndex::open(&delta_path, base.generation()).unwrap();
+        delta
+            .apply(crate::DeltaChange::Remove("/a/alpha.txt".into()))
+            .unwrap();
+        delta
+            .apply(crate::DeltaChange::Upsert(rec("/b/beta.txt", 20)))
+            .unwrap();
+        delta
+            .apply(crate::DeltaChange::Upsert(rec("/c/gamma.txt", 3)))
+            .unwrap();
+
+        let (hits, stats) = base
+            .search_with_delta(&Query::parse("ext:txt"), &delta)
+            .unwrap();
+        assert_eq!(stats.matched, 2);
+        assert_eq!(hits.len(), 2);
+        assert!(!hits
+            .iter()
+            .any(|hit| hit.record.path.as_ref() == "/a/alpha.txt"));
+        assert!(hits
+            .iter()
+            .any(|hit| hit.record.path.as_ref() == "/b/beta.txt" && hit.record.size == 20));
+        assert!(hits
+            .iter()
+            .any(|hit| hit.record.path.as_ref() == "/c/gamma.txt"));
+
+        drop(delta);
+        std::fs::remove_file(base_path).unwrap();
+        std::fs::remove_file(delta_path).unwrap();
     }
 }

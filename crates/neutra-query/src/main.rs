@@ -1,7 +1,7 @@
 //! Scriptable Neutrasearch client. Opens the compact mmap index read-only and
 //! never scans a filesystem. `--stdio` keeps one process alive for NDJSON RPC.
 use anyhow::{bail, Context, Result};
-use neutra_core::{CompactIndex, Query, SearchHit, SearchStats};
+use neutra_core::{CompactIndex, DeltaIndex, Query, SearchHit, SearchStats};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -75,8 +75,14 @@ fn main() -> Result<()> {
     let path = index_path.unwrap_or_else(default_index_path);
     let index = CompactIndex::open(&path)
         .with_context(|| format!("open compact index {}", path.display()))?;
+    let delta = open_delta(&path, index.generation())?;
     if stdio {
-        return serve(&index, std::io::stdin().lock(), std::io::stdout().lock());
+        return serve(
+            &index,
+            delta.as_ref(),
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        );
     }
     if args.is_empty() {
         bail!("query is required (or use --stdio)");
@@ -86,7 +92,7 @@ fn main() -> Result<()> {
         limit: Some(limit),
         metadata: Some(json),
     };
-    let response = run(&index, request)?;
+    let response = run(&index, delta.as_ref(), request)?;
     if json {
         serde_json::to_writer(std::io::stdout().lock(), &response)?;
         println!();
@@ -97,14 +103,19 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
-fn serve(index: &CompactIndex, input: impl BufRead, mut output: impl Write) -> Result<()> {
+fn serve(
+    index: &CompactIndex,
+    delta: Option<&DeltaIndex>,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         let request: Request = serde_json::from_str(&line)?;
-        match run(index, request) {
+        match run(index, delta, request) {
             Ok(response) => serde_json::to_writer(&mut output, &response)?,
             Err(error) => {
                 serde_json::to_writer(&mut output, &serde_json::json!({"error":error.to_string()}))?
@@ -115,10 +126,13 @@ fn serve(index: &CompactIndex, input: impl BufRead, mut output: impl Write) -> R
     }
     Ok(())
 }
-fn run(index: &CompactIndex, request: Request) -> Result<Response> {
+fn run(index: &CompactIndex, delta: Option<&DeltaIndex>, request: Request) -> Result<Response> {
     let mut query = Query::parse(&request.query);
     query.limit = request.limit.unwrap_or(50).clamp(1, 1000);
-    let (hits, stats) = index.search(&query)?;
+    let (hits, stats) = match delta {
+        Some(delta) => index.search_with_delta(&query, delta)?,
+        None => index.search(&query)?,
+    };
     Ok(response(hits, stats, request.metadata.unwrap_or(false)))
 }
 fn response(hits: Vec<SearchHit>, stats: SearchStats, metadata: bool) -> Response {
@@ -143,6 +157,17 @@ fn response(hits: Vec<SearchHit>, stats: SearchStats, metadata: bool) -> Respons
         records,
     }
 }
+fn open_delta(base: &std::path::Path, generation: u64) -> Result<Option<DeltaIndex>> {
+    let mut path = base.to_path_buf();
+    path.set_extension("delta");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    DeltaIndex::open(&path, generation)
+        .map(Some)
+        .with_context(|| format!("open delta index {}", path.display()))
+}
+
 fn default_index_path() -> PathBuf {
     if let Some(path) = std::env::var_os("NEUTRA_INDEX") {
         return path.into();
@@ -195,6 +220,7 @@ mod tests {
         let mut output = Vec::new();
         serve(
             &index,
+            None,
             "{\"query\":\"needle\",\"limit\":5}\n".as_bytes(),
             &mut output,
         )

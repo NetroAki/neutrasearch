@@ -145,6 +145,12 @@ fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
     let mut stats = ScanStats::default();
     let mut buffer = vec![0u8; 256 * 1024];
     while let Some((fd, parent_path)) = queue.pop_front() {
+        let mut parent_stat: libc::stat = unsafe { std::mem::zeroed() };
+        let parent_id = if unsafe { libc::fstat(fd.0, &mut parent_stat) } == 0 {
+            parent_stat.st_ino as u64
+        } else {
+            0
+        };
         loop {
             let mut attrs = AttrList {
                 bitmapcount: ATTR_BIT_MAP_COUNT,
@@ -221,10 +227,10 @@ fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
                 let os = OsString::from_vec(name);
                 let path = parent_path.join(os);
                 let mode = st.st_mode as u32;
-                let kind = match mode & libc::S_IFMT {
-                    libc::S_IFDIR => FileKind::Dir,
-                    libc::S_IFREG => FileKind::File,
-                    libc::S_IFLNK => FileKind::Symlink,
+                let kind = match mode & libc::S_IFMT as u32 {
+                    value if value == libc::S_IFDIR as u32 => FileKind::Dir,
+                    value if value == libc::S_IFREG as u32 => FileKind::File,
+                    value if value == libc::S_IFLNK as u32 => FileKind::Symlink,
                     _ => FileKind::Other,
                 };
                 if objtype == VDIR || kind == FileKind::Dir {
@@ -245,12 +251,12 @@ fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
                 sink(FileRecord {
                     path: path.to_string_lossy().into_owned().into_boxed_str(),
                     size: st.st_size.max(0) as u64,
-                    mtime: st.st_mtimespec.tv_sec,
+                    mtime: st.st_mtime,
                     mode,
                     kind,
                     fs: FsKind::Unsupported("apfs".into()),
-                    native_id: 0,
-                    native_parent: 0,
+                    native_id: st.st_ino as u64,
+                    native_parent: parent_id,
                     source: 0,
                 });
                 stats.records += 1;
