@@ -24,6 +24,7 @@ pub struct DeltaIndex {
     path: PathBuf,
     generation: u64,
     writer: Option<BufWriter<File>>,
+    _lock_file: Option<File>,
     upserts: HashMap<Box<str>, FileRecord>,
     removed: HashSet<Box<str>>,
     wal_bytes: u64,
@@ -53,8 +54,10 @@ impl DeltaIndex {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut owned_file = if writable {
-            let file = open_append_private(path)?;
+        // Lock a stable sibling rather than the WAL itself. Windows byte-range
+        // locks are mandatory and would otherwise prevent read-only snapshots.
+        let lock_file = if writable {
+            let file = open_append_private(&lock_path(path))?;
             file.try_lock_exclusive().map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::WouldBlock,
@@ -62,6 +65,11 @@ impl DeltaIndex {
                 )
             })?;
             Some(file)
+        } else {
+            None
+        };
+        let mut owned_file = if writable {
+            Some(open_append_private(path)?)
         } else {
             None
         };
@@ -141,6 +149,7 @@ impl DeltaIndex {
             path: path.to_path_buf(),
             generation,
             writer,
+            _lock_file: lock_file,
             upserts,
             removed,
             wal_bytes,
@@ -211,6 +220,11 @@ fn apply_memory(
         }
     }
 }
+fn lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.as_os_str().to_os_string();
+    lock.push(".lock");
+    lock.into()
+}
 fn open_append_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true).read(true);
@@ -245,11 +259,16 @@ mod tests {
             source: 0,
         }
     }
+    fn remove_log(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(lock_path(path));
+    }
+
     #[test]
     fn permits_snapshots_but_rejects_a_second_writer() {
         let path =
             std::env::temp_dir().join(format!("neutra-delta-lock-{}.wal", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        remove_log(&path);
         let writer = DeltaIndex::open(&path, 10).unwrap();
         let snapshot = DeltaIndex::open_snapshot(&path, 10).unwrap();
         assert_eq!(snapshot.generation(), 10);
@@ -260,14 +279,14 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         drop(snapshot);
         drop(writer);
-        std::fs::remove_file(path).unwrap();
+        remove_log(&path);
     }
 
     #[test]
     fn torn_tail_is_truncated_before_new_appends() {
         let path =
             std::env::temp_dir().join(format!("neutra-delta-tail-{}.wal", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        remove_log(&path);
         {
             let mut delta = DeltaIndex::open(&path, 9).unwrap();
             delta.apply(DeltaChange::Upsert(record("/a", 1))).unwrap();
@@ -292,13 +311,13 @@ mod tests {
         let reopened = DeltaIndex::open(&path, 9).unwrap();
         assert_eq!(reopened.upserts().count(), 2);
         drop(reopened);
-        std::fs::remove_file(path).unwrap();
+        remove_log(&path);
     }
 
     #[test]
     fn wal_replays_upserts_and_tombstones() {
         let path = std::env::temp_dir().join(format!("neutra-delta-{}.wal", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        remove_log(&path);
         {
             let mut delta = DeltaIndex::open_with_threshold(&path, 7, 1).unwrap();
             delta.apply(DeltaChange::Upsert(record("/a", 1))).unwrap();
@@ -312,6 +331,6 @@ mod tests {
         assert_eq!(delta.upserts().next().unwrap().path.as_ref(), "/b");
         drop(delta);
         assert!(DeltaIndex::open(&path, 8).is_err());
-        std::fs::remove_file(path).unwrap();
+        remove_log(&path);
     }
 }
