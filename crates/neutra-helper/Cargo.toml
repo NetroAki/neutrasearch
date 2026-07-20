@@ -1,0 +1,23 @@
+[package]
+name = "neutra-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neutra-helper"
+path = "src/main.rs"
+
+[dependencies]
+neutra-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Lane crates: every target compiles its own lane set; crates themselves
+# cfg-gate platform-specific code and provide stubs elsewhere.
+neutra-btrfs = { path = "../neutra-btrfs" }
+neutra-ntfs = { path = "../neutra-ntfs" }
+neutra-ext4 = { path = "../neutra-ext4" }
+neutra-zfs = { path = "../neutra-zfs" }
+neutra-macos = { path = "../neutra-macos" }

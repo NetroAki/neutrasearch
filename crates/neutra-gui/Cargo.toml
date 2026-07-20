@@ -1,0 +1,17 @@
+[package]
+name = "neutra-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neutrasearch"
+path = "src/main.rs"
+
+[dependencies]
+neutra-core.workspace = true
+neutra-remote = { path = "../neutra-remote" }
+anyhow.workspace = true
+eframe = "0.34"
+egui = "0.34"
+egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", default-features = false }

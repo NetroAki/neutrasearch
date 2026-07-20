@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/neutra-core",
+    "crates/neutra-btrfs",
+    "crates/neutra-ntfs",
+    "crates/neutra-ext4",
+    "crates/neutra-zfs",
+    "crates/neutra-macos",
+    "crates/neutra-remote",
+    "crates/neutra-helper",
+    "crates/neutra-mcp",
+    "crates/neutra-query",
+    "crates/neutra-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/NetroAki/neutrasearch"
+
+[workspace.dependencies]
+neutra-core = { path = "crates/neutra-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+anyhow = "1"
+thiserror = "2"
+rayon = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+memmap2 = "0.9"
+zstd = "0.13"
+crc32fast = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+panic = "abort"

@@ -1,0 +1,16 @@
+/target/
+*.nsx
+*.nsx.new
+*.delta
+*.delta.new
+*.bin
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
