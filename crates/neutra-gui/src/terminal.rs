@@ -108,6 +108,7 @@ fn parse_index(mut args: Vec<std::ffi::OsString>) -> Result<(PathBuf, PathBuf), 
 fn serve(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("Usage: neutrasearch serve --index INDEX.nsx [--watch MOUNT] [--source ID]");
+        println!("\nLinux watch mode requires CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH (or root).");
         return 0;
     }
     let (index, watch, source) = match parse_serve(args) {

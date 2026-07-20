@@ -15,7 +15,7 @@ const FILE_HANDLE_HEADER_LEN: usize = 8;
 
 pub enum WatchBatch {
     Changes(Vec<DeltaChange>),
-    Overflow,
+    RescanRequired(&'static str),
 }
 
 pub struct FanotifyWatcher {
@@ -24,6 +24,7 @@ pub struct FanotifyWatcher {
     mount: MountInfo,
     source: u32,
     excluded: Vec<PathBuf>,
+    atomic_rename: bool,
     buffer: Vec<u8>,
 }
 
@@ -67,27 +68,30 @@ impl FanotifyWatcher {
             | libc::FAN_ONDIR
             | libc::FAN_EVENT_ON_CHILD;
         let mark_flags = libc::FAN_MARK_ADD | libc::FAN_MARK_FILESYSTEM;
-        let marked = fanotify_mark(
+        let atomic_rename = match fanotify_mark(
             events.as_raw_fd(),
             mark_flags,
             base_mask | libc::FAN_RENAME,
             &path,
-        );
-        if let Err(error) = marked {
-            if error.raw_os_error() == Some(libc::EINVAL) {
+        ) {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(libc::EINVAL) => {
                 fanotify_mark(events.as_raw_fd(), mark_flags, base_mask, &path)?;
-            } else {
+                false
+            }
+            Err(error) => {
                 return Err(error).context(
                     "fanotify filesystem mark (requires CAP_SYS_ADMIN and file-handle support)",
-                );
+                )
             }
-        }
+        };
         Ok(Self {
             events,
             mount_fd,
             mount,
             source,
             excluded,
+            atomic_rename,
             buffer: vec![0; 256 * 1024],
         })
     }
@@ -106,24 +110,26 @@ impl FanotifyWatcher {
             );
         }
         let events = parse_events(&self.buffer[..bytes])?;
-        if events
-            .iter()
-            .any(|event| event.mask & libc::FAN_Q_OVERFLOW != 0)
-        {
-            return Ok(WatchBatch::Overflow);
+        if let Some(reason) = rescan_reason(&events, self.atomic_rename) {
+            return Ok(WatchBatch::RescanRequired(reason));
         }
         let mut changes = BTreeMap::<String, DeltaChange>::new();
         for event in events {
-            self.collect_event(event, &mut changes)?;
+            if self.collect_event(event, &mut changes)? {
+                return Ok(WatchBatch::RescanRequired(
+                    "an event path became unresolvable before delivery",
+                ));
+            }
         }
         Ok(WatchBatch::Changes(changes.into_values().collect()))
     }
 
+    /// Returns true when a raced/deleted handle makes this batch ambiguous.
     fn collect_event(
         &self,
         event: ParsedEvent,
         changes: &mut BTreeMap<String, DeltaChange>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut used_named_location = false;
         for mut location in event
             .locations
@@ -135,7 +141,7 @@ impl FanotifyWatcher {
             let resolved = self.resolve_named(&mut location);
             let (path, stat, parent) = match resolved {
                 Ok(resolved) => resolved,
-                Err(error) if stale(&error) => continue,
+                Err(error) if stale(&error) => return Ok(true),
                 Err(error) => return Err(error.into()),
             };
             if self.is_excluded(&path) {
@@ -166,10 +172,10 @@ impl FanotifyWatcher {
             }
         }
         if used_named_location {
-            return Ok(());
+            return Ok(false);
         }
         if event.mask & (libc::FAN_ATTRIB | libc::FAN_CLOSE_WRITE) == 0 {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(mut location) = event
             .locations
@@ -182,11 +188,11 @@ impl FanotifyWatcher {
                     make_record(&path, &stat, parent, &self.mount, self.source),
                 ),
                 Ok(_) => {}
-                Err(error) if stale(&error) => {}
+                Err(error) if stale(&error) => return Ok(true),
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn resolve_named(
@@ -268,7 +274,8 @@ impl FanotifyWatcher {
     }
 
     fn is_excluded(&self, path: &Path) -> bool {
-        self.excluded.iter().any(|excluded| path == excluded)
+        !path.starts_with(&self.mount.mountpoint)
+            || self.excluded.iter().any(|excluded| path == excluded)
     }
 }
 
@@ -313,7 +320,13 @@ fn open_handle(mount_fd: i32, handle: &mut [u8], flags: i32) -> io::Result<File>
         )
     };
     if fd < 0 {
-        return Err(io::Error::last_os_error());
+        let source = io::Error::last_os_error();
+        return Err(io::Error::new(
+            source.kind(),
+            format!(
+                "open_by_handle_at requires CAP_DAC_READ_SEARCH and filesystem file-handle support: {source}"
+            ),
+        ));
     }
     // SAFETY: open_by_handle_at returned a new owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
@@ -438,6 +451,24 @@ fn parse_events(bytes: &[u8]) -> io::Result<Vec<ParsedEvent>> {
     Ok(events)
 }
 
+fn rescan_reason(events: &[ParsedEvent], atomic_rename: bool) -> Option<&'static str> {
+    if events
+        .iter()
+        .any(|event| event.mask & libc::FAN_Q_OVERFLOW != 0)
+    {
+        return Some("fanotify queue overflowed");
+    }
+    if events.iter().any(|event| {
+        event.mask & libc::FAN_ONDIR != 0 && event.mask & (libc::FAN_MOVE | libc::FAN_RENAME) != 0
+    }) {
+        return Some("directory rename requires descendant path reconciliation");
+    }
+    if !atomic_rename && events.iter().any(|event| event.mask & libc::FAN_MOVE != 0) {
+        return Some("kernel reported an unpaired move event");
+    }
+    None
+}
+
 fn role_for(info_type: u8) -> Option<Role> {
     match info_type {
         libc::FAN_EVENT_INFO_TYPE_FID => Some(Role::Object),
@@ -530,6 +561,30 @@ mod tests {
             Some(std::ffi::OsStr::new("report.txt"))
         );
         assert_eq!(parsed[0].locations[0].handle.len(), 10);
+    }
+
+    #[test]
+    fn directory_renames_require_native_reindex() {
+        let events = [ParsedEvent {
+            mask: libc::FAN_RENAME | libc::FAN_ONDIR,
+            locations: Vec::new(),
+        }];
+        assert_eq!(
+            rescan_reason(&events, true),
+            Some("directory rename requires descendant path reconciliation")
+        );
+    }
+
+    #[test]
+    fn legacy_unpaired_moves_require_native_reindex() {
+        let events = [ParsedEvent {
+            mask: libc::FAN_MOVED_FROM,
+            locations: Vec::new(),
+        }];
+        assert_eq!(
+            rescan_reason(&events, false),
+            Some("kernel reported an unpaired move event")
+        );
     }
 
     #[test]

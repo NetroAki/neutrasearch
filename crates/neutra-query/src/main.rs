@@ -79,7 +79,7 @@ fn main() -> Result<()> {
     if stdio {
         return serve(
             &index,
-            delta.as_ref(),
+            delta,
             std::io::stdin().lock(),
             std::io::stdout().lock(),
         );
@@ -105,7 +105,7 @@ fn main() -> Result<()> {
 }
 fn serve(
     index: &CompactIndex,
-    delta: Option<&DeltaIndex>,
+    mut delta: Option<DeltaIndex>,
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<()> {
@@ -115,7 +115,10 @@ fn serve(
             continue;
         }
         let request: Request = serde_json::from_str(&line)?;
-        match run(index, delta, request) {
+        if let Some(delta) = &mut delta {
+            delta.refresh()?;
+        }
+        match run(index, delta.as_ref(), request) {
             Ok(response) => serde_json::to_writer(&mut output, &response)?,
             Err(error) => {
                 serde_json::to_writer(&mut output, &serde_json::json!({"error":error.to_string()}))?
@@ -229,6 +232,7 @@ mod tests {
         .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(value["paths"][0], "/src/needle.rs");
+        drop(index);
         std::fs::remove_file(path).unwrap();
     }
 }
