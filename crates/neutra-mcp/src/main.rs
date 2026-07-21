@@ -177,8 +177,9 @@ fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args: Val
                 .clamp(1, 1000) as usize;
             q.scope_roots = allowed_roots
                 .iter()
-                .map(|root| root.to_string_lossy().to_lowercase())
+                .map(|root| root.to_string_lossy().into_owned())
                 .collect();
+            q.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
             let metadata = args
                 .get("metadata")
                 .and_then(Value::as_bool)
@@ -219,9 +220,9 @@ fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args: Val
             };
             let header = format!(
                 "# matched={} returned={} search_us={}",
-                returned, returned, stats.wall_us
+                stats.matched, returned, stats.wall_us
             );
-            json!({"content":[{"type":"text","text":if text.is_empty(){header}else{format!("{header}\n{text}")}}],"structuredContent":{"paths":paths,"matched":returned,"returned":returned,"search_us":stats.wall_us}})
+            json!({"content":[{"type":"text","text":if text.is_empty(){header}else{format!("{header}\n{text}")}}],"structuredContent":{"paths":paths,"matched":stats.matched,"returned":returned,"search_us":stats.wall_us}})
         }
         "neutra_status" => {
             let basename = index
@@ -268,13 +269,59 @@ fn allowed_roots_from(value: Option<OsString>) -> Result<Vec<PathBuf>> {
             }
             std::fs::canonicalize(&root)
                 .with_context(|| format!("resolve MCP allowed root {}", root.display()))
+                .map(|root| PathBuf::from(portable_path(&root)))
         })
         .collect()
 }
 
 fn path_is_allowed(path: &Path, allowed_roots: &[PathBuf]) -> bool {
     safe_absolute_path(path)
-        && (allowed_roots.is_empty() || allowed_roots.iter().any(|root| path.starts_with(root)))
+        && (allowed_roots.is_empty()
+            || allowed_roots.iter().any(|root| {
+                portable_path_is_under(
+                    &portable_path(path),
+                    &portable_path(root),
+                    cfg!(not(any(target_os = "windows", target_os = "macos"))),
+                )
+            }))
+}
+
+fn portable_path(path: &Path) -> String {
+    portable_path_text(&path.to_string_lossy())
+}
+
+fn portable_path_text(path: &str) -> String {
+    let replaced = path.replace('\\', "/");
+    let mut normalized = if let Some(rest) = replaced.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = replaced
+        .strip_prefix("//?/")
+        .or_else(|| replaced.strip_prefix("//./"))
+    {
+        rest.to_owned()
+    } else {
+        replaced
+    };
+    let prefix_len = usize::from(normalized.starts_with("//")) * 2;
+    while normalized[prefix_len..].contains("//") {
+        let tail = normalized[prefix_len..].replace("//", "/");
+        normalized.truncate(prefix_len);
+        normalized.push_str(&tail);
+    }
+    if normalized.len() > 3 {
+        normalized = normalized.trim_end_matches('/').to_owned();
+    }
+    normalized
+}
+
+fn portable_path_is_under(path: &str, root: &str, case_sensitive: bool) -> bool {
+    let (path, root) = if case_sensitive {
+        (path.to_owned(), root.to_owned())
+    } else {
+        (path.to_lowercase(), root.to_lowercase())
+    };
+    path.strip_prefix(&root)
+        .is_some_and(|rest| rest.is_empty() || root.ends_with('/') || rest.starts_with('/'))
 }
 
 fn safe_absolute_path(path: &Path) -> bool {
@@ -366,6 +413,31 @@ mod tests {
         assert_eq!(
             result["structuredContent"]["paths"][0],
             "/allowed/path/has-needle-here.txt"
+        );
+    }
+
+    #[test]
+    fn windows_extended_roots_match_portable_ntfs_index_paths() {
+        let root = portable_path_text(r"\\?\C:\Users\Alice");
+        assert_eq!(root, "C:/Users/Alice");
+        assert!(portable_path_is_under(
+            "C:/Users/Alice/report.txt",
+            &root,
+            false
+        ));
+        assert!(portable_path_is_under(
+            "c:/users/alice/report.txt",
+            &root,
+            false
+        ));
+        assert!(!portable_path_is_under(
+            "C:/Users/Alicia/report.txt",
+            &root,
+            false
+        ));
+        assert_eq!(
+            portable_path_text(r"\\?\UNC\server\share\team"),
+            "//server/share/team"
         );
     }
 

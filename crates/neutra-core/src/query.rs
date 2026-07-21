@@ -38,6 +38,9 @@ pub struct Query {
     /// Trusted caller-injected path scopes, ORed together before ranking and limiting.
     #[serde(default)]
     pub scope_roots: Vec<String>,
+    /// Security-sensitive callers use host filesystem case semantics for scopes.
+    #[serde(default)]
+    pub scope_case_sensitive: bool,
     pub sort: SortKey,
     /// Hard cap on returned hits; 0 = unlimited.
     pub limit: usize,
@@ -54,6 +57,7 @@ impl Default for Query {
             max_size: None,
             under: None,
             scope_roots: Vec::new(),
+            scope_case_sensitive: false,
             sort: SortKey::Relevance,
             limit: 1000,
         }
@@ -141,10 +145,13 @@ impl Query {
             }
         }
         if !self.scope_roots.is_empty()
-            && !self
-                .scope_roots
-                .iter()
-                .any(|root| path_is_under_ci(&r.path, root))
+            && !self.scope_roots.iter().any(|root| {
+                if self.scope_case_sensitive {
+                    path_is_under(&r.path, root)
+                } else {
+                    path_is_under_ci(&r.path, root)
+                }
+            })
         {
             return false;
         }
@@ -202,6 +209,17 @@ fn safe_absolute_path(path: &str) -> bool {
         && !path
             .split(['/', '\\'])
             .any(|component| matches!(component, "." | ".."))
+}
+
+#[inline]
+fn path_is_under(path: &str, root: &str) -> bool {
+    path.strip_prefix(root).is_some_and(|rest| {
+        rest.is_empty()
+            || root.ends_with('/')
+            || root.ends_with('\\')
+            || rest.starts_with('/')
+            || rest.starts_with('\\')
+    })
 }
 
 #[inline]
@@ -336,6 +354,16 @@ mod tests {
         assert!(!q.passes_filters(&rec("/allowed/ab/file.txt", 1)));
         assert!(!q.passes_filters(&rec("/denied/file.txt", 1)));
         assert!(!q.passes_filters(&rec("/allowed/a/../secret.txt", 1)));
+    }
+
+    #[test]
+    fn trusted_scope_can_enforce_case_sensitive_host_semantics() {
+        let mut query = Query::parse("");
+        query.scope_roots = vec!["/Users/Alice".into()];
+        assert!(query.passes_filters(&rec("/users/alice/file.txt", 1)));
+        query.scope_case_sensitive = true;
+        assert!(query.passes_filters(&rec("/Users/Alice/file.txt", 1)));
+        assert!(!query.passes_filters(&rec("/users/alice/file.txt", 1)));
     }
 
     #[test]

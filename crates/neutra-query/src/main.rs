@@ -11,6 +11,10 @@ struct Request {
     query: String,
     limit: Option<usize>,
     metadata: Option<bool>,
+    #[serde(default)]
+    scope_roots: Vec<String>,
+    #[serde(default)]
+    scope_case_sensitive: Option<bool>,
 }
 #[derive(Serialize)]
 struct Response {
@@ -35,7 +39,9 @@ fn main() -> Result<()> {
     let mut index_path = None;
     let mut limit = 50usize;
     let mut json = false;
+    let mut json_paths = false;
     let mut stdio = false;
+    let mut scope_roots = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -56,8 +62,23 @@ fn main() -> Result<()> {
                     .clamp(1, 1000);
                 args.drain(i..=i + 1);
             }
+            "--scope" => {
+                if i + 1 >= args.len() {
+                    bail!("--scope requires an absolute path");
+                }
+                let scope = PathBuf::from(args.remove(i + 1));
+                if !scope.is_absolute() {
+                    bail!("--scope requires an absolute path");
+                }
+                scope_roots.push(scope.to_string_lossy().into_owned());
+                args.remove(i);
+            }
             "--json" => {
                 json = true;
+                args.remove(i);
+            }
+            "--json-paths" => {
+                json_paths = true;
                 args.remove(i);
             }
             "--stdio" => {
@@ -65,7 +86,7 @@ fn main() -> Result<()> {
                 args.remove(i);
             }
             "--help" | "-h" => {
-                println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--limit N] [--json]\nInternal persistent mode: neutrasearch-query --index INDEX.nsx --stdio");
+                println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]\nInternal persistent mode: neutrasearch-query --index INDEX.nsx --stdio");
                 return Ok(());
             }
             x if x.starts_with('-') => bail!("unknown option {x}"),
@@ -90,9 +111,11 @@ fn main() -> Result<()> {
         query: args.join(" "),
         limit: Some(limit),
         metadata: Some(json),
+        scope_roots,
+        scope_case_sensitive: Some(cfg!(not(any(target_os = "windows", target_os = "macos")))),
     };
     let response = run(&index, delta.as_ref(), request)?;
-    if json {
+    if json || json_paths {
         serde_json::to_writer(std::io::stdout().lock(), &response)?;
         println!();
     } else {
@@ -140,8 +163,19 @@ fn serve(
     Ok(())
 }
 fn run(index: &CompactIndex, delta: Option<&DeltaIndex>, request: Request) -> Result<Response> {
+    if request
+        .scope_roots
+        .iter()
+        .any(|root| !std::path::Path::new(root).is_absolute())
+    {
+        bail!("scope_roots must contain only absolute paths");
+    }
     let mut query = Query::parse(&request.query);
     query.limit = request.limit.unwrap_or(50).clamp(1, 1000);
+    query.scope_roots = request.scope_roots;
+    query.scope_case_sensitive = request
+        .scope_case_sensitive
+        .unwrap_or(cfg!(not(any(target_os = "windows", target_os = "macos"))));
     let (hits, stats) = match delta {
         Some(delta) => index.search_with_delta(&query, delta)?,
         None => index.search(&query)?,
@@ -191,24 +225,31 @@ fn default_index_path() -> PathBuf {
     {
         return std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_default()
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
             .join("Neutrasearch/index.nsx");
     }
     #[cfg(target_os = "macos")]
     {
         return std::env::var_os("HOME")
             .map(PathBuf::from)
-            .unwrap_or_default()
-            .join("Library/Application Support/Neutrasearch/index.nsx");
+            .filter(|path| path.is_absolute())
+            .map(|home| home.join("Library/Application Support"))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Neutrasearch/index.nsx");
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
             .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|home| home.join(".local/share"))
             })
-            .unwrap_or_default()
+            .unwrap_or_else(std::env::temp_dir)
             .join("neutrasearch/index.nsx")
     }
 }
@@ -221,17 +262,30 @@ mod tests {
     fn ndjson_api() {
         let path =
             std::env::temp_dir().join(format!("neutra-query-test-{}.nsx", std::process::id()));
-        let records = vec![FileRecord {
-            path: "/src/needle.rs".into(),
-            size: 7,
-            mtime: 1,
-            mode: 0,
-            kind: FileKind::File,
-            fs: FsKind::Ext4,
-            native_id: 1,
-            native_parent: 2,
-            source: 0,
-        }];
+        let records = vec![
+            FileRecord {
+                path: "/src/needle.rs".into(),
+                size: 7,
+                mtime: 1,
+                mode: 0,
+                kind: FileKind::File,
+                fs: FsKind::Ext4,
+                native_id: 1,
+                native_parent: 2,
+                source: 0,
+            },
+            FileRecord {
+                path: "/private/needle-key.txt".into(),
+                size: 9,
+                mtime: 2,
+                mode: 0,
+                kind: FileKind::File,
+                fs: FsKind::Ext4,
+                native_id: 2,
+                native_parent: 3,
+                source: 0,
+            },
+        ];
         CompactIndex::build(&records, &path).unwrap();
         let index = CompactIndex::open(&path).unwrap();
         let mut output = Vec::new();
@@ -239,12 +293,29 @@ mod tests {
             &path,
             index,
             None,
-            "{\"query\":\"needle\",\"limit\":5}\n".as_bytes(),
+            "{\"query\":\"needle\",\"limit\":5,\"scope_roots\":[\"/src\"],\"scope_case_sensitive\":true}\n".as_bytes(),
             &mut output,
         )
         .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-        assert_eq!(value["paths"][0], "/src/needle.rs");
+        assert_eq!(value["paths"], serde_json::json!(["/src/needle.rs"]));
+
+        let index = CompactIndex::open(&path).unwrap();
+        let error = match run(
+            &index,
+            None,
+            Request {
+                query: "needle".into(),
+                limit: Some(5),
+                metadata: Some(false),
+                scope_roots: vec!["relative/path".into()],
+                scope_case_sensitive: Some(true),
+            },
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("relative trusted scope must be rejected"),
+        };
+        assert!(error.to_string().contains("absolute paths"));
         std::fs::remove_file(path).unwrap();
     }
 }

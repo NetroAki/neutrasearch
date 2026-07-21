@@ -7,6 +7,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import os
 import platform
 import re
@@ -37,6 +38,13 @@ TARGETS = {
     "x86_64-pc-windows-msvc": ("Windows", "x86_64", ".exe"),
     "x86_64-apple-darwin": ("Darwin", "x86_64", ""),
     "aarch64-apple-darwin": ("Darwin", "aarch64", ""),
+}
+NPM_TARGETS = {
+    "x86_64-unknown-linux-gnu": ("neutrasearch-linux-x64", "linux", "x64"),
+    "aarch64-unknown-linux-gnu": ("neutrasearch-linux-arm64", "linux", "arm64"),
+    "x86_64-pc-windows-msvc": ("neutrasearch-win32-x64", "win32", "x64"),
+    "x86_64-apple-darwin": ("neutrasearch-darwin-x64", "darwin", "x64"),
+    "aarch64-apple-darwin": ("neutrasearch-darwin-arm64", "darwin", "arm64"),
 }
 SEMVER = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\."
@@ -176,6 +184,70 @@ def archive_payload(project_root: Path, target_dir: Path, target: str) -> list[t
     ).encode("utf-8")
     payload.append(("SHA256SUMS", sums, 0o644))
     return sorted(payload)
+
+
+def npm_platform_package(
+    project_root: Path,
+    target_dir: Path,
+    output_dir: Path,
+    target: str,
+    version: str,
+) -> Path:
+    validated_version(version)
+    try:
+        package_name, npm_os, npm_cpu = NPM_TARGETS[target]
+        _, _, executable_suffix = TARGETS[target]
+    except KeyError as error:
+        raise ValueError(f"unsupported npm release target: {target}") from error
+
+    package_dir = output_dir / package_name
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
+    binary_dir = package_dir / "bin"
+    binary_dir.mkdir(parents=True)
+    checksums: list[str] = []
+    binary_links: dict[str, str] = {}
+    for binary in BINARIES:
+        filename = binary + executable_suffix
+        source = target_dir / filename
+        data = regular_file_bytes(source)
+        destination = binary_dir / filename
+        destination.write_bytes(data)
+        destination.chmod(0o755)
+        checksums.append(f"{sha256_bytes(data)}  bin/{filename}\n")
+        binary_links[binary] = f"bin/{filename}"
+
+    metadata = {
+        "name": package_name,
+        "version": version,
+        "description": f"Neutrasearch native binaries for {npm_os}-{npm_cpu}",
+        "license": "MIT",
+        "author": "NetroAki",
+        "os": [npm_os],
+        "cpu": [npm_cpu],
+        "preferUnplugged": True,
+        "files": ["bin", "SHA256SUMS", "README.md", "LICENSE"],
+        "bin": binary_links,
+        "repository": {
+            "type": "git",
+            "url": "git+https://github.com/NetroAki/neutrasearch.git",
+        },
+    }
+    (package_dir / "package.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (package_dir / "SHA256SUMS").write_text("".join(sorted(checksums)), encoding="utf-8")
+    (package_dir / "README.md").write_text(
+        f"# {package_name}\n\n"
+        "Internal native binary package for `pi-neutrasearch`. Install "
+        "`pi-neutrasearch` rather than this package directly.\n\n"
+        "Installation only places executables; indexing still requires explicit "
+        "approval in the Neutrasearch GUI.\n",
+        encoding="utf-8",
+    )
+    shutil.copyfile(project_root / "LICENSE", package_dir / "LICENSE")
+    print(f"prepared {package_name}@{version} for {target}: {package_dir}")
+    return package_dir
 
 
 def write_zip(path: Path, root_name: str, payload: list[tuple[str, bytes, int]], epoch: int) -> None:
@@ -327,6 +399,24 @@ def self_test() -> None:
                 raise AssertionError(f"unexpected archive manifest for {target}")
             verify_inner_checksums(files, root_name)
 
+            npm_dir = npm_platform_package(
+                project, built, root / "npm", target, "1.2.3-rc.1"
+            )
+            npm_metadata = json.loads((npm_dir / "package.json").read_text(encoding="utf-8"))
+            expected_name, expected_os, expected_cpu = NPM_TARGETS[target]
+            if (
+                npm_metadata["name"],
+                npm_metadata["os"],
+                npm_metadata["cpu"],
+            ) != (expected_name, [expected_os], [expected_cpu]):
+                raise AssertionError(f"incorrect npm platform metadata for {target}")
+            if set(path.name for path in (npm_dir / "bin").iterdir()) != {
+                binary + suffix for binary in BINARIES
+            }:
+                raise AssertionError(f"incorrect npm binary manifest for {target}")
+            if len((npm_dir / "SHA256SUMS").read_text().splitlines()) != len(BINARIES):
+                raise AssertionError(f"incorrect npm checksums for {target}")
+
         checksum_file = root / "one" / "SHA256SUMS"
         write_checksums(root / "one", checksum_file)
         if len(checksum_file.read_text(encoding="utf-8").splitlines()) != len(TARGETS):
@@ -354,6 +444,15 @@ def parser() -> argparse.ArgumentParser:
     pack.add_argument("--version", required=True)
     pack.add_argument("--format", required=True, choices=("zip", "tar.gz"))
 
+    npm_package = commands.add_parser(
+        "npm-platform", help="prepare one OS/CPU-specific npm binary package"
+    )
+    npm_package.add_argument("--project-root", type=Path, default=Path("."))
+    npm_package.add_argument("--target-dir", type=Path, required=True)
+    npm_package.add_argument("--output-dir", type=Path, default=Path("dist/npm"))
+    npm_package.add_argument("--target", required=True, choices=sorted(NPM_TARGETS))
+    npm_package.add_argument("--version", required=True)
+
     sums = commands.add_parser("checksums", help="write SHA256SUMS for release archives")
     sums.add_argument("--input-dir", type=Path, required=True)
     sums.add_argument("--output", type=Path, required=True)
@@ -377,6 +476,14 @@ def main() -> int:
                 args.target,
                 args.version,
                 args.format,
+            )
+        elif args.command == "npm-platform":
+            npm_platform_package(
+                args.project_root,
+                args.target_dir,
+                args.output_dir,
+                args.target,
+                args.version,
             )
         elif args.command == "checksums":
             write_checksums(args.input_dir, args.output)

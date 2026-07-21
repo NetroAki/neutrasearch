@@ -4,15 +4,19 @@ This document separates verified support from experimental lanes. A successful b
 
 ## Support matrix
 
-| Platform | Portable archive | Native initial indexing | Live updates | Release status |
+| Platform | Portable archive | Native initial indexing | Freshness baseline | Release status |
 |---|---:|---|---|---|
-| Linux x86_64 | Yes | Btrfs, EXT2/3/4, NTFS; privileges commonly required | fanotify, experimental | Supported pre-1.0 |
-| Linux ARM64 | Yes, native ARM runner | Same compiled lanes; hardware evidence still limited | fanotify, experimental | Preview |
-| Windows x86_64 | Yes | NTFS MFT lane; Administrator access may be required | Not implemented | Preview |
-| macOS x86_64 | Yes | Spotlight; native bulk fallback | Not implemented | Preview |
-| macOS ARM64 | Yes | Spotlight; native bulk fallback | Not implemented | Preview |
-| Windows ARM64 | No release artifact yet | Unverified | Not implemented | Unsupported |
+| Linux x86_64 | Yes | Btrfs, EXT2/3/4, NTFS; privileges commonly required | Manual atomic rebuild; fanotify is an experimental extra | Supported pre-1.0 |
+| Linux ARM64 | Yes, native ARM runner | Same compiled lanes; hardware evidence still limited | Manual atomic rebuild; fanotify is experimental | Preview |
+| Windows x86_64 | Yes | NTFS MFT lane; GUI can request an Administrator restart | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| macOS x86_64 | Yes | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| macOS ARM64 | Yes | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| Windows ARM64 | No release artifact yet | Unverified | Manual rebuild code is portable but unverified | Unsupported |
 | ZFS | Included as experimental code only | Initial indexing intentionally refuses unsupported paths | Not implemented | Unsupported |
+
+The parity baseline is the dense GUI, native initial indexing, atomic manual rebuild, compact-index search, CLI, MCP, and remote-helper provisioning protocol. Native CI builds and tests that baseline on Linux, Windows, and macOS. A rebuild is published only after every discovered native lane succeeds; otherwise the last complete index remains active.
+
+Linux fanotify is not part of that parity baseline. Windows USN-journal and macOS FSEvents freshness are not implemented, so all platforms must remain correct through manual rebuilds rather than pretending equivalent live-update guarantees.
 
 Release archives are currently unsigned. Stable Windows/macOS distribution requires code-signing/notarization credentials and real-hardware smoke evidence. Verify archive checksums and GitHub attestations.
 
@@ -45,7 +49,9 @@ A successful full rebuild creates compact format v3 and clears an existing `.sta
 
 Opening the GUI does not modify remote hosts. Selecting **Enable network helpers** starts network-mount detection; matching servers may then receive an atomic helper update over the existing SSH identity. `NEUTRASEARCH_AUTO_PROVISION_REMOTE=1` is the explicit unattended opt-in. Set `NEUTRASEARCH_HELPER_ARTIFACTS` if helpers are not in the executable's sibling `helpers/` directory.
 
-Each archive includes its matching target helper and `.sha256` sidecar under `helpers/`. Provisioning refuses a missing/mismatched sidecar and verifies the uploaded temporary file on the server before atomic installation. To manage servers on other operating systems/architectures, collect their release helper+sidecar files into the configured helper directory. Remote auto-provisioning remains preview functionality until remote install/uninstall smoke tests and signed release manifests exist.
+Each archive includes its matching target helper and `.sha256` sidecar under `helpers/`. Provisioning refuses a missing/mismatched sidecar and verifies the uploaded temporary file on the server before atomic installation. To manage servers on other operating systems/architectures, collect their release helper+sidecar files into the configured helper directory.
+
+Remote auto-provisioning remains preview functionality until remote install/uninstall smoke tests and signed release manifests exist. The current GUI provisions and verifies helpers but does not yet map a server export namespace back into the local mounted path or merge remote records. Do not claim network-share search until that mapping and end-to-end scan channel are implemented.
 
 ## Live-update limitation
 
