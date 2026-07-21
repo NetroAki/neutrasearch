@@ -42,7 +42,7 @@ TARGETS = {
 NPM_TARGETS = {
     "x86_64-unknown-linux-gnu": ("neutrasearch-linux-x64", "linux", "x64"),
     "aarch64-unknown-linux-gnu": ("neutrasearch-linux-arm64", "linux", "arm64"),
-    "x86_64-pc-windows-msvc": ("neutrasearch-win32-x64", "win32", "x64"),
+    "x86_64-pc-windows-msvc": ("neutrasearch-windows-x64", "win32", "x64"),
     "x86_64-apple-darwin": ("neutrasearch-darwin-x64", "darwin", "x64"),
     "aarch64-apple-darwin": ("neutrasearch-darwin-arm64", "darwin", "arm64"),
 }

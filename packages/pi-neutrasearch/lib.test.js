@@ -26,7 +26,7 @@ function temporaryTree() {
 test("maps every supported Pi runtime to a native package", () => {
   assert.equal(bundledPackageName("linux", "x64"), "neutrasearch-linux-x64");
   assert.equal(bundledPackageName("linux", "arm64"), "neutrasearch-linux-arm64");
-  assert.equal(bundledPackageName("win32", "x64"), "neutrasearch-win32-x64");
+  assert.equal(bundledPackageName("win32", "x64"), "neutrasearch-windows-x64");
   assert.equal(bundledPackageName("darwin", "x64"), "neutrasearch-darwin-x64");
   assert.equal(bundledPackageName("darwin", "arm64"), "neutrasearch-darwin-arm64");
   assert.equal(bundledPackageName("win32", "arm64"), null);

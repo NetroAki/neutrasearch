@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { installShortcuts } from "./shortcuts.js";
 import {
   compactSearchResult,
   limits,
@@ -181,13 +182,17 @@ export default function register(pi) {
         return;
       }
       try {
+        const shortcuts = installShortcuts(application);
         const child = spawn(application, [], {
           detached: true,
           stdio: "ignore",
           windowsHide: false,
         });
         child.unref();
-        ctx.ui.notify("Neutrasearch opened. Approve local indexing in the app, then return to Pi.", "info");
+        ctx.ui.notify(
+          `Neutrasearch opened and ${shortcuts.length} shortcuts were installed. Approve local indexing in the app, then return to Pi.`,
+          "info",
+        );
       } catch (error) {
         ctx.ui.notify(`Could not open Neutrasearch: ${shortError(error)}`, "error");
       }

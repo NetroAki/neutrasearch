@@ -53,7 +53,7 @@ export function bundledPackageName(platform = process.platform, architecture = p
   return {
     "linux:x64": "neutrasearch-linux-x64",
     "linux:arm64": "neutrasearch-linux-arm64",
-    "win32:x64": "neutrasearch-win32-x64",
+    "win32:x64": "neutrasearch-windows-x64",
     "darwin:x64": "neutrasearch-darwin-x64",
     "darwin:arm64": "neutrasearch-darwin-arm64",
   }[`${platform}:${architecture}`] || null;
