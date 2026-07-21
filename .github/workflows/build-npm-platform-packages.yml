@@ -25,7 +25,7 @@ jobs:
             package: neutrasearch-linux-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            package: neutrasearch-win32-x64
+            package: neutrasearch-windows-x64
           - os: macos-15-intel
             target: x86_64-apple-darwin
             package: neutrasearch-darwin-x64

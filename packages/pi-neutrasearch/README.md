@@ -20,7 +20,13 @@ Inside Pi, run:
 /neutrasearch-setup
 ```
 
-This opens the bundled Neutrasearch app. Approve local indexing there, then return to Pi. Indexing remains an explicit user action; package installation never scans disks or requests privileges.
+This installs convenient shortcuts and opens the bundled Neutrasearch app:
+
+- Linux: application menu, Desktop, and `~/.local/bin` CLI links
+- Windows: Start Menu and Desktop shortcuts
+- macOS: `~/Applications/Neutrasearch.app` and a Desktop alias
+
+Approve local indexing in the app, then return to Pi. Indexing remains an explicit user action; package installation never scans disks or requests privileges.
 
 Use `/neutrasearch` to inspect installation and index status.
 

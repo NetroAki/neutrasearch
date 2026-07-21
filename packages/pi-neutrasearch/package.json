@@ -1,6 +1,6 @@
 {
   "name": "pi-neutrasearch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Token-efficient native indexed filename and path search for Pi agents",
   "type": "module",
   "license": "MIT",
@@ -25,6 +25,8 @@
   "files": [
     "index.js",
     "lib.js",
+    "shortcuts.js",
+    "assets",
     "README.md",
     "LICENSE",
     "skills"
@@ -37,7 +39,7 @@
     "neutrasearch-darwin-x64": "0.1.0",
     "neutrasearch-linux-arm64": "0.1.0",
     "neutrasearch-linux-x64": "0.1.0",
-    "neutrasearch-win32-x64": "0.1.0"
+    "neutrasearch-windows-x64": "0.1.0"
   },
   "scripts": {
     "test": "node --test",
