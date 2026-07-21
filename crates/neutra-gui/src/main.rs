@@ -1,26 +1,17 @@
 mod terminal;
+mod ui;
 
 use eframe::egui;
-use egui::{Color32, FontId, RichText, Stroke};
-use egui_expressive::widgets::SearchField;
-use egui_expressive::{M3Theme, StatusBar, StatusBarItem, Theme};
 use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
-use neutra_core::{CompactIndex, FileKind, Index, Query, SearchHit, SearchStats};
-use std::collections::BTreeMap;
+use neutra_core::{
+    CompactIndex, FileKind, FileRecord, Index, Query, SearchHit, SearchStats, SortKey,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
-
-const INK: Color32 = Color32::from_rgb(8, 11, 15);
-const PANEL: Color32 = Color32::from_rgb(15, 20, 27);
-const RAISED: Color32 = Color32::from_rgb(23, 30, 39);
-const TEXT: Color32 = Color32::from_rgb(225, 235, 239);
-const MUTED: Color32 = Color32::from_rgb(118, 135, 143);
-const ACID: Color32 = Color32::from_rgb(126, 241, 187);
-const BLUE: Color32 = Color32::from_rgb(93, 170, 255);
-const WARN: Color32 = Color32::from_rgb(255, 184, 92);
 
 enum Event {
     Message(HelperMsg),
@@ -31,7 +22,12 @@ enum Event {
         error: bool,
     },
     CompactReady(CompactIndex),
-    CompactFailed(String, Index),
+    CompactFailed(String),
+    TreeReady {
+        generation: u64,
+        model: ui::Hierarchy,
+    },
+    TreeFailed(String),
 }
 
 enum FileAction {
@@ -51,6 +47,7 @@ struct LaneState {
 struct NeutraApp {
     index: Index,
     compact: Option<CompactIndex>,
+    scan_index: Option<Index>,
     query: String,
     hits: Vec<SearchHit>,
     search_stats: SearchStats,
@@ -65,9 +62,22 @@ struct NeutraApp {
     last_cache: Instant,
     last_generation: u64,
     selected: Option<String>,
-    treemap_height: f32,
-    treemap_open: bool,
+    view_mode: ui::ResultView,
+    kind_filter: ui::KindFilter,
+    sort_mode: ui::SortMode,
+    search_mode: ui::SearchMode,
+    case_sensitive: bool,
+    regex_mode: bool,
+    scope_root: Option<String>,
+    diagnostics_open: bool,
     about_open: bool,
+    search_focus_requested: bool,
+    tree_fraction: f32,
+    tree_vertical_fraction: f32,
+    treemap_path: String,
+    tree_expanded: BTreeSet<String>,
+    tree_model: Option<ui::Hierarchy>,
+    tree_building: bool,
     remote_watcher_started: bool,
 }
 
@@ -92,9 +102,12 @@ fn main() -> eframe::Result<()> {
 
 impl NeutraApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        apply_theme(&cc.egui_ctx);
+        ui::configure(&cc.egui_ctx);
+        let reference_mode = env_flag("NEUTRASEARCH_GUI_REFERENCE", "NEUTRA_GUI_REFERENCE");
         let cache_path = compact_cache_path();
-        let (compact, cache_error) = if cache_path.is_file() {
+        let (compact, cache_error) = if reference_mode {
+            (None, None)
+        } else if cache_path.is_file() {
             match CompactIndex::open(&cache_path) {
                 Ok(index) => (Some(index), None),
                 Err(error) => (
@@ -108,7 +121,9 @@ impl NeutraApp {
         } else {
             (None, None)
         };
-        let restored = if compact.is_none() {
+        let restored = if reference_mode {
+            Some(ui::reference_index())
+        } else if compact.is_none() {
             std::fs::read(legacy_cache_path())
                 .ok()
                 .and_then(|b| Index::restore(&b).ok())
@@ -121,7 +136,14 @@ impl NeutraApp {
         let mut app = Self {
             index,
             compact,
-            query: String::new(),
+            scan_index: None,
+            query: std::env::var("NEUTRASEARCH_GUI_QUERY").unwrap_or_else(|_| {
+                if reference_mode {
+                    "invoice".into()
+                } else {
+                    String::new()
+                }
+            }),
             hits: Vec::new(),
             search_stats: SearchStats::default(),
             lanes: BTreeMap::new(),
@@ -135,9 +157,23 @@ impl NeutraApp {
             last_cache: Instant::now(),
             last_generation: 0,
             selected: None,
-            treemap_height: 170.0,
-            treemap_open: true,
+            view_mode: ui::initial_view(),
+            kind_filter: ui::KindFilter::All,
+            sort_mode: ui::SortMode::Modified,
+            search_mode: ui::SearchMode::NameAndPath,
+            case_sensitive: false,
+            regex_mode: false,
+            scope_root: None,
+            diagnostics_open: false,
             about_open: false,
+            search_focus_requested: false,
+            tree_fraction: 0.23,
+            tree_vertical_fraction: 0.34,
+            treemap_path: std::env::var("NEUTRASEARCH_GUI_TREEMAP_PATH")
+                .unwrap_or_else(|_| "/".into()),
+            tree_expanded: BTreeSet::from(["/".into()]),
+            tree_model: None,
+            tree_building: false,
             remote_watcher_started: false,
         };
         if has_durable_index {
@@ -166,20 +202,25 @@ impl NeutraApp {
                 "welcome".into(),
                 LaneState {
                     label: "READY".into(),
-                    status: "Choose RESCAN NATIVE INDEX to approve local metadata indexing".into(),
+                    status: "Choose Build search index to approve native local-volume indexing"
+                        .into(),
                     ..Default::default()
                 },
             );
         }
-        if env_flag(
-            "NEUTRASEARCH_AUTO_PROVISION_REMOTE",
-            "NEUTRA_AUTO_PROVISION_REMOTE",
-        ) {
+        app.requery();
+        if !reference_mode
+            && env_flag(
+                "NEUTRASEARCH_AUTO_PROVISION_REMOTE",
+                "NEUTRA_AUTO_PROVISION_REMOTE",
+            )
+        {
             spawn_network_watcher(app.tx.clone());
             app.remote_watcher_started = true;
         }
-        if env_flag("NEUTRASEARCH_AUTOSCAN", "NEUTRA_AUTOSCAN")
-            || env_flag("NEUTRASEARCH_FORCE_RESCAN", "NEUTRA_FORCE_RESCAN")
+        if !reference_mode
+            && (env_flag("NEUTRASEARCH_AUTOSCAN", "NEUTRA_AUTOSCAN")
+                || env_flag("NEUTRASEARCH_FORCE_RESCAN", "NEUTRA_FORCE_RESCAN"))
         {
             app.begin_scan();
         }
@@ -187,14 +228,15 @@ impl NeutraApp {
     }
 
     fn begin_scan(&mut self) {
-        if self.scanning {
+        if self.scanning || self.building_cache {
             return;
         }
-        self.compact = None;
-        self.index = Index::new();
-        self.requery();
+        // Build into a staging index. The last complete index remains searchable
+        // and on disk until every requested native lane succeeds.
+        self.scan_index = Some(Index::new());
         self.scanning = true;
         self.active_scans = 0;
+        self.cache_dirty = false;
         self.lanes.clear();
         spawn_local_helper(self.tx.clone());
     }
@@ -204,6 +246,7 @@ impl NeutraApp {
                 Event::Fatal(e) => {
                     self.scanning = false;
                     self.active_scans = 0;
+                    self.scan_index = None;
                     self.lanes.insert(
                         "helper".into(),
                         LaneState {
@@ -229,6 +272,9 @@ impl NeutraApp {
                 }
                 Event::CompactReady(index) => {
                     self.compact = Some(index);
+                    // The resident copy stayed searchable throughout the build;
+                    // reclaim it only after the replacement mmap is verified.
+                    self.index = Index::new();
                     self.building_cache = false;
                     self.cache_dirty = false;
                     self.last_cache = Instant::now();
@@ -243,8 +289,9 @@ impl NeutraApp {
                     );
                     self.requery();
                 }
-                Event::CompactFailed(error, index) => {
-                    self.index = index;
+                Event::CompactFailed(error) => {
+                    // Keep serving the complete resident index when cache
+                    // publication fails.
                     self.building_cache = false;
                     self.cache_dirty = false;
                     self.lanes.insert(
@@ -257,6 +304,24 @@ impl NeutraApp {
                         },
                     );
                     self.requery();
+                }
+                Event::TreeReady { generation, model } => {
+                    self.tree_building = false;
+                    if generation == self.data_generation() {
+                        self.tree_model = Some(model);
+                    }
+                }
+                Event::TreeFailed(error) => {
+                    self.tree_building = false;
+                    self.lanes.insert(
+                        "tree".into(),
+                        LaneState {
+                            label: "DISK MAP".into(),
+                            status: error,
+                            error: true,
+                            ..Default::default()
+                        },
+                    );
                 }
                 Event::Message(msg) => match msg {
                     HelperMsg::Hello { os, arch, .. } => {
@@ -282,12 +347,12 @@ impl NeutraApp {
                         );
                     }
                     HelperMsg::Records(records) => {
-                        self.index.extend(records);
-                        self.cache_dirty = true;
+                        if let Some(staging) = &mut self.scan_index {
+                            staging.extend(records);
+                        }
                     }
                     HelperMsg::ScanDone { mount, stats } => {
                         self.active_scans = self.active_scans.saturating_sub(1);
-                        self.scanning = self.active_scans > 0;
                         let k = mount.mountpoint.display().to_string();
                         self.lanes.insert(
                             k,
@@ -302,7 +367,6 @@ impl NeutraApp {
                     }
                     HelperMsg::ScanError { mount, error } => {
                         self.active_scans = self.active_scans.saturating_sub(1);
-                        self.scanning = self.active_scans > 0;
                         let k = mount.mountpoint.display().to_string();
                         self.lanes.insert(
                             k,
@@ -315,7 +379,49 @@ impl NeutraApp {
                             },
                         );
                     }
+                    HelperMsg::ScanComplete { mounts, errors } => {
+                        self.scanning = false;
+                        self.active_scans = 0;
+                        let staging = self.scan_index.take();
+                        if mounts == 0 {
+                            self.lanes.insert(
+                                "scan".into(),
+                                LaneState {
+                                    label: "NATIVE SCAN".into(),
+                                    status: format!(
+                                        "no supported native filesystems were discovered on {}",
+                                        std::env::consts::OS
+                                    ),
+                                    error: true,
+                                    ..Default::default()
+                                },
+                            );
+                        } else if errors > 0 {
+                            self.lanes.insert(
+                                "scan".into(),
+                                LaneState {
+                                    label: "REBUILD NOT PUBLISHED".into(),
+                                    status: format!(
+                                        "{errors} of {mounts} native lanes failed; keeping the last complete index"
+                                    ),
+                                    error: true,
+                                    ..Default::default()
+                                },
+                            );
+                        } else if let Some(staging) = staging {
+                            self.compact = None;
+                            self.index = staging;
+                            self.tree_model = None;
+                            self.tree_building = false;
+                            self.cache_dirty = true;
+                            self.last_cache = Instant::now() - Duration::from_secs(3);
+                            self.requery();
+                        }
+                    }
                     HelperMsg::Error(e) => {
+                        self.scanning = false;
+                        self.active_scans = 0;
+                        self.scan_index = None;
                         self.lanes.insert(
                             "protocol".into(),
                             LaneState {
@@ -352,9 +458,10 @@ impl NeutraApp {
                 },
             }
         }
-        let generation = self.index.generation();
+        let generation = self.data_generation();
         if generation != self.last_generation {
             self.last_generation = generation;
+            self.tree_model = None;
             self.requery();
         }
         if self.cache_dirty
@@ -362,7 +469,7 @@ impl NeutraApp {
             && self.active_scans == 0
             && self.last_cache.elapsed() > Duration::from_secs(2)
         {
-            let index = std::mem::replace(&mut self.index, Index::new());
+            let records = self.index.records().to_vec();
             let path = self.cache_path.clone();
             let tx = self.tx.clone();
             self.building_cache = true;
@@ -371,19 +478,17 @@ impl NeutraApp {
                 LaneState {
                     label: "COMPACT INDEX".into(),
                     status: "building compressed search blocks".into(),
-                    records: index.len() as u64,
+                    records: records.len() as u64,
                     ..Default::default()
                 },
             );
             std::thread::spawn(move || {
-                match CompactIndex::build(index.records(), &path)
-                    .and_then(|_| CompactIndex::open(&path))
-                {
+                match CompactIndex::build(&records, &path).and_then(|_| CompactIndex::open(&path)) {
                     Ok(compact) => {
                         let _ = tx.send(Event::CompactReady(compact));
                     }
                     Err(error) => {
-                        let _ = tx.send(Event::CompactFailed(error.to_string(), index));
+                        let _ = tx.send(Event::CompactFailed(error.to_string()));
                     }
                 }
             });
@@ -396,6 +501,46 @@ impl NeutraApp {
     }
     fn index_is_empty(&self) -> bool {
         self.index_len() == 0
+    }
+    fn scan_len(&self) -> u64 {
+        self.scan_index
+            .as_ref()
+            .map_or(0, |index| index.len() as u64)
+    }
+    fn data_generation(&self) -> u64 {
+        self.compact
+            .as_ref()
+            .map_or_else(|| self.index.generation(), CompactIndex::generation)
+    }
+    fn request_tree_model(&mut self) {
+        if self.tree_building || self.tree_model.is_some() || self.index_is_empty() {
+            return;
+        }
+        self.tree_building = true;
+        let generation = self.data_generation();
+        let tx = self.tx.clone();
+        let compact_path = self.compact.as_ref().map(|_| self.cache_path.clone());
+        let memory_records = compact_path
+            .is_none()
+            .then(|| self.index.records().to_vec());
+        std::thread::spawn(move || {
+            let records: Result<Vec<FileRecord>, String> = if let Some(path) = compact_path {
+                CompactIndex::open(&path)
+                    .and_then(|index| index.records())
+                    .map_err(|error| format!("cannot prepare disk hierarchy: {error}"))
+            } else {
+                Ok(memory_records.unwrap_or_default())
+            };
+            match records {
+                Ok(records) => {
+                    let model = ui::Hierarchy::from_records(&records);
+                    let _ = tx.send(Event::TreeReady { generation, model });
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::TreeFailed(error));
+                }
+            }
+        });
     }
     fn requery(&mut self) {
         if let Some(current_generation) = self.compact.as_ref().map(CompactIndex::generation) {
@@ -432,17 +577,23 @@ impl NeutraApp {
                 }
             }
         }
-        if self.query.trim().is_empty() {
-            self.hits.clear();
-            self.search_stats = SearchStats {
-                scanned: self.index_len(),
-                matched: self.index_len(),
-                wall_us: 0,
-            };
-            return;
+        let mut q = Query::parse(if self.regex_mode { "" } else { &self.query });
+        q.limit = 1_000;
+        q.sort = match self.sort_mode {
+            ui::SortMode::Modified => SortKey::MtimeDesc,
+            ui::SortMode::Name => SortKey::NameAsc,
+            ui::SortMode::Size => SortKey::SizeDesc,
+            ui::SortMode::Path => SortKey::PathAsc,
+        };
+        q.kinds = match self.kind_filter {
+            ui::KindFilter::All => Vec::new(),
+            ui::KindFilter::Files => vec![FileKind::File, FileKind::Symlink],
+            ui::KindFilter::Folders => vec![FileKind::Dir],
+        };
+        if let Some(root) = &self.scope_root {
+            q.scope_roots.push(root.clone());
+            q.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
         }
-        let mut q = Query::parse(&self.query);
-        q.limit = 500;
         let result = if let Some(index) = &self.compact {
             index.search(&q).ok()
         } else {
@@ -453,519 +604,64 @@ impl NeutraApp {
             self.search_stats = stats;
         }
     }
-
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.set_width(220.0);
-        ui.add_space(18.0);
-        ui.label(RichText::new("NEUTRA").size(11.0).color(ACID).strong());
-        ui.label(RichText::new("SEARCH//").size(25.0).color(TEXT).strong());
-        ui.label(
-            RichText::new("NATIVE METADATA LANES")
-                .size(9.0)
-                .color(MUTED),
-        );
-        ui.add_space(22.0);
-        if ui
-            .add_sized(
-                [190.0, 34.0],
-                egui::Button::new(if self.scanning {
-                    "SCANNING…"
-                } else {
-                    "RESCAN NATIVE INDEX"
-                })
-                .fill(RAISED)
-                .stroke(Stroke::new(1.0_f32, ACID)),
-            )
-            .clicked()
-        {
-            self.begin_scan();
-        }
-        ui.add_space(8.0);
-        if self.remote_watcher_started {
-            ui.label(
-                RichText::new("NETWORK HELPER AUTO-INSTALL ENABLED")
-                    .size(9.0)
-                    .color(WARN),
-            );
-        } else if ui
-            .add_sized(
-                [190.0, 28.0],
-                egui::Button::new("ENABLE NETWORK HELPERS")
-                    .fill(RAISED)
-                    .stroke(Stroke::new(1.0_f32, MUTED)),
-            )
-            .on_hover_text("Allows SSH/SCP installation on servers backing mounted network shares")
-            .clicked()
-        {
-            spawn_network_watcher(self.tx.clone());
-            self.remote_watcher_started = true;
-        }
-        ui.add_space(18.0);
-        ui.label(RichText::new("LANES").size(10.0).color(MUTED).strong());
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for lane in self.lanes.values() {
-                let c = if lane.error { WARN } else { ACID };
-                egui::Frame::new()
-                    .fill(RAISED)
-                    .corner_radius(5)
-                    .inner_margin(egui::Margin::same(9))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(c, "●");
-                            ui.label(RichText::new(&lane.label).size(11.0).strong());
-                        });
-                        if lane.records > 0 {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} entries · {} ms",
-                                    fmt_count(lane.records),
-                                    lane.ms
-                                ))
-                                .size(10.0)
-                                .color(MUTED),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new(shorten(&lane.status, 56))
-                                    .size(10.0)
-                                    .color(MUTED),
-                            );
-                        }
-                    });
-                ui.add_space(6.0);
-            }
-        });
-    }
-
-    fn header(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, PANEL);
-        // Neutra's asymmetric scanline is deliberately not a default egui header.
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(rect.left_top(), egui::vec2(5.0, rect.height())),
-            0.0,
-            ACID,
-        );
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(18.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("WHOLE-NAMESPACE INDEX")
-                        .size(9.0)
-                        .color(ACID)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new("Find without walking.")
-                        .size(19.0)
-                        .color(TEXT)
-                        .strong(),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(22.0);
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("ABOUT").size(10.0).color(ACID))
-                            .fill(RAISED)
-                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(45, 61, 69))),
-                    )
-                    .clicked()
-                {
-                    self.about_open = true;
-                }
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new(format!("{} OBJECTS", fmt_count(self.index_len())))
-                        .size(11.0)
-                        .color(MUTED),
-                );
-            });
-        });
-        ui.add_space(12.0);
-    }
-
-    fn about_window(&mut self, ctx: &egui::Context) {
-        if !self.about_open {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("About Neutrasearch")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(420.0)
-            .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("NEUTRASEARCH//")
-                        .size(24.0)
-                        .color(ACID)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                        .monospace()
-                        .color(MUTED),
-                );
-                ui.add_space(12.0);
-                ui.label("Fast native-metadata filename search without directory walking.");
-                ui.label("Created by NetroAki. Released under the MIT License.");
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new("SUPPORT DEVELOPMENT")
-                        .size(10.0)
-                        .color(MUTED)
-                        .strong(),
-                );
-                ui.hyperlink_to("Ko-fi · ko-fi.com/netroaki", "https://ko-fi.com/netroaki");
-                ui.hyperlink_to(
-                    "Patreon · patreon.com/NetroAki",
-                    "https://www.patreon.com/NetroAki",
-                );
-                ui.add_space(10.0);
-                ui.hyperlink_to(
-                    "Source · github.com/NetroAki/neutrasearch",
-                    "https://github.com/NetroAki/neutrasearch",
-                );
-            });
-        self.about_open = open;
-    }
-
-    fn search_bar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(18.0);
-            ui.label(RichText::new("⌕").size(24.0).color(ACID));
-            let before = self.query.clone();
-            ui.add_sized(
-                [ui.available_width() - 180.0, 42.0],
-                SearchField::new(&mut self.query),
-            );
-            if before != self.query {
-                self.requery();
-            }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} / {} µs",
-                    fmt_count(self.search_stats.matched),
-                    self.search_stats.wall_us
-                ))
-                .size(10.0)
-                .color(MUTED),
-            );
-            ui.add_space(18.0);
-        });
-        ui.add_space(12.0);
-    }
-
-    fn size_map(&mut self, ui: &mut egui::Ui) {
-        let handle_h = 24.0;
-        let (handle, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), handle_h),
-            egui::Sense::click_and_drag(),
-        );
-        ui.painter().rect_filled(handle, 0.0, PANEL);
-        ui.painter().hline(
-            (handle.center().x - 24.0)..=(handle.center().x + 24.0),
-            handle.center().y,
-            Stroke::new(2.0_f32, MUTED),
-        );
-        ui.painter().text(
-            handle.left_center() + egui::vec2(14.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            if self.treemap_open {
-                "SIZE MAP  ▾"
-            } else {
-                "SIZE MAP  ▴"
-            },
-            FontId::monospace(10.0),
-            ACID,
-        );
-        if response.clicked() {
-            self.treemap_open = !self.treemap_open;
-        }
-        if response.dragged() {
-            self.treemap_open = true;
-            self.treemap_height =
-                (self.treemap_height - response.drag_delta().y).clamp(90.0, 420.0);
-        }
-        if !self.treemap_open {
-            return;
-        }
-        let map_h = (self.treemap_height - handle_h).max(60.0);
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), map_h),
-            egui::Sense::hover(),
-        );
-        ui.painter()
-            .rect_filled(rect, 0.0, Color32::from_rgb(6, 9, 12));
-        let mut groups = std::collections::HashMap::<String, (u64, u64)>::new();
-        for hit in &self.hits {
-            if hit.record.kind != FileKind::File {
-                continue;
-            }
-            let ext = match hit.record.extension() {
-                "" => "(none)",
-                x => x,
-            };
-            let g = groups.entry(ext.to_ascii_lowercase()).or_default();
-            g.0 = g.0.saturating_add(hit.record.size.max(1));
-            g.1 += 1;
-        }
-        let mut groups = groups
-            .into_iter()
-            .map(|(name, (bytes, count))| MapBlock { name, bytes, count })
-            .collect::<Vec<_>>();
-        groups.sort_unstable_by_key(|group| std::cmp::Reverse(group.bytes));
-        groups.truncate(96);
-        let mut laid = Vec::new();
-        layout_map(&groups, rect.shrink(3.0), &mut laid);
-        let pointer = ui.input(|i| i.pointer.hover_pos());
-        let mut clicked_ext = None;
-        for (block, r) in laid {
-            let color = map_color(&block.name);
-            let hovered = pointer.is_some_and(|p| r.contains(p));
-            ui.painter().rect_filled(
-                r.shrink(1.0),
-                2.0,
-                if hovered {
-                    color
-                } else {
-                    color.gamma_multiply(0.72)
-                },
-            );
-            if r.width() > 54.0 && r.height() > 30.0 {
-                ui.painter().text(
-                    r.left_top() + egui::vec2(6.0, 5.0),
-                    egui::Align2::LEFT_TOP,
-                    &block.name,
-                    FontId::monospace(10.0),
-                    Color32::WHITE,
-                );
-                ui.painter().text(
-                    r.left_bottom() + egui::vec2(6.0, -5.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    format!("{} · {}", format_size(block.bytes), block.count),
-                    FontId::monospace(9.0),
-                    Color32::from_white_alpha(190),
-                );
-            }
-            if hovered && ui.input(|i| i.pointer.primary_clicked()) {
-                clicked_ext = Some(block.name.clone());
-            }
-        }
-        if let Some(ext) = clicked_ext {
-            if ext == "(none)" {
-                self.query = "ext:".into();
-            } else {
-                self.query = format!("ext:{ext}");
-            }
-            self.requery();
-        }
-    }
-
-    fn results(&mut self, ui: &mut egui::Ui) {
-        let row_h = 52.0;
-        let count = self.hits.len();
-        if count == 0 {
-            ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("NO SIGNAL").size(26.0).color(MUTED).strong());
-                    ui.label(
-                        RichText::new(if self.index_is_empty() {
-                            "Waiting for a native index lane…"
-                        } else {
-                            "Try a name, extension, kind, filesystem, size, or under: filter."
-                        })
-                        .color(MUTED),
-                    );
-                });
-            });
-            return;
-        }
-        let mut file_action = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show_rows(ui, row_h, count, |ui, range| {
-                for i in range {
-                    let hit = &self.hits[i];
-                    let rec = &hit.record;
-                    let (r, response) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), row_h),
-                        egui::Sense::click(),
-                    );
-                    let selected = self.selected.as_deref() == Some(rec.path.as_ref());
-                    let fill = if selected {
-                        Color32::from_rgb(29, 48, 52)
-                    } else if response.hovered() {
-                        Color32::from_rgb(22, 31, 39)
-                    } else if i % 2 == 0 {
-                        INK
-                    } else {
-                        Color32::from_rgb(11, 15, 20)
-                    };
-                    ui.painter().rect_filled(r, 0.0, fill);
-                    if response.hovered() || selected {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(r.left_top(), egui::vec2(3.0, r.height())),
-                            0.0,
-                            ACID,
-                        );
-                    }
-                    let icon = match rec.kind {
-                        FileKind::Dir => "D",
-                        FileKind::Symlink => "L",
-                        FileKind::File => "F",
-                        FileKind::Other => "?",
-                    };
-                    let ic = match rec.kind {
-                        FileKind::Dir => BLUE,
-                        FileKind::Symlink => WARN,
-                        _ => ACID,
-                    };
-                    let center = r.left_center() + egui::vec2(25.0, 0.0);
-                    ui.painter()
-                        .circle_filled(center, 13.0, ic.gamma_multiply(0.16));
-                    ui.painter().text(
-                        center,
-                        egui::Align2::CENTER_CENTER,
-                        icon,
-                        FontId::monospace(10.0),
-                        ic,
-                    );
-                    let name_pos = r.left_top() + egui::vec2(50.0, 9.0);
-                    ui.painter().text(
-                        name_pos,
-                        egui::Align2::LEFT_TOP,
-                        rec.name(),
-                        FontId::proportional(14.0),
-                        TEXT,
-                    );
-                    ui.painter().text(
-                        name_pos + egui::vec2(0.0, 21.0),
-                        egui::Align2::LEFT_TOP,
-                        shorten(&rec.path, 110),
-                        FontId::monospace(10.5),
-                        MUTED,
-                    );
-                    ui.painter().text(
-                        r.right_center() - egui::vec2(18.0, 8.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!(
-                            "{}  ·  {}",
-                            format_size(rec.size),
-                            rec.fs.label().to_uppercase()
-                        ),
-                        FontId::monospace(10.0),
-                        MUTED,
-                    );
-                    if response.clicked() {
-                        self.selected = Some(rec.path.to_string());
-                    }
-                    if response.double_clicked() {
-                        file_action = Some(FileAction::Open(PathBuf::from(rec.path.as_ref())));
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("Open").clicked() {
-                            file_action = Some(FileAction::Open(PathBuf::from(rec.path.as_ref())));
-                            ui.close();
-                        }
-                        if ui.button("Reveal in file manager").clicked() {
-                            file_action =
-                                Some(FileAction::Reveal(PathBuf::from(rec.path.as_ref())));
-                            ui.close();
-                        }
-                        if ui.button("Copy path").clicked() {
-                            ui.ctx().copy_text(rec.path.to_string());
-                            ui.close();
-                        }
-                    });
-                }
-            });
-        if let Some(action) = file_action {
-            let description = match &action {
-                FileAction::Open(path) => format!("open {}", path.display()),
-                FileAction::Reveal(path) => format!("reveal {}", path.display()),
-            };
-            let result = launch_file_action(action);
-            self.lanes.insert(
-                "file-action".into(),
-                LaneState {
-                    label: "FILE ACTION".into(),
-                    status: match &result {
-                        Ok(()) => description,
-                        Err(error) => format!("{description}: {error}"),
-                    },
-                    error: result.is_err(),
-                    ..Default::default()
-                },
-            );
-        }
-    }
 }
 
 impl eframe::App for NeutraApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.process_events();
-        if self.scanning || self.building_cache {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        } else if self.remote_watcher_started {
-            ui.ctx().request_repaint_after(Duration::from_secs(1));
-        }
-        let size = ui.available_size();
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        ui.horizontal(|ui| {
-            egui::Frame::new()
-                .fill(PANEL)
-                .inner_margin(egui::Margin::same(12))
-                .show(ui, |ui| {
-                    ui.set_width(196.0);
-                    ui.set_min_height(size.y);
-                    self.sidebar(ui);
-                });
-            ui.vertical(|ui| {
-                ui.set_width(ui.available_width());
-                ui.allocate_ui(egui::vec2(ui.available_width(), 84.0), |ui| self.header(ui));
-                ui.allocate_ui(egui::vec2(ui.available_width(), 72.0), |ui| {
-                    self.search_bar(ui)
-                });
-                let status_h = 30.0;
-                let map_h = if self.treemap_open {
-                    self.treemap_height
-                } else {
-                    24.0
-                };
-                let results_h = (ui.available_height() - status_h - map_h).max(80.0);
-                ui.allocate_ui(egui::vec2(ui.available_width(), results_h), |ui| {
-                    egui::Frame::new().fill(INK).show(ui, |ui| {
-                        ui.set_min_height(results_h);
-                        self.results(ui);
-                    });
-                });
-                ui.allocate_ui(egui::vec2(ui.available_width(), map_h), |ui| {
-                    self.size_map(ui)
-                });
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(egui::Margin::symmetric(12, 4))
-                    .show(ui, |ui| {
-                        let items = [
-                            StatusBarItem::new("INDEX").value(fmt_count(self.index_len())),
-                            StatusBarItem::new("MATCHED")
-                                .value(fmt_count(self.search_stats.matched)),
-                            StatusBarItem::new("SEARCH")
-                                .value(format!("{} µs", self.search_stats.wall_us)),
-                            StatusBarItem::new("MODE").value("NATIVE / NO WALK"),
-                        ];
-                        ui.add(StatusBar::new(&items));
-                    });
-            });
-        });
-        self.about_window(ui.ctx());
+        ui::show_app(self, ui);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn request_elevated_restart() -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[allow(non_snake_case)]
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            window: *mut std::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show: i32,
+        ) -> *mut std::ffi::c_void;
+    }
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("cannot locate Neutrasearch executable: {error}"))?;
+    let operation = std::ffi::OsStr::new("runas")
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let executable = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            executable.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    } as isize;
+    if result <= 32 {
+        Err(format!(
+            "Windows elevation request failed with code {result}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn request_elevated_restart() -> Result<(), String> {
+    Err("elevated restart is only available on Windows".into())
 }
 
 fn launch_file_action(action: FileAction) -> std::io::Result<()> {
@@ -1251,28 +947,6 @@ fn discover_network_hosts() -> Vec<(String, String)> {
     Vec::new()
 }
 
-fn apply_theme(ctx: &egui::Context) {
-    let theme = Theme::dark();
-    theme.store(ctx);
-    let m3 = M3Theme::from_seed(ACID, true);
-    m3.store(ctx);
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = PANEL;
-    v.window_fill = RAISED;
-    v.extreme_bg_color = INK;
-    v.selection.bg_fill = Color32::from_rgb(31, 72, 60);
-    v.selection.stroke = Stroke::new(1.0_f32, ACID);
-    v.widgets.inactive.bg_fill = RAISED;
-    v.widgets.hovered.bg_fill = Color32::from_rgb(31, 41, 50);
-    v.widgets.active.bg_fill = Color32::from_rgb(35, 65, 59);
-    v.override_text_color = Some(TEXT);
-    ctx.set_visuals(v);
-    let mut s = (*ctx.global_style()).clone();
-    s.spacing.item_spacing = egui::vec2(8.0, 7.0);
-    s.spacing.interact_size.y = 34.0;
-    s.visuals.widgets.inactive.corner_radius = 5.into();
-    ctx.set_global_style(s);
-}
 fn env_flag(current: &str, legacy: &str) -> bool {
     std::env::var_os(current).is_some() || std::env::var_os(legacy).is_some()
 }
@@ -1289,22 +963,31 @@ fn legacy_cache_path() -> PathBuf {
     {
         return std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_default()
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
             .join("Neutrasearch/index.bin");
     }
     #[cfg(target_os = "macos")]
     {
         return std::env::var_os("HOME")
             .map(PathBuf::from)
-            .unwrap_or_default()
-            .join("Library/Caches/Neutrasearch/index.bin");
+            .filter(|path| path.is_absolute())
+            .map(|home| home.join("Library/Caches"))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Neutrasearch/index.bin");
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-            .unwrap_or_default()
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|home| home.join(".cache"))
+            })
+            .unwrap_or_else(std::env::temp_dir)
             .join("neutrasearch/index.bin")
     }
 }
@@ -1316,120 +999,33 @@ fn compact_cache_path() -> PathBuf {
     {
         return std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
             .join("Neutrasearch/index.nsx");
     }
     #[cfg(target_os = "macos")]
     {
         return std::env::var_os("HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Application Support/Neutrasearch/index.nsx");
+            .filter(|path| path.is_absolute())
+            .map(|home| home.join("Library/Application Support"))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Neutrasearch/index.nsx");
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
             .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|home| home.join(".local/share"))
             })
-            .unwrap_or_else(|| PathBuf::from("."))
+            .unwrap_or_else(std::env::temp_dir)
             .join("neutrasearch/index.nsx")
     }
-}
-#[derive(Clone)]
-struct MapBlock {
-    name: String,
-    bytes: u64,
-    count: u64,
-}
-fn layout_map<'a>(
-    items: &'a [MapBlock],
-    rect: egui::Rect,
-    out: &mut Vec<(&'a MapBlock, egui::Rect)>,
-) {
-    if items.is_empty() || rect.width() < 2.0 || rect.height() < 2.0 {
-        return;
-    }
-    if items.len() == 1 {
-        out.push((&items[0], rect));
-        return;
-    }
-    let total = items.iter().map(|b| b.bytes).sum::<u64>().max(1);
-    let mut left = 0u64;
-    let mut split = 1usize;
-    for (i, b) in items.iter().enumerate().take(items.len() - 1) {
-        left = left.saturating_add(b.bytes);
-        split = i + 1;
-        if left >= total / 2 {
-            break;
-        }
-    }
-    let ratio = (left as f32 / total as f32).clamp(0.08, 0.92);
-    let (a, b) = if rect.width() >= rect.height() {
-        let x = rect.left() + rect.width() * ratio;
-        (
-            egui::Rect::from_min_max(rect.min, egui::pos2(x, rect.bottom())),
-            egui::Rect::from_min_max(egui::pos2(x, rect.top()), rect.max),
-        )
-    } else {
-        let y = rect.top() + rect.height() * ratio;
-        (
-            egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), y)),
-            egui::Rect::from_min_max(egui::pos2(rect.left(), y), rect.max),
-        )
-    };
-    layout_map(&items[..split], a, out);
-    layout_map(&items[split..], b, out);
-}
-fn map_color(name: &str) -> Color32 {
-    let h = name.bytes().fold(0x811c9dc5u32, |a, b| {
-        a.wrapping_mul(16_777_619) ^ (b as u32)
-    });
-    let colors = [
-        Color32::from_rgb(43, 133, 117),
-        Color32::from_rgb(43, 101, 154),
-        Color32::from_rgb(142, 83, 145),
-        Color32::from_rgb(177, 108, 56),
-        Color32::from_rgb(89, 126, 65),
-        Color32::from_rgb(141, 65, 79),
-    ];
-    colors[(h as usize) % colors.len()]
-}
-fn fmt_count(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.2}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-fn format_size(n: u64) -> String {
-    if n >= 1 << 30 {
-        format!("{:.1}G", n as f64 / (1u64 << 30) as f64)
-    } else if n >= 1 << 20 {
-        format!("{:.1}M", n as f64 / (1u64 << 20) as f64)
-    } else if n >= 1 << 10 {
-        format!("{:.1}K", n as f64 / (1u64 << 10) as f64)
-    } else {
-        format!("{n}B")
-    }
-}
-fn shorten(s: &str, max: usize) -> String {
-    let chars = s.chars().count();
-    if chars <= max {
-        return s.into();
-    }
-    let tail = s
-        .chars()
-        .rev()
-        .take(max.saturating_sub(1))
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    format!("…{tail}")
 }
 
 #[cfg(test)]

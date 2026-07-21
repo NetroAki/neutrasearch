@@ -1,0 +1,72 @@
+name: build-npm-platform-packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Neutrasearch binary package version
+        required: true
+        default: '0.1.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package: neutrasearch-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            package: neutrasearch-linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: neutrasearch-win32-x64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            package: neutrasearch-darwin-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            package: neutrasearch-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libext2fs-dev
+      - name: Verify native runner
+        run: python scripts/package_release.py verify-host --target "${{ matrix.target }}"
+      - name: Build native applications
+        run: cargo build --workspace --bins --release --locked --target "${{ matrix.target }}"
+      - name: Smoke native applications
+        run: cargo run --release --locked --target "${{ matrix.target }}" --bin neutrasearch -- --version
+      - name: Prepare platform npm package
+        run: >-
+          python scripts/package_release.py npm-platform
+          --project-root .
+          --target-dir "target/${{ matrix.target }}/release"
+          --output-dir dist/npm
+          --target "${{ matrix.target }}"
+          --version "${{ inputs.version }}"
+      - name: Pack platform npm package
+        run: npm pack --pack-destination "${{ github.workspace }}/dist/tarballs"
+        working-directory: dist/npm/${{ matrix.package }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.package }}
+          path: dist/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7

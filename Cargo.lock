@@ -2306,6 +2306,7 @@ dependencies = [
  "egui_expressive",
  "neutra-core",
  "neutra-remote",
+ "regex",
 ]
 
 [[package]]

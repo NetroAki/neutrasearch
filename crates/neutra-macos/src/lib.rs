@@ -23,7 +23,8 @@ pub fn parse_mdfind_nul(bytes: &[u8]) -> Vec<String> {
 
 #[cfg(target_os = "macos")]
 pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
-    use neutra_core::{FileKind, FsKind};
+    use anyhow::Context as _;
+    use neutra_core::FileKind;
     use std::os::unix::fs::MetadataExt;
     use std::process::Command;
     use std::time::Instant;
@@ -34,23 +35,26 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
         .arg("-onlyin")
         .arg(&mount.mountpoint)
         .arg(SPOTLIGHT_QUERY)
-        .output()?;
-    if !output.status.success() {
-        bail!(
-            "Spotlight query failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let paths = parse_mdfind_nul(&output.stdout);
-    if paths.is_empty() {
-        let status = Command::new("/usr/bin/mdutil")
-            .arg("-s")
-            .arg(&mount.mountpoint)
-            .output()?;
-        let text = String::from_utf8_lossy(&status.stdout);
-        if text.contains("Indexing disabled") {
-            return bulk_fallback(mount, sink);
+        .output();
+    let paths = match output {
+        Ok(output) if output.status.success() => parse_mdfind_nul(&output.stdout),
+        Ok(output) => {
+            let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return bulk_fallback(mount, sink).with_context(|| {
+                format!("Spotlight query failed ({reason}); native bulk fallback also failed")
+            });
         }
+        Err(error) => {
+            return bulk_fallback(mount, sink).with_context(|| {
+                format!("cannot launch Spotlight query ({error}); native bulk fallback also failed")
+            });
+        }
+    };
+    if paths.is_empty() {
+        // Do not parse localized mdutil prose. An empty all-items query is
+        // sufficient evidence that Spotlight cannot supply this volume.
+        return bulk_fallback(mount, sink)
+            .context("Spotlight returned no indexed objects and native bulk fallback failed");
     }
 
     let mut stats = ScanStats::default();
@@ -75,7 +79,7 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
             mtime: md.mtime(),
             mode: md.mode(),
             kind,
-            fs: FsKind::Unsupported("apfs".into()),
+            fs: mount.fs.clone(),
             native_id: 0,
             native_parent: 0,
             source: 0,
@@ -90,7 +94,7 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
 #[cfg(target_os = "macos")]
 fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
     use anyhow::Context as _;
-    use neutra_core::{FileKind, FsKind};
+    use neutra_core::FileKind;
     use std::collections::VecDeque;
     use std::ffi::{CString, OsString};
     use std::os::fd::RawFd;
@@ -254,7 +258,7 @@ fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
                     mtime: st.st_mtime,
                     mode,
                     kind,
-                    fs: FsKind::Unsupported("apfs".into()),
+                    fs: mount.fs.clone(),
                     native_id: st.st_ino as u64,
                     native_parent: parent_id,
                     source: 0,

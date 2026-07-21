@@ -49,7 +49,7 @@ pub fn action() -> Action {
 
 fn search(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--limit N] [--json]");
+        println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]");
         return 0;
     }
     if args.is_empty() {
@@ -244,7 +244,7 @@ fn print_help() {
         "Neutrasearch — fast indexed filename search\n\n\
 Usage:\n  \
   neutrasearch [gui]\n  \
-  neutrasearch search QUERY [--index INDEX.nsx] [--limit N] [--json]\n  \
+  neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]\n  \
   neutrasearch index MOUNT --output INDEX.nsx\n  \
   neutrasearch serve --index INDEX.nsx [--watch MOUNT]\n  \
   neutrasearch mcp --index INDEX.nsx\n\n\

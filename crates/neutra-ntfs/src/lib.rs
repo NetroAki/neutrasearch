@@ -167,7 +167,9 @@ pub fn scan_reader<R: Read + Seek>(
         );
     }
     let mut stats = ScanStats::default();
-    let prefix = prefix.trim_end_matches('/');
+    // Store one portable path spelling in the index. Windows volume roots arrive
+    // as `C:\\`; trimming both separators avoids producing `C:\\/name`.
+    let prefix = prefix.trim_end_matches(['/', '\\']);
     let mut dir_paths = HashMap::<u64, String>::new();
     dir_paths.insert(5, String::new());
     for (&id, entry) in &entries {

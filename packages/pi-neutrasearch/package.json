@@ -1,0 +1,54 @@
+{
+  "name": "pi-neutrasearch",
+  "version": "0.1.1",
+  "description": "Token-efficient native indexed filename and path search for Pi agents",
+  "type": "module",
+  "license": "MIT",
+  "author": "NetroAki",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "neutrasearch",
+    "file-search",
+    "indexed-search",
+    "agent-tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NetroAki/neutrasearch.git",
+    "directory": "packages/pi-neutrasearch"
+  },
+  "homepage": "https://github.com/NetroAki/neutrasearch#pi-package",
+  "bugs": {
+    "url": "https://github.com/NetroAki/neutrasearch/issues"
+  },
+  "files": [
+    "index.js",
+    "lib.js",
+    "README.md",
+    "LICENSE",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "optionalDependencies": {
+    "neutrasearch-darwin-arm64": "0.1.0",
+    "neutrasearch-darwin-x64": "0.1.0",
+    "neutrasearch-linux-arm64": "0.1.0",
+    "neutrasearch-linux-x64": "0.1.0",
+    "neutrasearch-win32-x64": "0.1.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepublishOnly": "npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol version; helper and client refuse to talk across major versions.
-pub const PROTO_VERSION: u32 = 4;
+pub const PROTO_VERSION: u32 = 5;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 5;
+pub const HELPER_BUILD: u32 = 6;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,6 +57,12 @@ pub enum HelperMsg {
     ScanError {
         mount: MountInfo,
         error: String,
+    },
+    /// Terminates one Scan/ScanResident request, including the zero-mount case.
+    /// Clients publish a replacement index only when `errors == 0`.
+    ScanComplete {
+        mounts: u32,
+        errors: u32,
     },
     /// Response to Search: matched records (already sorted/limited).
     SearchResult {
@@ -120,6 +126,27 @@ mod tests {
         let length = u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_le_bytes();
         let error = read_frame::<_, ClientMsg>(&mut &length[..]).unwrap_err();
         assert!(error.to_string().contains("exceeds cap"));
+    }
+
+    #[test]
+    fn scan_completion_roundtrip_preserves_atomic_publication_counts() {
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            &HelperMsg::ScanComplete {
+                mounts: 3,
+                errors: 1,
+            },
+        )
+        .unwrap();
+        let message: HelperMsg = read_frame(&mut bytes.as_slice()).unwrap().unwrap();
+        assert!(matches!(
+            message,
+            HelperMsg::ScanComplete {
+                mounts: 3,
+                errors: 1
+            }
+        ));
     }
 
     #[test]

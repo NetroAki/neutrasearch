@@ -536,33 +536,22 @@ fn main() -> Result<()> {
         Some("--scan-summary") => {
             let target = std::env::args()
                 .nth(2)
-                .context("use: neutrasearch index MOUNT --output INDEX.nsx")?;
-            #[cfg(target_os = "linux")]
-            {
-                let mount = neutra_core::mounts::system_mounts()?
-                    .into_iter()
-                    .find(|m| m.mountpoint == std::path::Path::new(&target))
-                    .with_context(|| format!("no supported mount at {target}"))?;
-                let mut received = 0u64;
-                let stats = dispatch_lane(&mount, &mut |_| received += 1)?;
-                println!(
-                    "fs={} mount={} records={} emitted={} files={} dirs={} wall_ms={} detail={}",
-                    mount.fs.label(),
-                    mount.mountpoint.display(),
-                    stats.records,
-                    received,
-                    stats.files,
-                    stats.dirs,
-                    stats.wall_ms,
-                    stats.detail
-                );
-                return Ok(());
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = target;
-                anyhow::bail!("--scan-summary mount discovery is currently available on Linux");
-            }
+                .context("use: neutrasearch-helper --scan-summary MOUNT")?;
+            let mount = find_local_mount(&target)?;
+            let mut received = 0u64;
+            let stats = dispatch_lane(&mount, &mut |_| received += 1)?;
+            println!(
+                "fs={} mount={} records={} emitted={} files={} dirs={} wall_ms={} detail={}",
+                mount.fs.label(),
+                mount.mountpoint.display(),
+                stats.records,
+                received,
+                stats.files,
+                stats.dirs,
+                stats.wall_ms,
+                stats.detail
+            );
+            return Ok(());
         }
         Some("--build-index") => {
             let target = std::env::args()
@@ -573,36 +562,23 @@ fn main() -> Result<()> {
                     .nth(3)
                     .context("use: neutrasearch index MOUNT --output INDEX.nsx")?,
             );
-            #[cfg(target_os = "linux")]
-            {
-                let mount = neutra_core::mounts::system_mounts()?
-                    .into_iter()
-                    .find(|m| m.mountpoint == std::path::Path::new(&target))
-                    .with_context(|| format!("no supported mount at {target}"))?;
-                let (_rebuild_lock, delta_path) = acquire_rebuild_lock(&output)?;
-                let mut records = Vec::new();
-                let mountpoint = mount.mountpoint.clone();
-                let scan = dispatch_lane(&mount, &mut |record| {
-                    if !default_path_excluded(&mountpoint, record.path.as_ref()) {
-                        records.push(record);
-                    }
-                })?;
-                let built = CompactIndex::build(&records, &output)?;
-                match std::fs::remove_file(&delta_path) {
-                    Ok(()) => sync_parent(&delta_path)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error).context("remove obsolete delta WAL after rebuild")
-                    }
+            let mount = find_local_mount(&target)?;
+            let (_rebuild_lock, delta_path) = acquire_rebuild_lock(&output)?;
+            let mut records = Vec::new();
+            let mountpoint = mount.mountpoint.clone();
+            let scan = dispatch_lane(&mount, &mut |record| {
+                if !default_path_excluded(&mountpoint, record.path.as_ref()) {
+                    records.push(record);
                 }
-                println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),records.len(),scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
-                return Ok(());
+            })?;
+            let built = CompactIndex::build(&records, &output)?;
+            match std::fs::remove_file(&delta_path) {
+                Ok(()) => sync_parent(&delta_path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("remove obsolete delta WAL after rebuild"),
             }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = (target, output);
-                anyhow::bail!("--build-index mount discovery is currently available on Linux");
-            }
+            println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),records.len(),scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
+            return Ok(());
         }
         _ => {}
     }
@@ -1042,9 +1018,20 @@ fn launch_scans(
     let out = Arc::clone(out);
     let index = index.map(Arc::clone);
     threads.push(std::thread::spawn(move || {
+        let mount_count = mounts.len() as u32;
+        let mut errors = 0u32;
         for mount in mounts {
-            run_scan(mount, Arc::clone(&out), index.as_ref().map(Arc::clone));
+            if !run_scan(mount, Arc::clone(&out), index.as_ref().map(Arc::clone)) {
+                errors += 1;
+            }
         }
+        send_lossy(
+            &out,
+            &HelperMsg::ScanComplete {
+                mounts: mount_count,
+                errors,
+            },
+        );
     }));
 }
 
@@ -1065,7 +1052,7 @@ fn run_scan(
     mount: MountInfo,
     out: Arc<Mutex<BufWriter<Stdout>>>,
     index: Option<Arc<RwLock<Index>>>,
-) {
+) -> bool {
     send_lossy(
         &out,
         &HelperMsg::ScanBegin {
@@ -1111,6 +1098,7 @@ fn run_scan(
             stats.files = counts.1;
             stats.wall_ms = started.elapsed().as_millis() as u64;
             send_lossy(&out, &HelperMsg::ScanDone { mount, stats });
+            true
         }
         Err(e) => {
             send_lossy(
@@ -1120,6 +1108,7 @@ fn run_scan(
                     error: format!("{e:#}"),
                 },
             );
+            false
         }
     }
 }
@@ -1145,40 +1134,181 @@ fn default_path_excluded(mountpoint: &std::path::Path, path: &str) -> bool {
             && (path.starts_with("/proc") || path.starts_with("/sys")))
 }
 
+fn find_local_mount(target: &str) -> Result<MountInfo> {
+    discover_local_mounts()
+        .into_iter()
+        .find(|mount| same_mountpoint(&mount.mountpoint, std::path::Path::new(target)))
+        .with_context(|| {
+            format!(
+                "no supported native filesystem is mounted at {target} on {}",
+                std::env::consts::OS
+            )
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn same_mountpoint(left: &std::path::Path, right: &std::path::Path) -> bool {
+    fn normalized(path: &std::path::Path) -> String {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    normalized(left) == normalized(right)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn same_mountpoint(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left == right
+}
+
 fn discover_local_mounts() -> Vec<MountInfo> {
     #[cfg(target_os = "linux")]
     {
         return neutra_core::mounts::system_mounts()
             .unwrap_or_default()
             .into_iter()
-            .filter(|m| m.fs.is_indexable_local())
+            .filter(|mount| mount.fs.is_indexable_local())
             .collect();
     }
     #[cfg(target_os = "macos")]
     {
-        return vec![MountInfo {
-            device: "/".into(),
-            mountpoint: "/".into(),
-            fs: FsKind::Unsupported("apfs".into()),
-            source: neutra_core::MountSource::Local,
-        }];
+        let output = std::process::Command::new("/sbin/mount").output();
+        let mounts = output
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_macos_mount_output(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default();
+        if !mounts.is_empty() {
+            return mounts;
+        }
+        return vec![macos_mount("/dev/root", "/", "apfs")];
     }
     #[cfg(target_os = "windows")]
     {
-        return (b'A'..=b'Z')
-            .filter_map(|letter| {
-                let root = format!("{}:\\", letter as char);
-                std::path::Path::new(&root).exists().then(|| MountInfo {
-                    device: format!("{}:", letter as char),
-                    mountpoint: root.into(),
-                    fs: FsKind::Ntfs,
-                    source: neutra_core::MountSource::Local,
-                })
-            })
-            .collect();
+        return windows_local_mounts();
     }
     #[allow(unreachable_code)]
     Vec::new()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_mount(device: &str, mountpoint: &str, filesystem: &str) -> MountInfo {
+    MountInfo {
+        device: device.into(),
+        mountpoint: mountpoint.into(),
+        // The macOS dispatch lane intentionally routes APFS/HFS volumes through
+        // Spotlight/getattrlistbulk even though FsKind has no APFS variant.
+        fs: FsKind::Unsupported(filesystem.to_ascii_lowercase()),
+        source: neutra_core::MountSource::Local,
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_mount_output(output: &str) -> Vec<MountInfo> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (device, mounted) = line.split_once(" on ")?;
+            let (mountpoint, options) = mounted.rsplit_once(" (")?;
+            let filesystem = options.trim_end_matches(')').split(',').next()?.trim();
+            if !matches!(filesystem, "apfs" | "hfs") || mountpoint.starts_with("/System/Volumes/") {
+                return None;
+            }
+            Some(macos_mount(device, mountpoint, filesystem))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_local_mounts() -> Vec<MountInfo> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    #[allow(non_snake_case)]
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLogicalDriveStringsW(length: u32, buffer: *mut u16) -> u32;
+        fn GetDriveTypeW(root: *const u16) -> u32;
+        fn GetVolumeInformationW(
+            root: *const u16,
+            volume_name: *mut u16,
+            volume_name_len: u32,
+            serial: *mut u32,
+            max_component_len: *mut u32,
+            flags: *mut u32,
+            filesystem_name: *mut u16,
+            filesystem_name_len: u32,
+        ) -> i32;
+    }
+
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_FIXED: u32 = 3;
+    let required = unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) };
+    if required == 0 {
+        return Vec::new();
+    }
+    let mut buffer = vec![0u16; required as usize + 1];
+    let written = unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
+    if written == 0 || written as usize >= buffer.len() {
+        return Vec::new();
+    }
+
+    let mut mounts = Vec::new();
+    let mut offset = 0usize;
+    while offset < written as usize {
+        let Some(length) = buffer[offset..]
+            .iter()
+            .position(|character| *character == 0)
+        else {
+            break;
+        };
+        if length == 0 {
+            break;
+        }
+        let root = &buffer[offset..offset + length + 1];
+        offset += length + 1;
+        let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+        if !matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE) {
+            continue;
+        }
+        let mut filesystem = [0u16; 32];
+        let ok = unsafe {
+            GetVolumeInformationW(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                filesystem.as_mut_ptr(),
+                filesystem.len() as u32,
+            )
+        };
+        if ok == 0 {
+            continue;
+        }
+        let filesystem_len = filesystem
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(filesystem.len());
+        let filesystem = String::from_utf16_lossy(&filesystem[..filesystem_len]);
+        if !filesystem.eq_ignore_ascii_case("ntfs") {
+            continue;
+        }
+        let mountpoint = std::path::PathBuf::from(OsString::from_wide(&root[..length]));
+        let device = mountpoint
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_owned();
+        mounts.push(MountInfo {
+            device,
+            mountpoint,
+            fs: FsKind::Ntfs,
+            source: neutra_core::MountSource::Local,
+        });
+    }
+    mounts
 }
 
 /// Route a mount to its native lane. Unsupported combinations are explicit
@@ -1453,6 +1583,23 @@ mod tests {
     }
 
     #[test]
+    fn macos_mount_parser_keeps_user_visible_native_volumes() {
+        let mounts = parse_macos_mount_output(
+            "/dev/disk3s1s1 on / (apfs, sealed, local)\n\
+             /dev/disk3s5 on /System/Volumes/Data (apfs, local)\n\
+             /dev/disk7s1 on /Volumes/Archive Drive (hfs, local)\n\
+             server:/share on /Volumes/Team (nfs, nodev)\n",
+        );
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].mountpoint, std::path::Path::new("/"));
+        assert_eq!(
+            mounts[1].mountpoint,
+            std::path::Path::new("/Volumes/Archive Drive")
+        );
+        assert_eq!(mounts[1].fs, FsKind::Unsupported("hfs".into()));
+    }
+
+    #[test]
     fn scan_requests_use_trusted_mount_metadata() {
         let trusted = MountInfo {
             device: "/dev/trusted".into(),
@@ -1481,6 +1628,30 @@ mod tests {
             true,
         )
         .is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_discovery_reports_only_real_ntfs_volume_roots() {
+        let mounts = discover_local_mounts();
+        assert!(
+            !mounts.is_empty(),
+            "Windows CI host should expose its system volume"
+        );
+        assert!(mounts.iter().all(|mount| mount.fs == FsKind::Ntfs));
+        assert!(mounts.iter().all(|mount| mount.mountpoint.is_absolute()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_discovery_includes_the_user_visible_root_volume() {
+        let mounts = discover_local_mounts();
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount.mountpoint == std::path::Path::new("/")),
+            "macOS CI host should expose its root APFS volume"
+        );
     }
 
     #[test]

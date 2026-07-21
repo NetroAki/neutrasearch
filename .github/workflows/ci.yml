@@ -34,6 +34,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -44,12 +51,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --bins --release --locked
       - run: cargo run --release --locked --bin neutrasearch -- --version
+      - run: cargo run --release --locked --bin neutrasearch -- index --help
+      - run: cargo run --release --locked --bin neutrasearch -- search --help
       - run: cargo run --release --locked --bin neutrasearch-helper -- --version
+      - run: cargo run --release --locked --bin neutrasearch-helper -- --build
+      - run: python scripts/package_release.py self-test
+      - run: npm test
+        working-directory: packages/pi-neutrasearch
+      - run: npm pack --dry-run
+        working-directory: packages/pi-neutrasearch
       - if: runner.os == 'Linux'
         run: bash scripts/check-no-walk.sh
       - if: runner.os == 'Linux'
         run: |
-          python3 scripts/package_release.py self-test
-          VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-          python3 scripts/package_release.py package --project-root . --target-dir target/release --output-dir dist --target x86_64-unknown-linux-gnu --version "$VERSION" --format tar.gz
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python scripts/package_release.py package --project-root . --target-dir target/release --output-dir dist --target x86_64-unknown-linux-gnu --version "$VERSION" --format tar.gz
           tar -tzf dist/*.tar.gz >/dev/null
