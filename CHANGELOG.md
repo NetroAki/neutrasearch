@@ -28,6 +28,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 - Add deterministic portable archive tooling, release checksums, and cross-platform release automation.
 - Add the `pi-neutrasearch` Pi package with a workspace-confined, read-only, token-efficient indexed path tool; it defaults to 20 relative paths, paths-only JSON transport, and a 6,000-character output cap.
+- Make `pi install npm:pi-neutrasearch` install the matching native application through OS/CPU-constrained optional packages, with `/neutrasearch-setup` for explicit first-index approval and no postinstall scan or privilege action.
 - Add query-client `--scope` and `--json-paths` options for trusted agent integrations without unnecessary metadata payloads.
 
 ## [0.1.0] - Unreleased

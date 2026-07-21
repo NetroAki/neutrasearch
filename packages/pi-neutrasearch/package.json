@@ -1,6 +1,6 @@
 {
   "name": "pi-neutrasearch",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Token-efficient native indexed filename and path search for Pi agents",
   "type": "module",
   "license": "MIT",
