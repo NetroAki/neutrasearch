@@ -62,11 +62,11 @@ jobs:
           --target "${{ matrix.target }}"
           --version "${{ inputs.version }}"
       - name: Pack platform npm package
-        run: npm pack --pack-destination "${{ github.workspace }}/dist/tarballs"
+        run: npm pack
         working-directory: dist/npm/${{ matrix.package }}
       - uses: actions/upload-artifact@v4
         with:
           name: npm-${{ matrix.package }}
-          path: dist/tarballs/*.tgz
+          path: dist/npm/${{ matrix.package }}/*.tgz
           if-no-files-found: error
           retention-days: 7
