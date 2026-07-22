@@ -15,6 +15,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 ### Reliability
 
 - Fix case-insensitive Windows scope checks when index records and selected roots use different slash styles.
+- Emit `/` rather than an empty path for the Btrfs root inode, allowing whole-root compact index builds to publish successfully.
 - Register, start, upgrade, recover, and uninstall the Windows scanner service with the administrator-approved setup, eliminating per-scan UAC prompts for installed builds.
 - Bump the helper compatibility build to 9 and add persistent Windows service logs under `%ProgramData%\Neutrasearch`.
 

@@ -5,7 +5,9 @@
 //! walking. If Spotlight is disabled, the future native fallback is
 //! `getattrlistbulk(2)`; readdir recursion is never used.
 
-use anyhow::{bail, Result};
+#[cfg(not(target_os = "macos"))]
+use anyhow::bail;
+use anyhow::Result;
 use neutra_core::{FileRecord, MountInfo, ScanStats};
 
 /// Spotlight query matching every indexed filesystem object. `public.item`
