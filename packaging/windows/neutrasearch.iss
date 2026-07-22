@@ -89,12 +89,13 @@ begin
     end;
     ResultCode := -1;
     if (not Exec(ExpandConstant('{sys}\icacls.exe'),
-      '"' + ExpandConstant('{app}') + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)(F) *S-1-5-32-544:(OI)(CI)(F) *S-1-5-32-545:(OI)(CI)(RX) /T /C /Q',
+      '"' + ExpandConstant('{app}') + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)(F) *S-1-5-32-544:(OI)(CI)(F) *S-1-5-32-545:(OI)(CI)(RX) /C /Q',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     begin
       Result := Format('The Neutrasearch installation ACL could not be hardened (exit code %d).', [ResultCode]);
       exit;
     end;
+    { The recursive reset above leaves child files inheriting effective ACEs. }
     Result := '';
   end;
 end;
