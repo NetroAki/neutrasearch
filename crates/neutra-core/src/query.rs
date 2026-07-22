@@ -239,7 +239,11 @@ fn path_is_under_ci(path: &str, lower_root: &str) -> bool {
     let Some(prefix) = path.as_bytes().get(..root.len()) else {
         return false;
     };
-    if !prefix.eq_ignore_ascii_case(root.as_bytes()) {
+    let same_prefix = prefix.iter().zip(root.as_bytes()).all(|(left, right)| {
+        left.eq_ignore_ascii_case(right)
+            || (matches!(left, b'/' | b'\\') && matches!(right, b'/' | b'\\'))
+    });
+    if !same_prefix {
         return false;
     }
     path.len() == root.len()
@@ -355,6 +359,15 @@ mod tests {
         assert!(!q.passes_filters(&rec("/allowed/ab/file.txt", 1)));
         assert!(!q.passes_filters(&rec("/denied/file.txt", 1)));
         assert!(!q.passes_filters(&rec("/allowed/a/../secret.txt", 1)));
+    }
+
+    #[test]
+    fn trusted_windows_scope_accepts_native_or_portable_separators() {
+        let mut query = Query::parse("");
+        query.scope_roots = vec![r"C:\Users\Alex".into()];
+        assert!(query.passes_filters(&rec("C:/Users/Alex/report.txt", 1)));
+        assert!(query.passes_filters(&rec(r"c:\users\alex\report.txt", 1)));
+        assert!(!query.passes_filters(&rec("C:/Users/Alexander/report.txt", 1)));
     }
 
     #[test]

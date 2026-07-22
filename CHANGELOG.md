@@ -4,6 +4,25 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-22
+
+### Security
+
+- Install the Windows raw-NTFS scanner as a LocalSystem service behind a local-only named pipe; both endpoints authenticate the opposite process before exchanging selected roots or records.
+- Force service builds into a non-reparse Program Files directory with deterministic SYSTEM/Administrators-write and Users-read/execute ACLs.
+- Keep approved-root validation and filtering inside the privileged helper; arbitrary local processes cannot submit framed scanner commands through the service pipe.
+
+### Reliability
+
+- Fix case-insensitive Windows scope checks when index records and selected roots use different slash styles.
+- Register, start, upgrade, recover, and uninstall the Windows scanner service with the administrator-approved setup, eliminating per-scan UAC prompts for installed builds.
+- Bump the helper compatibility build to 9 and add persistent Windows service logs under `%ProgramData%\Neutrasearch`.
+
+### Performance and interface
+
+- Show the newest indexed entries when search is empty, with deterministic path tie-breaking for equal sort values.
+- Replace per-record ancestor updates in the disk hierarchy with direct-folder collection and bottom-up aggregation, and prepare that model alongside compact-index publication instead of showing a second blocking phase.
+
 ## [0.1.1] - 2026-07-22
 
 ### Distribution

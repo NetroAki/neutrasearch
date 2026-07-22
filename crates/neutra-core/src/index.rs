@@ -86,11 +86,20 @@ impl Index {
         // exact, but an empty query over millions of records no longer builds
         // a millions-element temporary vector before truncation.
         let cmp = |a: &(u32, &FileRecord), b: &(u32, &FileRecord)| match q.sort {
-            SortKey::Relevance => b.0.cmp(&a.0).then(b.1.mtime.cmp(&a.1.mtime)),
-            SortKey::NameAsc => a.1.name().to_lowercase().cmp(&b.1.name().to_lowercase()),
+            SortKey::Relevance => {
+                b.0.cmp(&a.0)
+                    .then(b.1.mtime.cmp(&a.1.mtime))
+                    .then(a.1.path.cmp(&b.1.path))
+            }
+            SortKey::NameAsc => {
+                a.1.name()
+                    .to_ascii_lowercase()
+                    .cmp(&b.1.name().to_ascii_lowercase())
+                    .then(a.1.path.cmp(&b.1.path))
+            }
             SortKey::PathAsc => a.1.path.cmp(&b.1.path),
-            SortKey::SizeDesc => b.1.size.cmp(&a.1.size),
-            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime),
+            SortKey::SizeDesc => b.1.size.cmp(&a.1.size).then(a.1.path.cmp(&b.1.path)),
+            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime).then(a.1.path.cmp(&b.1.path)),
         };
         let prune = |ranked: &mut Vec<(u32, &FileRecord)>| {
             if q.limit > 0 && ranked.len() > q.limit {
@@ -202,6 +211,27 @@ mod tests {
         assert_eq!(stats.matched, 3);
         assert_eq!(hits[0].record.path.as_ref(), "/home/u/doc/main-notes.txt");
         assert_eq!(hits[1].record.path.as_ref(), "/home/u/code/main.rs");
+    }
+
+    #[test]
+    fn empty_query_can_show_newest_records_first() {
+        let mut index = Index::new();
+        index.extend(vec![
+            rec("/old.txt", 1, 10),
+            rec("/newest.txt", 1, 30),
+            rec("/middle.txt", 1, 20),
+        ]);
+        let mut query = Query::parse("");
+        query.sort = SortKey::MtimeDesc;
+        query.limit = 2;
+        let (hits, stats) = index.search(&query);
+        assert_eq!(stats.matched, 3);
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.record.path.as_ref())
+                .collect::<Vec<_>>(),
+            ["/newest.txt", "/middle.txt"]
+        );
     }
 
     #[test]

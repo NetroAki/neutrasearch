@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 struct TreeFile {
@@ -23,27 +24,24 @@ pub(crate) struct Hierarchy {
 impl Hierarchy {
     pub(crate) fn from_records(records: &[FileRecord]) -> Self {
         let mut folders = BTreeMap::<String, FolderSummary>::new();
+        let mut connected_parents = HashSet::<String>::new();
         folders.entry("/".into()).or_default();
         for record in records {
             let normalized = normalize_path(&record.path);
             let parent = parent_path(&normalized);
-            let mut ancestors = ancestor_paths(&parent);
-            if ancestors.is_empty() {
-                ancestors.push("/".into());
-            }
-            if record.kind != FileKind::Dir {
-                for ancestor in &ancestors {
-                    let summary = folders.entry(ancestor.clone()).or_default();
-                    summary.size = summary.size.saturating_add(record.size.max(1));
-                    summary.count += 1;
+            if connected_parents.insert(parent.clone()) {
+                let mut ancestors = ancestor_paths(&parent);
+                if ancestors.is_empty() {
+                    ancestors.push("/".into());
                 }
-            }
-            for pair in ancestors.windows(2) {
-                folders
-                    .entry(pair[0].clone())
-                    .or_default()
-                    .children
-                    .insert(pair[1].clone());
+                for pair in ancestors.windows(2) {
+                    folders
+                        .entry(pair[0].clone())
+                        .or_default()
+                        .children
+                        .insert(pair[1].clone());
+                    folders.entry(pair[1].clone()).or_default();
+                }
             }
             if record.kind == FileKind::Dir {
                 folders.entry(normalized.clone()).or_default();
@@ -58,17 +56,34 @@ impl Hierarchy {
                     .rsplit_once('.')
                     .map_or("", |(_, extension)| extension)
                     .to_ascii_lowercase();
-                folders
-                    .entry(parent)
-                    .or_default()
-                    .direct_files
-                    .push(TreeFile {
-                        path: record.path.to_string(),
-                        name,
-                        size: record.size,
-                        extension,
-                    });
+                let summary = folders.entry(parent).or_default();
+                summary.size = summary.size.saturating_add(record.size.max(1));
+                summary.count += 1;
+                summary.direct_files.push(TreeFile {
+                    path: record.path.to_string(),
+                    name,
+                    size: record.size,
+                    extension,
+                });
             }
+        }
+
+        // Each file updates only its direct parent above. Aggregate every folder
+        // into its parent once instead of revisiting every ancestor per record.
+        let mut paths = folders.keys().cloned().collect::<Vec<_>>();
+        paths.sort_unstable_by_key(|path| std::cmp::Reverse(ancestor_paths(path).len()));
+        for path in paths {
+            if path == "/" {
+                continue;
+            }
+            let parent = parent_path(&path);
+            let Some(child) = folders.get(&path) else {
+                continue;
+            };
+            let (size, count) = (child.size, child.count);
+            let summary = folders.entry(parent).or_default();
+            summary.size = summary.size.saturating_add(size);
+            summary.count = summary.count.saturating_add(count);
         }
         for folder in folders.values_mut() {
             folder
@@ -666,6 +681,14 @@ mod tests {
         let root = hierarchy.folders.get("/").unwrap();
         assert!(root.children.contains("C:/"));
         assert!(root.children.contains("//server/share"));
+        assert_eq!((root.count, root.size), (2, 84));
+        assert_eq!(
+            (
+                hierarchy.folders["C:/"].count,
+                hierarchy.folders["C:/"].size
+            ),
+            (1, 42)
+        );
         assert_eq!(
             hierarchy.folders["C:/Users/Alex"].direct_files[0].name,
             "report.txt"

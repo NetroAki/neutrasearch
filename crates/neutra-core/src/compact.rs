@@ -360,15 +360,20 @@ impl CompactIndex {
         let candidates = self.candidate_blocks(q)?;
         let mut ranked = Vec::<(u32, FileRecord)>::new();
         let cmp = |a: &(u32, FileRecord), b: &(u32, FileRecord)| match q.sort {
-            SortKey::Relevance => b.0.cmp(&a.0).then(b.1.mtime.cmp(&a.1.mtime)),
+            SortKey::Relevance => {
+                b.0.cmp(&a.0)
+                    .then(b.1.mtime.cmp(&a.1.mtime))
+                    .then(a.1.path.cmp(&b.1.path))
+            }
             SortKey::NameAsc => {
                 a.1.name()
                     .to_ascii_lowercase()
                     .cmp(&b.1.name().to_ascii_lowercase())
+                    .then(a.1.path.cmp(&b.1.path))
             }
             SortKey::PathAsc => a.1.path.cmp(&b.1.path),
-            SortKey::SizeDesc => b.1.size.cmp(&a.1.size),
-            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime),
+            SortKey::SizeDesc => b.1.size.cmp(&a.1.size).then(a.1.path.cmp(&b.1.path)),
+            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime).then(a.1.path.cmp(&b.1.path)),
         };
         let prune_at = q.limit.saturating_mul(2).max(q.limit.saturating_add(32));
         let mut matched = 0u64;

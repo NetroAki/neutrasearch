@@ -12,6 +12,8 @@
 
 #[cfg(target_os = "linux")]
 mod watch_linux;
+#[cfg(target_os = "windows")]
+mod windows_service;
 
 use anyhow::{Context, Result};
 use neutra_core::mounts::{FsKind, MountInfo};
@@ -23,7 +25,7 @@ use neutra_core::{
     SearchStats, DELTA_HEADER_BYTES,
 };
 use std::collections::{HashMap, HashSet};
-use std::io::{BufWriter, Read, Stdout, Write};
+use std::io::{BufWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -35,6 +37,8 @@ const MAX_QUERY_TERMS: usize = 32;
 const MAX_QUERY_TEXT_BYTES: usize = 32 * 1024;
 const MAX_DELTA_CHANGES: usize = 65_536;
 const MAX_INDEX_PATH_BYTES: usize = 32 * 1024;
+
+type ProtocolOutput = Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>;
 
 struct DurableStore {
     path: std::path::PathBuf,
@@ -491,6 +495,11 @@ fn sync_parent(_path: &std::path::Path) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    if std::env::args().nth(1).as_deref() == Some("--windows-service") {
+        return windows_service::run();
+    }
+
     // `--version`/`--build` are used by auto-provisioning to decide whether a
     // remote copy is stale. Keep them dependency-free and instant.
     let arg = std::env::args().nth(1);
@@ -608,10 +617,20 @@ fn main() -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut rin = stdin.lock();
-    let out = Arc::new(Mutex::new(BufWriter::new(stdout)));
+    run_protocol(&mut rin, Box::new(stdout), serve_index, watch_mount, None)
+}
+
+fn run_protocol<R: Read>(
+    rin: &mut R,
+    writer: Box<dyn Write + Send>,
+    serve_index: Option<std::path::PathBuf>,
+    watch_mount: Option<(std::path::PathBuf, u32)>,
+    stop_requested: Option<&AtomicBool>,
+) -> Result<()> {
+    let out: ProtocolOutput = Arc::new(Mutex::new(BufWriter::new(writer)));
 
     // Expect Hello first.
-    let hello: Option<ClientMsg> = read_frame(&mut rin).context("reading Hello")?;
+    let hello: Option<ClientMsg> = read_frame(rin).context("reading Hello")?;
     match hello {
         Some(ClientMsg::Hello { proto }) if proto == PROTO_VERSION => {
             send(
@@ -670,7 +689,14 @@ fn main() -> Result<()> {
     }
     let mut scan_threads = Vec::new();
     loop {
-        let msg: Option<ClientMsg> = read_frame(&mut rin).context("reading command")?;
+        let frame = read_frame(rin);
+        if stop_requested.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+            // Windows service shutdown disconnects the pipe. Return without
+            // joining read-only scan workers; the single-service process exits
+            // immediately and the GUI discards its unpublished staging index.
+            return Ok(());
+        }
+        let msg: Option<ClientMsg> = frame.context("reading command")?;
         reap_scan_threads(&mut scan_threads);
         match msg {
             None | Some(ClientMsg::Shutdown) => break,
@@ -1059,7 +1085,7 @@ fn reap_scan_threads(threads: &mut Vec<std::thread::JoinHandle<()>>) {
 fn launch_scans(
     mounts: Vec<MountInfo>,
     roots: Vec<std::path::PathBuf>,
-    out: &Arc<Mutex<BufWriter<Stdout>>>,
+    out: &ProtocolOutput,
     index: Option<&Arc<RwLock<Index>>>,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
 ) {
@@ -1088,13 +1114,13 @@ fn launch_scans(
     }));
 }
 
-fn send(out: &Arc<Mutex<BufWriter<Stdout>>>, msg: &HelperMsg) -> Result<()> {
+fn send(out: &ProtocolOutput, msg: &HelperMsg) -> Result<()> {
     let mut w = out.lock().unwrap();
     write_frame(&mut *w, msg)?;
     Ok(())
 }
 
-fn send_lossy(out: &Arc<Mutex<BufWriter<Stdout>>>, msg: &HelperMsg) {
+fn send_lossy(out: &ProtocolOutput, msg: &HelperMsg) {
     if let Err(e) = send(out, msg) {
         tracing::warn!("failed to send frame: {e}");
     }
@@ -1104,7 +1130,7 @@ fn send_lossy(out: &Arc<Mutex<BufWriter<Stdout>>>, msg: &HelperMsg) {
 fn run_scan(
     mount: MountInfo,
     roots: &[std::path::PathBuf],
-    out: Arc<Mutex<BufWriter<Stdout>>>,
+    out: ProtocolOutput,
     index: Option<Arc<RwLock<Index>>>,
 ) -> bool {
     send_lossy(
