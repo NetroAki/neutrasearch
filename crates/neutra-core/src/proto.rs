@@ -18,7 +18,7 @@ pub const PROTO_VERSION: u32 = 7;
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 8;
+pub const HELPER_BUILD: u32 = 9;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]

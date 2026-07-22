@@ -8,7 +8,7 @@ This document separates verified support from experimental lanes. A successful b
 |---|---:|---:|---|---|---|
 | Linux x86_64 | Yes | Debian package | Btrfs, EXT2/3/4, NTFS; privileges commonly required | Manual atomic rebuild; fanotify is an experimental extra | Supported pre-1.0 |
 | Linux ARM64 | Yes, native ARM runner | Debian package | Same compiled lanes; hardware evidence still limited | Manual atomic rebuild; fanotify is experimental | Preview |
-| Windows x86_64 | Yes | Inno Setup EXE | NTFS MFT lane; GUI can request an Administrator restart | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| Windows x86_64 | Yes | Inno Setup EXE + scanner service | NTFS MFT lane; setup grants service access once | Manual atomic rebuild | Preview pending hardware/signing evidence |
 | macOS x86_64 | Yes | DMG application image | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
 | macOS ARM64 | Yes | DMG application image | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
 | Windows ARM64 | No release artifact yet | No | Unverified | Manual rebuild code is portable but unverified | Unsupported |
@@ -33,9 +33,11 @@ It also contains `README.md`, `LICENSE`, `SECURITY.md`, this guide, `CHANGELOG.m
 
 ## Privilege model
 
-Run the desktop, CLI, query, and MCP processes as the normal user. Native metadata APIs may require elevated access. Neutrasearch refuses to elevate a helper selected through an environment variable; an elevated helper must be the root-owned sibling of the installed application and must not be group/world writable.
+Run the desktop, CLI, query, and MCP processes as the normal user. Native metadata APIs may require elevated access. On Linux, Neutrasearch refuses to elevate a helper selected through an environment variable; an elevated helper must be root-owned in an approved system directory and must not be group/world writable.
 
-Portable archives do not install a setuid binary, system service, or permissive polkit policy. Those mechanisms are deliberately absent until a separately reviewed service boundary exists.
+The Windows installer registers `NeutrasearchHelper` as an automatic LocalSystem service. Its byte-mode named pipe rejects remote clients, has a bounded frame protocol, accepts only the installed `neutrasearch.exe` beside the protected helper, resolves requested volumes from the operating system, and filters records to approved roots before returning them. This grants the installed GUI raw NTFS metadata visibility by design; use it only on a trusted personal/workstation installation. Service logs are bounded to `helper.log` plus one previous file under `%ProgramData%\Neutrasearch`. Portable archives install no service and retain the explicit Administrator-restart fallback.
+
+No platform installs a setuid binary or general passwordless-administration policy.
 
 ## Index privacy and data locations
 
@@ -69,4 +71,4 @@ The initial scan-to-watch handoff is not yet race-free. Do not promise continuou
 
 ## Uninstall
 
-Portable builds have no installer-owned state; remove the extracted application directory. Windows setup builds appear in Installed Apps, Debian packages can be removed with `sudo apt remove neutrasearch`, and macOS builds can be removed from Applications. Uninstalling does not delete indexes containing absolute-path metadata. Remote helpers are stored under `~/.local/lib/neutrasearch/` on Unix servers and `%LOCALAPPDATA%\Neutrasearch\` on Windows servers; remove those explicitly over the same trusted administrative channel.
+Portable builds have no installer-owned state; remove the extracted application directory. Windows setup builds appear in Installed Apps and uninstall the `NeutrasearchHelper` service before removing its executable; service logs under `%ProgramData%\Neutrasearch` remain available for diagnosis and can be deleted manually. Debian packages can be removed with `sudo apt remove neutrasearch`, and macOS builds can be removed from Applications. Uninstalling does not delete indexes containing absolute-path metadata. Remote helpers are stored under `~/.local/lib/neutrasearch/` on Unix servers and `%LOCALAPPDATA%\Neutrasearch\` on Windows servers; remove those explicitly over the same trusted administrative channel.

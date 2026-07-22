@@ -50,6 +50,20 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --bins --release --locked
+      - name: Validate Windows service packaging
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw packaging/windows/install-service.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw packaging/windows/remove-service.ps1))
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+          }
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $compiler "/DAppVersion=$version" "/DBinDir=$((Resolve-Path 'target/release').Path)" "/DOutputDir=$((Resolve-Path 'dist').Path)" packaging/windows/neutrasearch.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
       - run: cargo run --release --locked --bin neutrasearch -- --version
       - run: cargo run --release --locked --bin neutrasearch -- index --help
       - run: cargo run --release --locked --bin neutrasearch -- search --help

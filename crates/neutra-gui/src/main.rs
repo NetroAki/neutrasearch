@@ -444,6 +444,7 @@ impl NeutraApp {
                     );
                 }
                 Event::CompactReady(index) => {
+                    self.last_generation = index.generation();
                     self.compact = Some(index);
                     // The resident copy stayed searchable throughout the build;
                     // reclaim it only after the replacement mmap is verified.
@@ -675,9 +676,11 @@ impl NeutraApp {
             && self.last_cache.elapsed() > Duration::from_secs(2)
         {
             let records = self.index.records().to_vec();
+            let generation = self.data_generation();
             let path = self.cache_path.clone();
             let tx = self.tx.clone();
             self.building_cache = true;
+            self.tree_building = true;
             self.lanes.insert(
                 "cache".into(),
                 LaneState {
@@ -688,6 +691,8 @@ impl NeutraApp {
                 },
             );
             std::thread::spawn(move || {
+                let model = ui::Hierarchy::from_records(&records);
+                let _ = tx.send(Event::TreeReady { generation, model });
                 match CompactIndex::build(&records, &path).and_then(|_| CompactIndex::open(&path)) {
                     Ok(compact) => {
                         let _ = tx.send(Event::CompactReady(compact));
@@ -1042,6 +1047,19 @@ fn spawn_local_helper(
     roots: Vec<PathBuf>,
 ) {
     std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        match scan_via_windows_service(tx.clone(), mounts.clone(), roots.clone()) {
+            Ok(true) => return,
+            Ok(false) => {
+                // Portable archives do not install the service. Preserve their
+                // sibling-helper path (and the existing explicit elevation UX).
+            }
+            Err(error) => {
+                let _ = tx.send(Event::Fatal(error));
+                return;
+            }
+        }
+
         let configured = std::env::var_os("NEUTRASEARCH_HELPER")
             .or_else(|| std::env::var_os("NEUTRA_HELPER"))
             .map(PathBuf::from);
@@ -1193,6 +1211,183 @@ fn spawn_local_helper(
             )));
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+fn scan_via_windows_service(
+    tx: Sender<Event>,
+    mounts: Vec<MountInfo>,
+    roots: Vec<PathBuf>,
+) -> Result<bool, String> {
+    const PIPE: &str = r"\\.\pipe\Neutrasearch.Helper.v1";
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pipe = loop {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(PIPE)
+        {
+            Ok(pipe) => break pipe,
+            Err(error)
+                if Instant::now() < deadline && matches!(error.raw_os_error(), Some(2 | 231)) =>
+            {
+                std::thread::sleep(Duration::from_millis(125));
+            }
+            Err(error) if error.raw_os_error() == Some(2) => {
+                if windows_scanner_service_installed() {
+                    return Err(
+                        "the installed scanner service is unavailable; repair or restart the NeutrasearchHelper service"
+                            .into(),
+                    );
+                }
+                return Ok(false);
+            }
+            Err(error) if error.raw_os_error() == Some(231) => {
+                return Err(
+                    "the installed scanner service is busy with another scan; wait a moment and try again"
+                        .into(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot connect to the installed scanner service: {error}; repair the Neutrasearch installation"
+                ));
+            }
+        }
+    };
+    verify_windows_service_server(&pipe)?;
+    let writer = pipe
+        .try_clone()
+        .map_err(|error| format!("cannot clone the scanner service pipe: {error}"))?;
+    let mut input = BufWriter::new(writer);
+    let mut output = BufReader::new(pipe);
+    write_frame(
+        &mut input,
+        &ClientMsg::Hello {
+            proto: PROTO_VERSION,
+        },
+    )
+    .map_err(|error| format!("cannot contact the installed scanner service: {error}"))?;
+    let hello: Option<HelperMsg> = read_frame(&mut output)
+        .map_err(|error| format!("scanner service handshake failed: {error}"))?;
+    let hello = match hello {
+        Some(message @ HelperMsg::Hello { proto, .. }) if proto == PROTO_VERSION => message,
+        Some(HelperMsg::Hello { proto, .. }) => {
+            return Err(format!(
+                "scanner service protocol mismatch: GUI={PROTO_VERSION}, service={proto}; repair the installation"
+            ));
+        }
+        Some(message) => {
+            return Err(format!(
+                "scanner service returned an invalid handshake: {message:?}"
+            ));
+        }
+        None => return Err("the installed scanner service closed during handshake".into()),
+    };
+    let _ = tx.send(Event::Message(hello));
+    write_frame(&mut input, &ClientMsg::Scan { mounts, roots })
+        .map_err(|error| format!("cannot send locations to the scanner service: {error}"))?;
+
+    let mut completed = false;
+    loop {
+        match read_frame::<_, HelperMsg>(&mut output) {
+            Ok(Some(message)) => {
+                completed |= matches!(message, HelperMsg::ScanComplete { .. });
+                let _ = tx.send(Event::Message(message));
+                if completed {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => return Err(format!("scanner service protocol failed: {error}")),
+        }
+    }
+    if !completed {
+        return Err("the installed scanner service stopped before completing".into());
+    }
+    // End this per-client service session explicitly; the service remains
+    // running and accepts the next ordinary-user scan without another UAC.
+    let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+    Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_scanner_service_installed() -> bool {
+    let sc = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32/sc.exe");
+    Command::new(sc)
+        .args(["query", "NeutrasearchHelper"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "windows")]
+fn verify_windows_service_server(pipe: &std::fs::File) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = pipe.as_raw_handle().cast();
+    let mut pid = 0u32;
+    if unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } == 0 || pid == 0 {
+        return Err(format!(
+            "cannot authenticate the scanner service process: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(format!(
+            "cannot inspect the scanner service process: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut path = vec![0u16; 32_768];
+    let mut length = path.len() as u32;
+    let queried = unsafe { QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length) };
+    let query_error = (queried == 0).then(std::io::Error::last_os_error);
+    unsafe {
+        CloseHandle(process);
+    }
+    if let Some(error) = query_error {
+        return Err(format!(
+            "cannot read the scanner service executable path: {error}"
+        ));
+    }
+    path.truncate(length as usize);
+    let actual = PathBuf::from(String::from_utf16_lossy(&path));
+    let expected = std::env::current_exe()
+        .map_err(|error| format!("cannot locate the installed GUI: {error}"))?
+        .with_file_name("neutrasearch-helper.exe");
+    if !windows_paths_equal(&actual, &expected) {
+        return Err(format!(
+            "refusing an untrusted scanner pipe server at {}; repair the Neutrasearch installation",
+            actual.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_paths_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('/', "\\")
+        .eq_ignore_ascii_case(
+            &right
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .replace('/', "\\"),
+        )
 }
 
 fn helper_start_failure(summary: &str, stderr: &Arc<Mutex<String>>) -> String {

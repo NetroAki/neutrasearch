@@ -20,6 +20,7 @@ Never include another person's real paths, filenames, mount table, raw device da
 - Indexes contain absolute paths and filesystem metadata. Treat `.nsx`, `.delta`, `.stale`, and compaction sidecars as private user data.
 - The helper protocol is a child-process/SSH framing protocol, not a network authentication protocol. Do not expose it as a TCP service.
 - Elevated scans resolve client requests against the operating system's mount table. An environment-selected helper is never accepted for `pkexec` elevation.
+- The Windows installer service is local-only and grants raw NTFS metadata visibility to the installed GUI. Both named-pipe endpoints authenticate the opposite process; the service refuses reparse-point or non-administrator-writable installation paths and filters records to approved roots before returning them. Do not weaken the Program Files ACL or expose the pipe remotely.
 - MCP requires an explicitly configured index. Set `NEUTRASEARCH_MCP_ALLOWED_ROOTS` to a platform path-list to constrain paths visible to agents; omitting it permits the entire configured index.
 - Network helper installation is disabled until the user chooses **Watch network servers** (or explicitly sets `NEUTRASEARCH_AUTO_PROVISION_REMOTE`). It runs SSH/SCP and modifies the selected remote user's application-data directory.
 - Release archives are unsigned until platform signing is configured. Verify `SHA256SUMS` and GitHub artifact attestations before use.
