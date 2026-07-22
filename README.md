@@ -31,7 +31,7 @@ Tagged releases provide portable archives containing four sibling executables:
 - `neutrasearch-query`
 - `neutrasearch-mcp`
 
-Verify the release `SHA256SUMS` and GitHub artifact attestation, extract the archive, and keep its binaries together. Linux archives require the distribution's libext2fs runtime package (for example `libext2fs2` on Debian/Ubuntu or `e2fsprogs` on Arch). Windows and macOS artifacts remain unsigned until signing/notarization credentials and hardware smoke evidence are configured.
+Windows x64 releases also provide `neutrasearch-<version>-windows-x64-setup.exe`, which installs all four executables and Start-menu/uninstall entries; a portable ZIP remains available. Verify the release `SHA256SUMS` and GitHub artifact attestation before installing or extracting. Linux archives require the distribution's libext2fs runtime package (for example `libext2fs2` on Debian/Ubuntu or `e2fsprogs` on Arch). Windows and macOS artifacts remain unsigned until signing/notarization credentials and hardware smoke evidence are configured, so Windows SmartScreen may require explicit confirmation for this pre-1.0 build.
 
 For Linux elevation, install the verified sibling binaries as root rather than making the helper setuid:
 
@@ -63,9 +63,11 @@ sudo pacman -S e2fsprogs
 ./neutrasearch
 ```
 
-Neutrasearch does not scan or modify remote hosts merely because the GUI opened. Choose **Build search index** during setup (or **File → Rebuild index**) to approve local metadata indexing. Choose **Tools → Enable network helpers** separately before SSH/SCP provisioning is allowed.
+On first launch, choose **Add folder**, then **Allow access and scan**. The selected roots are persisted and setup completes only after a usable index is published; add or remove roots later through **File → Locations and index**. A native lane still reads filesystem metadata at volume speed, but only records beneath the selected roots are published into the index.
 
-Some native metadata sources require elevated access. Never make the helper setuid. On Linux, opt in by setting `NEUTRASEARCH_PKEXEC=1`; elevated launch only accepts an installed, root-owned sibling helper that is not writable by group/others, and environment-selected helpers are refused. On Windows, raw NTFS metadata access may require Administrator rights. If access is denied, the GUI offers **Restart as Administrator** through the standard UAC prompt. Portable archives intentionally do not install a permissive polkit policy or system service.
+Neutrasearch does not contact remote hosts merely because the GUI opened. Network-helper monitoring is separately enabled in settings. Offline mounted servers are shown as waiting, retried every 30 seconds, and do not put the local index into an error state. Remote helper provisioning is still preview-only; see [`docs/production.md`](docs/production.md) before relying on network-share search.
+
+Some native metadata sources require elevated access. Never make the helper setuid. On Linux, the first scan requests `pkexec` and accepts only an installed, root-owned helper that is not writable by group/others; environment-selected helpers are refused. Settings also provides **Rebuild as administrator**. On Windows, raw NTFS metadata access may require Administrator rights and the GUI uses the standard UAC prompt when access is denied. Portable archives intentionally do not install a permissive polkit policy or system service.
 
 ## CLI
 

@@ -14,7 +14,7 @@ This document separates verified support from experimental lanes. A successful b
 | Windows ARM64 | No release artifact yet | Unverified | Manual rebuild code is portable but unverified | Unsupported |
 | ZFS | Included as experimental code only | Initial indexing intentionally refuses unsupported paths | Not implemented | Unsupported |
 
-The parity baseline is the dense GUI, native initial indexing, atomic manual rebuild, compact-index search, CLI, MCP, and remote-helper provisioning protocol. Native CI builds and tests that baseline on Linux, Windows, and macOS. A rebuild is published only after every discovered native lane succeeds; otherwise the last complete index remains active.
+The parity baseline is the dense GUI, native initial indexing, manual rebuild, compact-index search, CLI, MCP, and remote-helper provisioning protocol. Native CI builds and tests that baseline on Linux, Windows, and macOS. The GUI now scans only the native volumes containing user-selected roots and publishes the reachable selected records atomically. Unavailable native lanes are skipped and shown as degraded; if every requested lane fails, the last complete index remains active. CLI index builds remain single-mount and fail closed.
 
 Linux fanotify is not part of that parity baseline. Windows USN-journal and macOS FSEvents freshness are not implemented, so all platforms must remain correct through manual rebuilds rather than pretending equivalent live-update guarantees.
 
@@ -47,7 +47,7 @@ A successful full rebuild creates compact format v3 and clears an existing `.sta
 
 ## Network helpers
 
-Opening the GUI does not modify remote hosts. Selecting **Enable network helpers** starts network-mount detection; matching servers may then receive an atomic helper update over the existing SSH identity. `NEUTRASEARCH_AUTO_PROVISION_REMOTE=1` is the explicit unattended opt-in. Set `NEUTRASEARCH_HELPER_ARTIFACTS` if helpers are not in the executable's sibling `helpers/` directory.
+Opening the GUI does not modify remote hosts. Selecting **Watch network servers** starts network-mount detection; matching servers may then receive an atomic helper update over the existing SSH identity. Offline servers remain non-fatal and are retried every 30 seconds; authentication, integrity, artifact, and unsupported-platform failures remain visible rather than being mislabeled as offline. `NEUTRASEARCH_AUTO_PROVISION_REMOTE=1` is the explicit unattended opt-in. Set `NEUTRASEARCH_HELPER_ARTIFACTS` if helpers are not in the executable's sibling `helpers/` directory.
 
 Each archive includes its matching target helper and `.sha256` sidecar under `helpers/`. Provisioning refuses a missing/mismatched sidecar and verifies the uploaded temporary file on the server before atomic installation. To manage servers on other operating systems/architectures, collect their release helper+sidecar files into the configured helper directory.
 

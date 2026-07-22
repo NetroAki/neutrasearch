@@ -13,22 +13,30 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol version; helper and client refuse to talk across major versions.
-pub const PROTO_VERSION: u32 = 5;
+pub const PROTO_VERSION: u32 = 7;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 6;
+pub const HELPER_BUILD: u32 = 8;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// Identify + negotiate. Must be the first message.
     Hello { proto: u32 },
-    /// Scan the given mounts and stream records without retaining a duplicate.
-    Scan { mounts: Vec<MountInfo> },
-    /// Scan, stream, and retain records for subsequent Search commands.
-    ScanResident { mounts: Vec<MountInfo> },
+    /// Scan the given mounts and stream only records inside the approved roots.
+    /// Empty mounts or roots scan nothing; all-volume scans must enumerate both.
+    Scan {
+        mounts: Vec<MountInfo>,
+        roots: Vec<std::path::PathBuf>,
+    },
+    /// Scan, filter to approved roots, and retain records for later searches.
+    /// Empty mounts or roots scan nothing.
+    ScanResident {
+        mounts: Vec<MountInfo>,
+        roots: Vec<std::path::PathBuf>,
+    },
     /// Query the helper's explicitly resident index.
     Search { query: Query },
     /// Persist a batch into the generation-bound delta WAL before publishing it.
@@ -59,7 +67,9 @@ pub enum HelperMsg {
         error: String,
     },
     /// Terminates one Scan/ScanResident request, including the zero-mount case.
-    /// Clients publish a replacement index only when `errors == 0`.
+    /// Fail-closed clients publish only when `errors == 0`. Interactive clients
+    /// may publish records from reachable lanes when `errors < mounts`, but must
+    /// surface the degraded result and replace—not retain—failed-source records.
     ScanComplete {
         mounts: u32,
         errors: u32,

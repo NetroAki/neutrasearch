@@ -677,15 +677,19 @@ fn main() -> Result<()> {
             Some(ClientMsg::Hello { .. }) => {
                 send(&out, &HelperMsg::Error("duplicate Hello".into()))?;
             }
-            Some(ClientMsg::Scan { mounts }) => {
-                match prepare_scan(mounts, scan_threads.is_empty()) {
-                    Ok(mounts) => launch_scans(mounts, &out, None, &mut scan_threads),
+            Some(ClientMsg::Scan { mounts, roots }) => {
+                match prepare_scan(mounts, roots, scan_threads.is_empty()) {
+                    Ok((mounts, roots)) => {
+                        launch_scans(mounts, roots, &out, None, &mut scan_threads)
+                    }
                     Err(error) => send(&out, &HelperMsg::Error(error.to_string()))?,
                 }
             }
-            Some(ClientMsg::ScanResident { mounts }) => {
-                match prepare_scan(mounts, scan_threads.is_empty()) {
-                    Ok(mounts) => launch_scans(mounts, &out, Some(&index), &mut scan_threads),
+            Some(ClientMsg::ScanResident { mounts, roots }) => {
+                match prepare_scan(mounts, roots, scan_threads.is_empty()) {
+                    Ok((mounts, roots)) => {
+                        launch_scans(mounts, roots, &out, Some(&index), &mut scan_threads)
+                    }
                     Err(error) => send(&out, &HelperMsg::Error(error.to_string()))?,
                 }
             }
@@ -913,8 +917,14 @@ fn start_native_watch(
     });
 }
 
-fn prepare_scan(requested: Vec<MountInfo>, idle: bool) -> Result<Vec<MountInfo>> {
-    resolve_scan_mounts(requested, discover_local_mounts(), idle)
+fn prepare_scan(
+    requested: Vec<MountInfo>,
+    roots: Vec<std::path::PathBuf>,
+    idle: bool,
+) -> Result<(Vec<MountInfo>, Vec<std::path::PathBuf>)> {
+    let mounts = resolve_scan_mounts(requested, discover_local_mounts(), idle)?;
+    let roots = validate_scan_roots(roots, &mounts)?;
+    Ok((mounts, roots))
 }
 
 fn resolve_scan_mounts(
@@ -929,7 +939,7 @@ fn resolve_scan_mounts(
         anyhow::bail!("scan request exceeds the {MAX_SCAN_MOUNTS}-mount limit");
     }
     if requested.is_empty() {
-        return Ok(trusted.into_iter().take(MAX_SCAN_MOUNTS).collect());
+        return Ok(Vec::new());
     }
     let mut seen = HashSet::new();
     let mut resolved = Vec::with_capacity(requested.len());
@@ -949,6 +959,43 @@ fn resolve_scan_mounts(
         }
     }
     Ok(resolved)
+}
+
+fn validate_scan_roots(
+    roots: Vec<std::path::PathBuf>,
+    mounts: &[MountInfo],
+) -> Result<Vec<std::path::PathBuf>> {
+    if roots.len() > MAX_SCAN_MOUNTS {
+        anyhow::bail!("scan roots exceed the {MAX_SCAN_MOUNTS}-root limit");
+    }
+    if mounts.is_empty() && roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    if roots.is_empty() {
+        anyhow::bail!("scan requests must include at least one approved root");
+    }
+    let mut approved = Vec::<std::path::PathBuf>::with_capacity(roots.len());
+    for root in roots {
+        if !root.is_absolute() || !safe_absolute_path(&root.to_string_lossy()) {
+            anyhow::bail!("scan roots must be absolute and normalized");
+        }
+        if !mounts
+            .iter()
+            .any(|mount| portable_path_in_root(&root.to_string_lossy(), &mount.mountpoint))
+        {
+            anyhow::bail!(
+                "approved root {} is outside the requested native mounts",
+                root.display()
+            );
+        }
+        if !approved
+            .iter()
+            .any(|existing| same_portable_path(existing, &root))
+        {
+            approved.push(root);
+        }
+    }
+    Ok(approved)
 }
 
 fn validate_query(query: &Query) -> Result<()> {
@@ -1011,6 +1058,7 @@ fn reap_scan_threads(threads: &mut Vec<std::thread::JoinHandle<()>>) {
 
 fn launch_scans(
     mounts: Vec<MountInfo>,
+    roots: Vec<std::path::PathBuf>,
     out: &Arc<Mutex<BufWriter<Stdout>>>,
     index: Option<&Arc<RwLock<Index>>>,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
@@ -1021,7 +1069,12 @@ fn launch_scans(
         let mount_count = mounts.len() as u32;
         let mut errors = 0u32;
         for mount in mounts {
-            if !run_scan(mount, Arc::clone(&out), index.as_ref().map(Arc::clone)) {
+            if !run_scan(
+                mount,
+                &roots,
+                Arc::clone(&out),
+                index.as_ref().map(Arc::clone),
+            ) {
                 errors += 1;
             }
         }
@@ -1050,6 +1103,7 @@ fn send_lossy(out: &Arc<Mutex<BufWriter<Stdout>>>, msg: &HelperMsg) {
 /// Scan one mount through its filesystem-native lane, streaming batches.
 fn run_scan(
     mount: MountInfo,
+    roots: &[std::path::PathBuf],
     out: Arc<Mutex<BufWriter<Stdout>>>,
     index: Option<Arc<RwLock<Index>>>,
 ) -> bool {
@@ -1067,7 +1121,11 @@ fn run_scan(
     let result = {
         let out = &out;
         let mut sink = |rec: FileRecord| {
-            if default_path_excluded(&mountpoint, rec.path.as_ref()) {
+            if default_path_excluded(&mountpoint, rec.path.as_ref())
+                || !roots
+                    .iter()
+                    .any(|root| portable_path_in_root(rec.path.as_ref(), root))
+            {
                 return;
             }
             match rec.kind {
@@ -1111,6 +1169,48 @@ fn run_scan(
             false
         }
     }
+}
+
+fn portable_path_in_root(path: &str, root: &std::path::Path) -> bool {
+    let case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    let normalize = |value: &str| {
+        let value = value.replace('\\', "/");
+        if case_sensitive {
+            value
+        } else {
+            value.to_ascii_lowercase()
+        }
+    };
+    let path = normalize(path);
+    let mut root = normalize(&root.to_string_lossy());
+    while root.len() > 1 && root.ends_with('/') && !is_windows_drive_root(&root) {
+        root.pop();
+    }
+    path == root
+        || if root.ends_with('/') {
+            path.starts_with(&root)
+        } else {
+            path.strip_prefix(&root)
+                .is_some_and(|tail| tail.starts_with('/'))
+        }
+}
+
+fn same_portable_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    let normalize = |path: &std::path::Path| {
+        let value = path.to_string_lossy().replace('\\', "/");
+        if case_sensitive {
+            value
+        } else {
+            value.to_ascii_lowercase()
+        }
+    };
+    normalize(left).trim_end_matches('/') == normalize(right).trim_end_matches('/')
+}
+
+fn is_windows_drive_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
 fn safe_absolute_path(path: &str) -> bool {
@@ -1613,6 +1713,9 @@ mod tests {
             fs: FsKind::Ntfs,
             source: neutra_core::MountSource::Local,
         };
+        assert!(resolve_scan_mounts(Vec::new(), vec![trusted.clone()], true)
+            .unwrap()
+            .is_empty());
         let resolved = resolve_scan_mounts(vec![spoofed], vec![trusted], true).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].device, "/dev/trusted");
@@ -1680,6 +1783,31 @@ mod tests {
             std::path::Path::new("/home"),
             "/home/system/file"
         ));
+    }
+
+    #[test]
+    fn approved_scan_roots_are_bounded_to_requested_mounts() {
+        let mount = MountInfo {
+            device: "/dev/root".into(),
+            mountpoint: "/".into(),
+            fs: FsKind::Btrfs,
+            source: neutra_core::MountSource::Local,
+        };
+        let roots = validate_scan_roots(
+            vec!["/home/alex/Documents".into()],
+            std::slice::from_ref(&mount),
+        )
+        .unwrap();
+        assert!(portable_path_in_root(
+            "/home/alex/Documents/report.pdf",
+            &roots[0]
+        ));
+        assert!(!portable_path_in_root(
+            "/home/alex/Documents-old/report.pdf",
+            &roots[0]
+        ));
+        assert!(validate_scan_roots(Vec::new(), std::slice::from_ref(&mount)).is_err());
+        assert!(validate_scan_roots(vec!["relative".into()], &[mount]).is_err());
     }
 
     #[test]

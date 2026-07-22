@@ -15,6 +15,8 @@ function fixture() {
   fs.mkdirSync(path.join(packageRoot, "assets"), { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(packageRoot, "assets", "neutrasearch.svg"), "<svg/>");
+  fs.writeFileSync(path.join(packageRoot, "assets", "neutrasearch.png"), "png");
+  fs.writeFileSync(path.join(packageRoot, "assets", "Neutrasearch.icns"), "icns");
   for (const name of ["neutrasearch", "neutrasearch-query", "neutrasearch-helper", "neutrasearch-mcp"]) {
     fs.writeFileSync(path.join(bin, name), "binary", { mode: 0o755 });
   }
@@ -47,7 +49,11 @@ test("macOS setup creates an app bundle and desktop alias", () => {
     packageRoot: value.packageRoot,
   });
   assert.equal(created.length, 2);
-  assert(fs.existsSync(path.join(value.home, "Applications", "Neutrasearch.app", "Contents", "Info.plist")));
+  const app = path.join(value.home, "Applications", "Neutrasearch.app");
+  const info = path.join(app, "Contents", "Info.plist");
+  assert(fs.existsSync(info));
+  assert(fs.existsSync(path.join(app, "Contents", "Resources", "Neutrasearch.icns")));
+  assert.match(fs.readFileSync(info, "utf8"), /CFBundleIconFile/);
   assert(fs.lstatSync(path.join(value.home, "Desktop", "Neutrasearch.app")).isSymbolicLink());
   fs.rmSync(value.root, { recursive: true, force: true });
 });

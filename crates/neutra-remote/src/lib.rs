@@ -76,7 +76,17 @@ impl Provisioner {
             ])
             .output()?;
         if !win.status.success() {
-            bail!("SSH works neither as Unix shell nor Windows OpenSSH on {host}");
+            let unix_error = String::from_utf8_lossy(&unix.stderr);
+            let windows_error = String::from_utf8_lossy(&win.stderr);
+            let detail = [unix_error.trim(), windows_error.trim()]
+                .into_iter()
+                .filter(|message| !message.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if detail.is_empty() {
+                bail!("remote helper unavailable on {host}");
+            }
+            bail!("remote helper unavailable on {host}: {detail}");
         }
         Ok(RemotePlatform {
             os: RemoteOs::Windows,

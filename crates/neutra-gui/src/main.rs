@@ -4,13 +4,15 @@ mod ui;
 use eframe::egui;
 use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
 use neutra_core::{
-    CompactIndex, FileKind, FileRecord, Index, Query, SearchHit, SearchStats, SortKey,
+    CompactIndex, FileKind, FileRecord, Index, MountInfo, Query, SearchHit, SearchStats, SortKey,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 enum Event {
@@ -44,9 +46,16 @@ struct LaneState {
     error: bool,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct GuiSettings {
+    onboarding_complete: bool,
+    roots: Vec<PathBuf>,
+}
+
 struct NeutraApp {
     index: Index,
     compact: Option<CompactIndex>,
+    logo: egui::TextureHandle,
     scan_index: Option<Index>,
     query: String,
     hits: Vec<SearchHit>,
@@ -57,6 +66,12 @@ struct NeutraApp {
     scanning: bool,
     active_scans: usize,
     cache_path: PathBuf,
+    settings_path: PathBuf,
+    selected_roots: Vec<PathBuf>,
+    scan_roots: Vec<PathBuf>,
+    onboarding_complete: bool,
+    onboarding_scan: bool,
+    setup_focus_requested: bool,
     cache_dirty: bool,
     building_cache: bool,
     last_cache: Instant,
@@ -90,7 +105,13 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([760.0, 500.0])
-            .with_title("Neutrasearch"),
+            .with_title("Neutrasearch")
+            .with_app_id("neutrasearch")
+            .with_icon(app_icon()),
+        renderer: eframe::Renderer::Glow,
+        // Wayland interactive resize should track the pointer instead of waiting
+        // for the next compositor-synchronized frame.
+        vsync: false,
         ..Default::default()
     };
     eframe::run_native(
@@ -100,9 +121,35 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+fn embedded_logo() -> (Vec<u8>, u32, u32) {
+    let image = image::load_from_memory(include_bytes!("../assets/neutrasearch.png"))
+        .expect("embedded Neutrasearch icon must decode")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    (image.into_raw(), width, height)
+}
+
+fn app_icon() -> egui::IconData {
+    let (rgba, width, height) = embedded_logo();
+    egui::IconData {
+        rgba,
+        width,
+        height,
+    }
+}
+
 impl NeutraApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::configure(&cc.egui_ctx);
+        let (logo_rgba, logo_width, logo_height) = embedded_logo();
+        let logo = cc.egui_ctx.load_texture(
+            "neutrasearch-logo",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [logo_width as usize, logo_height as usize],
+                &logo_rgba,
+            ),
+            egui::TextureOptions::LINEAR,
+        );
         let reference_mode = env_flag("NEUTRASEARCH_GUI_REFERENCE", "NEUTRA_GUI_REFERENCE");
         let cache_path = compact_cache_path();
         let (compact, cache_error) = if reference_mode {
@@ -132,10 +179,20 @@ impl NeutraApp {
         };
         let has_durable_index = compact.is_some() || restored.is_some();
         let index = restored.unwrap_or_default();
+        let settings_path = gui_settings_path();
+        let settings = if reference_mode {
+            GuiSettings {
+                onboarding_complete: true,
+                roots: vec![PathBuf::from("/")],
+            }
+        } else {
+            load_gui_settings(&settings_path).unwrap_or_default()
+        };
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
             index,
             compact,
+            logo,
             scan_index: None,
             query: std::env::var("NEUTRASEARCH_GUI_QUERY").unwrap_or_else(|_| {
                 if reference_mode {
@@ -152,6 +209,12 @@ impl NeutraApp {
             scanning: false,
             active_scans: 0,
             cache_path,
+            settings_path,
+            selected_roots: settings.roots,
+            scan_roots: Vec::new(),
+            onboarding_complete: settings.onboarding_complete,
+            onboarding_scan: false,
+            setup_focus_requested: true,
             cache_dirty: false,
             building_cache: false,
             last_cache: Instant::now(),
@@ -162,9 +225,9 @@ impl NeutraApp {
             sort_mode: ui::SortMode::Modified,
             search_mode: ui::SearchMode::NameAndPath,
             case_sensitive: false,
-            regex_mode: false,
+            regex_mode: env_flag("NEUTRASEARCH_GUI_REGEX", "NEUTRA_GUI_REGEX"),
             scope_root: None,
-            diagnostics_open: false,
+            diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS", "NEUTRA_GUI_DIAGNOSTICS"),
             about_open: false,
             search_focus_requested: false,
             tree_fraction: 0.23,
@@ -202,8 +265,7 @@ impl NeutraApp {
                 "welcome".into(),
                 LaneState {
                     label: "READY".into(),
-                    status: "Choose Build search index to approve native local-volume indexing"
-                        .into(),
+                    status: "Add folders, then choose Scan to build the local index".into(),
                     ..Default::default()
                 },
             );
@@ -228,25 +290,136 @@ impl NeutraApp {
     }
 
     fn begin_scan(&mut self) {
+        self.begin_scan_with_elevation(false);
+    }
+
+    fn begin_scan_with_elevation(&mut self, elevated: bool) {
         if self.scanning || self.building_cache {
             return;
         }
+        if self.selected_roots.is_empty() {
+            self.compact = None;
+            self.index = Index::new();
+            self.tree_model = None;
+            self.tree_building = false;
+            self.cache_dirty = true;
+            self.last_cache = Instant::now() - Duration::from_secs(3);
+            self.lanes.clear();
+            self.lanes.insert(
+                "locations".into(),
+                LaneState {
+                    label: "SEARCH LOCATIONS".into(),
+                    status: "no folders selected".into(),
+                    ..Default::default()
+                },
+            );
+            self.requery();
+            return;
+        }
         // Build into a staging index. The last complete index remains searchable
-        // and on disk until every requested native lane succeeds.
+        // until at least one requested native lane completes successfully.
         self.scan_index = Some(Index::new());
+        self.scan_roots = self.selected_roots.clone();
         self.scanning = true;
         self.active_scans = 0;
         self.cache_dirty = false;
         self.lanes.clear();
-        spawn_local_helper(self.tx.clone());
+        let mounts = selected_scan_mounts(&self.selected_roots);
+        if mounts.is_empty() {
+            self.scanning = false;
+            self.scan_index = None;
+            self.scan_roots.clear();
+            self.onboarding_scan = false;
+            self.lanes.insert(
+                "locations".into(),
+                LaneState {
+                    label: "SEARCH LOCATIONS".into(),
+                    status: "selected folders are not on a supported local native filesystem"
+                        .into(),
+                    error: true,
+                    ..Default::default()
+                },
+            );
+            return;
+        }
+        spawn_local_helper(self.tx.clone(), elevated, mounts, self.scan_roots.clone());
     }
-    fn process_events(&mut self) {
-        while let Ok(ev) = self.rx.try_recv() {
+
+    fn complete_onboarding_and_scan(&mut self) {
+        if self.selected_roots.is_empty() {
+            return;
+        }
+        // Persist the chosen roots, but do not dismiss setup until at least one
+        // requested native lane has produced a usable index.
+        self.onboarding_complete = false;
+        self.onboarding_scan = true;
+        self.save_settings();
+        self.begin_scan_with_elevation(cfg!(target_os = "linux"));
+    }
+
+    fn add_root(&mut self, root: PathBuf) {
+        let root = normalize_selected_root(std::fs::canonicalize(&root).unwrap_or(root));
+        if root.is_absolute()
+            && !self
+                .selected_roots
+                .iter()
+                .any(|existing| same_root(existing, &root))
+        {
+            self.selected_roots.push(root);
+            self.selected_roots.sort();
+            self.scope_root = None;
+            self.setup_focus_requested = true;
+            if self.onboarding_complete {
+                self.save_settings();
+                self.requery();
+                self.begin_scan_with_elevation(cfg!(target_os = "linux"));
+            }
+        }
+    }
+
+    fn remove_root(&mut self, index: usize) {
+        if index < self.selected_roots.len() {
+            self.selected_roots.remove(index);
+            self.scope_root = None;
+            self.save_settings();
+            self.requery();
+            if self.onboarding_complete {
+                self.begin_scan_with_elevation(cfg!(target_os = "linux"));
+            }
+        }
+    }
+
+    fn save_settings(&mut self) {
+        let settings = GuiSettings {
+            onboarding_complete: self.onboarding_complete,
+            roots: self.selected_roots.clone(),
+        };
+        if let Err(error) = save_gui_settings(&self.settings_path, &settings) {
+            self.lanes.insert(
+                "settings".into(),
+                LaneState {
+                    label: "SETTINGS".into(),
+                    status: error,
+                    error: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    fn process_events(&mut self) -> bool {
+        const MAX_EVENTS_PER_FRAME: usize = 64;
+        let mut processed = 0;
+        while processed < MAX_EVENTS_PER_FRAME {
+            let Ok(ev) = self.rx.try_recv() else { break };
+            processed += 1;
             match ev {
                 Event::Fatal(e) => {
                     self.scanning = false;
                     self.active_scans = 0;
                     self.scan_index = None;
+                    self.scan_roots.clear();
+                    self.onboarding_scan = false;
+                    self.setup_focus_requested = true;
                     self.lanes.insert(
                         "helper".into(),
                         LaneState {
@@ -347,8 +520,13 @@ impl NeutraApp {
                         );
                     }
                     HelperMsg::Records(records) => {
+                        let roots = &self.scan_roots;
                         if let Some(staging) = &mut self.scan_index {
-                            staging.extend(records);
+                            staging.extend(
+                                records
+                                    .into_iter()
+                                    .filter(|record| record_in_roots(record.path.as_ref(), roots)),
+                            );
                         }
                     }
                     HelperMsg::ScanDone { mount, stats } => {
@@ -383,7 +561,10 @@ impl NeutraApp {
                         self.scanning = false;
                         self.active_scans = 0;
                         let staging = self.scan_index.take();
+                        self.scan_roots.clear();
                         if mounts == 0 {
+                            self.onboarding_scan = false;
+                            self.setup_focus_requested = true;
                             self.lanes.insert(
                                 "scan".into(),
                                 LaneState {
@@ -396,32 +577,56 @@ impl NeutraApp {
                                     ..Default::default()
                                 },
                             );
-                        } else if errors > 0 {
-                            self.lanes.insert(
-                                "scan".into(),
-                                LaneState {
-                                    label: "REBUILD NOT PUBLISHED".into(),
-                                    status: format!(
-                                        "{errors} of {mounts} native lanes failed; keeping the last complete index"
-                                    ),
-                                    error: true,
-                                    ..Default::default()
-                                },
-                            );
-                        } else if let Some(staging) = staging {
+                        } else if scan_has_reachable_lane(mounts, errors) {
+                            let staging = staging.unwrap_or_default();
+                            if self.onboarding_scan || !self.onboarding_complete {
+                                self.onboarding_complete = true;
+                                self.onboarding_scan = false;
+                                self.save_settings();
+                            }
                             self.compact = None;
                             self.index = staging;
                             self.tree_model = None;
                             self.tree_building = false;
                             self.cache_dirty = true;
                             self.last_cache = Instant::now() - Duration::from_secs(3);
+                            if errors > 0 {
+                                self.lanes.insert(
+                                    "scan".into(),
+                                    LaneState {
+                                        label: "PARTIAL INDEX".into(),
+                                        status: format!(
+                                            "indexed reachable locations; skipped {errors} unavailable native lane(s)"
+                                        ),
+                                        error: false,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
                             self.requery();
+                        } else if errors > 0 {
+                            self.onboarding_scan = false;
+                            self.setup_focus_requested = true;
+                            self.lanes.insert(
+                                "scan".into(),
+                                LaneState {
+                                    label: "NO REACHABLE LOCATIONS".into(),
+                                    status: format!(
+                                        "all {errors} unavailable native lane(s) were skipped; keeping the last complete index"
+                                    ),
+                                    error: true,
+                                    ..Default::default()
+                                },
+                            );
                         }
                     }
                     HelperMsg::Error(e) => {
                         self.scanning = false;
                         self.active_scans = 0;
                         self.scan_index = None;
+                        self.scan_roots.clear();
+                        self.onboarding_scan = false;
+                        self.setup_focus_requested = true;
                         self.lanes.insert(
                             "protocol".into(),
                             LaneState {
@@ -493,6 +698,7 @@ impl NeutraApp {
                 }
             });
         }
+        processed == MAX_EVENTS_PER_FRAME
     }
     fn index_len(&self) -> u64 {
         self.compact
@@ -543,6 +749,11 @@ impl NeutraApp {
         });
     }
     fn requery(&mut self) {
+        if self.selected_roots.is_empty() && self.onboarding_complete {
+            self.hits.clear();
+            self.search_stats = SearchStats::default();
+            return;
+        }
         if let Some(current_generation) = self.compact.as_ref().map(CompactIndex::generation) {
             match CompactIndex::generation_on_disk(&self.cache_path) {
                 Ok(on_disk) if on_disk == current_generation => {}
@@ -590,10 +801,20 @@ impl NeutraApp {
             ui::KindFilter::Files => vec![FileKind::File, FileKind::Symlink],
             ui::KindFilter::Folders => vec![FileKind::Dir],
         };
-        if let Some(root) = &self.scope_root {
-            q.scope_roots.push(root.clone());
-            q.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+        let scoped_root = self
+            .scope_root
+            .as_deref()
+            .filter(|scope| scope_within_selected_roots(scope, &self.selected_roots));
+        if let Some(root) = scoped_root {
+            q.scope_roots.push(root.to_owned());
+        } else {
+            q.scope_roots.extend(
+                self.selected_roots
+                    .iter()
+                    .map(|root| root.to_string_lossy().into_owned()),
+            );
         }
+        q.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
         let result = if let Some(index) = &self.compact {
             index.search(&q).ok()
         } else {
@@ -718,7 +939,7 @@ fn select_helper(
 ) -> Result<PathBuf, String> {
     if elevated && configured.is_some() {
         return Err(
-            "refusing to elevate a helper selected through NEUTRASEARCH_HELPER; install trusted sibling binaries"
+            "refusing to elevate a helper selected through NEUTRASEARCH_HELPER; install a trusted system helper"
                 .into(),
         );
     }
@@ -730,8 +951,23 @@ fn select_helper(
         })
     });
     if elevated {
-        let helper = sibling.ok_or_else(|| "cannot locate installed helper sibling".to_string())?;
-        return validate_elevated_helper(&helper);
+        #[cfg(unix)]
+        let candidates = [
+            PathBuf::from("/usr/local/lib/neutrasearch/neutrasearch-helper"),
+            PathBuf::from("/usr/lib/neutrasearch/neutrasearch-helper"),
+            PathBuf::from("/usr/local/bin/neutrasearch-helper"),
+        ];
+        #[cfg(not(unix))]
+        let candidates = sibling.into_iter().collect::<Vec<_>>();
+        for helper in candidates {
+            if let Ok(helper) = validate_elevated_helper(&helper) {
+                return Ok(helper);
+            }
+        }
+        return Err(
+            "no trusted administrator helper is installed; reinstall Neutrasearch system-wide"
+                .into(),
+        );
     }
     Ok(configured
         .or(sibling)
@@ -747,6 +983,17 @@ fn validate_elevated_helper(path: &std::path::Path) -> Result<PathBuf, String> {
             path.display()
         )
     })?;
+    let allowed = [
+        std::path::Path::new("/usr/local/lib/neutrasearch"),
+        std::path::Path::new("/usr/lib/neutrasearch"),
+        std::path::Path::new("/usr/local/bin"),
+    ];
+    if !allowed.iter().any(|directory| path.starts_with(directory)) {
+        return Err(format!(
+            "refusing helper outside trusted system locations: {}",
+            path.display()
+        ));
+    }
     let metadata = std::fs::metadata(&path).map_err(|error| {
         format!(
             "cannot inspect installed helper {}: {error}",
@@ -758,6 +1005,22 @@ fn validate_elevated_helper(path: &std::path::Path) -> Result<PathBuf, String> {
             "refusing to elevate untrusted helper {}; it must be a root-owned regular file not writable by group/others",
             path.display()
         ));
+    }
+    let mut ancestor = path.parent();
+    while let Some(directory) = ancestor {
+        let metadata = std::fs::metadata(directory).map_err(|error| {
+            format!(
+                "cannot inspect helper directory {}: {error}",
+                directory.display()
+            )
+        })?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(format!(
+                "refusing helper beneath untrusted directory {}",
+                directory.display()
+            ));
+        }
+        ancestor = directory.parent();
     }
     Ok(path)
 }
@@ -772,13 +1035,19 @@ fn validate_elevated_helper(path: &std::path::Path) -> Result<PathBuf, String> {
     })
 }
 
-fn spawn_local_helper(tx: Sender<Event>) {
+fn spawn_local_helper(
+    tx: Sender<Event>,
+    elevated_requested: bool,
+    mounts: Vec<MountInfo>,
+    roots: Vec<PathBuf>,
+) {
     std::thread::spawn(move || {
         let configured = std::env::var_os("NEUTRASEARCH_HELPER")
             .or_else(|| std::env::var_os("NEUTRA_HELPER"))
             .map(PathBuf::from);
         let elevated = cfg!(target_os = "linux")
-            && (std::env::var_os("NEUTRASEARCH_PKEXEC").is_some()
+            && (elevated_requested
+                || std::env::var_os("NEUTRASEARCH_PKEXEC").is_some()
                 || std::env::var_os("NEUTRA_PKEXEC").is_some());
         let helper = match select_helper(configured, std::env::current_exe().ok(), elevated) {
             Ok(helper) => helper,
@@ -800,92 +1069,223 @@ fn spawn_local_helper(tx: Sender<Event>) {
             .stderr(Stdio::piped())
             .spawn();
         let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
+            Ok(child) => child,
+            Err(error) => {
                 let _ = tx.send(Event::Fatal(format!(
-                    "cannot start neutrasearch-helper: {e}"
+                    "cannot start the native scanner: {error}"
                 )));
                 return;
             }
         };
-        if let Some(stderr) = child.stderr.take() {
+        let stderr_text = Arc::new(Mutex::new(String::new()));
+        let stderr_reader = child.stderr.take().map(|stderr| {
+            let captured = Arc::clone(&stderr_text);
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     eprintln!("neutrasearch-helper: {line}");
+                    if let Ok(mut text) = captured.lock() {
+                        if text.len() < 8_192 {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&line);
+                            text.truncate(8_192);
+                        }
+                    }
                 }
-            });
-        }
-        let (mut input, mut output) = (
-            BufWriter::new(child.stdin.take().unwrap()),
-            BufReader::new(child.stdout.take().unwrap()),
-        );
-        if write_frame(
+            })
+        });
+        let Some(stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            let _ = tx.send(Event::Fatal(helper_start_failure(
+                "native scanner input pipe is unavailable",
+                &stderr_text,
+            )));
+            return;
+        };
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            let _ = tx.send(Event::Fatal(helper_start_failure(
+                "native scanner output pipe is unavailable",
+                &stderr_text,
+            )));
+            return;
+        };
+        let (mut input, mut output) = (BufWriter::new(stdin), BufReader::new(stdout));
+        if let Err(error) = write_frame(
             &mut input,
             &ClientMsg::Hello {
                 proto: PROTO_VERSION,
             },
-        )
-        .is_err()
-        {
+        ) {
+            let _ = child.wait();
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            let _ = tx.send(Event::Fatal(helper_start_failure(
+                &format!("cannot contact the native scanner: {error}"),
+                &stderr_text,
+            )));
             return;
         }
         match read_frame::<_, HelperMsg>(&mut output) {
-            Ok(Some(h)) => {
-                let _ = tx.send(Event::Message(h));
+            Ok(Some(message)) => {
+                let _ = tx.send(Event::Message(message));
             }
             other => {
-                let _ = tx.send(Event::Fatal(format!("helper handshake failed: {other:?}")));
+                let _ = child.wait();
+                if let Some(reader) = stderr_reader {
+                    let _ = reader.join();
+                }
+                let _ = tx.send(Event::Fatal(helper_start_failure(
+                    &format!("native scanner handshake failed: {other:?}"),
+                    &stderr_text,
+                )));
                 return;
             }
         }
-        if write_frame(&mut input, &ClientMsg::Scan { mounts: Vec::new() }).is_err() {
+        if let Err(error) = write_frame(&mut input, &ClientMsg::Scan { mounts, roots }) {
+            drop(input);
+            let _ = child.wait();
+            if let Some(reader) = stderr_reader {
+                let _ = reader.join();
+            }
+            let _ = tx.send(Event::Fatal(helper_start_failure(
+                &format!("cannot send locations to the native scanner: {error}"),
+                &stderr_text,
+            )));
             return;
         }
         drop(input);
+        let mut completed = false;
         loop {
             match read_frame::<_, HelperMsg>(&mut output) {
-                Ok(Some(m)) => {
-                    let _ = tx.send(Event::Message(m));
+                Ok(Some(message)) => {
+                    completed |= matches!(message, HelperMsg::ScanComplete { .. });
+                    let _ = tx.send(Event::Message(message));
                 }
                 Ok(None) => break,
-                Err(e) => {
-                    let _ = tx.send(Event::Fatal(format!("helper protocol: {e}")));
+                Err(error) => {
+                    let _ = tx.send(Event::Fatal(format!("native scanner protocol: {error}")));
                     break;
                 }
             }
         }
-        let _ = child.wait();
+        let status = child.wait().ok();
+        if let Some(reader) = stderr_reader {
+            let _ = reader.join();
+        }
+        if !completed {
+            let status_detail = status
+                .map(|status| format!(" ({status})"))
+                .unwrap_or_default();
+            let _ = tx.send(Event::Fatal(helper_start_failure(
+                &format!("the native scanner stopped before completing{status_detail}"),
+                &stderr_text,
+            )));
+        }
     });
+}
+
+fn helper_start_failure(summary: &str, stderr: &Arc<Mutex<String>>) -> String {
+    let detail = stderr
+        .lock()
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_default();
+    if detail.contains("textual authentication agent")
+        || detail.contains("current controlling terminal")
+    {
+        return "administrator approval could not open in this desktop session; launch Neutrasearch from the desktop and try again".into();
+    }
+    if detail.is_empty() {
+        summary.to_owned()
+    } else {
+        format!("{summary}: {detail}")
+    }
 }
 
 fn spawn_network_watcher(tx: Sender<Event>) {
     std::thread::spawn(move || {
         let provisioner = neutra_remote::Provisioner::from_env();
-        let mut seen = std::collections::HashSet::<String>::new();
+        let mut ready = std::collections::HashSet::<String>::new();
+        let mut last_attempt = BTreeMap::<String, Instant>::new();
+        let mut announced_waiting = std::collections::HashSet::<String>::new();
         loop {
             for (host, key) in discover_network_hosts() {
-                if !seen.insert(key.clone()) {
+                if ready.contains(&key)
+                    || last_attempt
+                        .get(&key)
+                        .is_some_and(|attempt| attempt.elapsed() < Duration::from_secs(30))
+                {
                     continue;
                 }
-                let result = provisioner.ensure_installed(&host);
-                let (status, error) = match result {
-                    Ok(p) => (
-                        format!(
-                            "helper build {} ready ({:?}/{})",
-                            neutra_core::proto::HELPER_BUILD,
-                            p.os,
-                            p.arch
-                        ),
-                        false,
-                    ),
-                    Err(e) => (format!("auto-install unavailable: {e:#}"), true),
-                };
-                let _ = tx.send(Event::Remote { key, status, error });
+                last_attempt.insert(key.clone(), Instant::now());
+                match provisioner.ensure_installed(&host) {
+                    Ok(platform) => {
+                        ready.insert(key.clone());
+                        announced_waiting.remove(&key);
+                        let _ = tx.send(Event::Remote {
+                            key,
+                            status: format!(
+                                "helper build {} ready ({:?}/{})",
+                                neutra_core::proto::HELPER_BUILD,
+                                platform.os,
+                                platform.arch
+                            ),
+                            error: false,
+                        });
+                    }
+                    Err(error) if remote_failure_is_offline(&error) => {
+                        if announced_waiting.insert(key.clone()) {
+                            let _ = tx.send(Event::Remote {
+                                key,
+                                status: "offline; waiting to retry when the server is available"
+                                    .into(),
+                                error: false,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        ready.insert(key.clone());
+                        let _ = tx.send(Event::Remote {
+                            key,
+                            status: format!("network helper needs attention: {error:#}"),
+                            error: true,
+                        });
+                    }
+                }
             }
             std::thread::sleep(Duration::from_secs(3));
         }
     });
 }
+fn scan_has_reachable_lane(mounts: u32, errors: u32) -> bool {
+    mounts > 0 && errors < mounts
+}
+
+fn remote_failure_is_offline(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    [
+        "connection timed out",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "could not resolve hostname",
+        "name or service not known",
+        "operation timed out",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
 fn discover_network_hosts() -> Vec<(String, String)> {
     #[cfg(target_os = "linux")]
     {
@@ -945,6 +1345,301 @@ fn discover_network_hosts() -> Vec<(String, String)> {
     }
     #[allow(unreachable_code)]
     Vec::new()
+}
+
+fn normalize_selected_root(root: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let value = root.to_string_lossy();
+        if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{path}"));
+        }
+        if let Some(path) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(path);
+        }
+    }
+    root
+}
+
+fn same_root(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        left.to_string_lossy()
+            .trim_end_matches(['/', '\\'])
+            .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['/', '\\']))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        left == right
+    }
+}
+
+fn record_in_roots(path: &str, roots: &[PathBuf]) -> bool {
+    let case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    roots
+        .iter()
+        .any(|root| portable_path_in_root(path, &root.to_string_lossy(), case_sensitive))
+}
+
+fn portable_path_in_root(path: &str, root: &str, case_sensitive: bool) -> bool {
+    let normalize = |value: &str| {
+        let value = value.replace('\\', "/");
+        if case_sensitive {
+            value
+        } else {
+            value.to_ascii_lowercase()
+        }
+    };
+    let path = normalize(path);
+    let mut root = normalize(root);
+    while root.len() > 1 && root.ends_with('/') && !is_windows_drive_root(&root) {
+        root.pop();
+    }
+    path == root
+        || if root.ends_with('/') {
+            path.starts_with(&root)
+        } else {
+            path.strip_prefix(&root)
+                .is_some_and(|tail| tail.starts_with('/'))
+        }
+}
+
+fn scope_within_selected_roots(scope: &str, selected_roots: &[PathBuf]) -> bool {
+    let case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    selected_roots
+        .iter()
+        .any(|selected| portable_path_in_root(scope, &selected.to_string_lossy(), case_sensitive))
+}
+
+fn is_windows_drive_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
+fn selected_scan_mounts(roots: &[PathBuf]) -> Vec<MountInfo> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let trusted = neutra_core::mounts::system_mounts().unwrap_or_default();
+        return select_mounts_for_roots(roots, &trusted);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut mounts = Vec::new();
+        for root in roots {
+            let value = root.to_string_lossy().replace('/', "\\");
+            let bytes = value.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+            {
+                let mountpoint = PathBuf::from(&value[..3]);
+                if !mounts
+                    .iter()
+                    .any(|mount: &MountInfo| mount.mountpoint == mountpoint)
+                {
+                    mounts.push(requested_mount(mountpoint));
+                }
+            }
+        }
+        return mounts;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("/sbin/mount").output().ok();
+        let trusted = output
+            .filter(|output| output.status.success())
+            .into_iter()
+            .flat_map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let (_, mounted) = line.split_once(" on ")?;
+                        let (mountpoint, options) = mounted.rsplit_once(" (")?;
+                        let filesystem = options.trim_end_matches(')').split(',').next()?.trim();
+                        let fs = match filesystem {
+                            "apfs" | "hfs" => neutra_core::FsKind::Ext4,
+                            "nfs" | "smbfs" | "webdav" => {
+                                neutra_core::FsKind::Network(filesystem.into())
+                            }
+                            _ => return None,
+                        };
+                        Some(requested_mount_with_fs(PathBuf::from(mountpoint), fs))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        return select_mounts_for_roots(roots, &trusted);
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn requested_mount(mountpoint: PathBuf) -> MountInfo {
+    requested_mount_with_fs(mountpoint, neutra_core::FsKind::Ext4)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn requested_mount_with_fs(mountpoint: PathBuf, fs: neutra_core::FsKind) -> MountInfo {
+    MountInfo {
+        device: String::new(),
+        mountpoint,
+        fs,
+        source: neutra_core::MountSource::Local,
+    }
+}
+
+fn select_mounts_for_roots(roots: &[PathBuf], trusted: &[MountInfo]) -> Vec<MountInfo> {
+    let mut selected = Vec::<MountInfo>::new();
+    for root in roots {
+        let Some(mount) = trusted
+            .iter()
+            .filter(|mount| root.starts_with(&mount.mountpoint))
+            .max_by_key(|mount| mount.mountpoint.as_os_str().len())
+        else {
+            continue;
+        };
+        if mount.fs.is_indexable_local()
+            && !selected
+                .iter()
+                .any(|existing| existing.mountpoint == mount.mountpoint)
+        {
+            selected.push(mount.clone());
+        }
+    }
+    selected
+}
+
+fn gui_settings_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Neutrasearch/gui-settings.json");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(|home| home.join("Library/Application Support"))
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Neutrasearch/gui-settings.json");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|home| home.join(".config"))
+            })
+            .unwrap_or_else(std::env::temp_dir)
+            .join("neutrasearch/gui-settings.json")
+    }
+}
+
+fn load_gui_settings(path: &std::path::Path) -> Option<GuiSettings> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut settings: GuiSettings = serde_json::from_slice(&bytes).ok()?;
+    settings.roots = settings
+        .roots
+        .into_iter()
+        .map(normalize_selected_root)
+        .filter(|root| root.is_absolute())
+        .collect();
+    settings.roots.sort();
+    settings
+        .roots
+        .dedup_by(|left, right| same_root(left, right));
+    Some(settings)
+}
+
+fn save_gui_settings(path: &std::path::Path, settings: &GuiSettings) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "settings path has no parent".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create settings directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("cannot protect settings directory: {error}"))?;
+    }
+    let temporary = path.with_extension("json.new");
+    let bytes = serde_json::to_vec_pretty(settings)
+        .map_err(|error| format!("cannot encode settings: {error}"))?;
+    let _ = std::fs::remove_file(&temporary);
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|error| format!("cannot create settings: {error}"))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("cannot write settings: {error}"))?;
+    drop(file);
+    publish_settings(&temporary, path).map_err(|error| format!("cannot publish settings: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn publish_settings(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(temporary, destination)
+}
+
+#[cfg(target_os = "windows")]
+fn publish_settings(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let existing = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replacement = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            replacement.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn env_flag(current: &str, legacy: &str) -> bool {
@@ -1033,6 +1728,13 @@ mod security_tests {
     use super::*;
 
     #[test]
+    fn embedded_logo_decodes_to_a_complete_rgba_icon() {
+        let icon = app_icon();
+        assert_eq!((icon.width, icon.height), (128, 128));
+        assert_eq!(icon.rgba.len(), 128 * 128 * 4);
+    }
+
+    #[test]
     fn elevated_helper_cannot_come_from_environment_override() {
         let error = select_helper(
             Some(PathBuf::from("/tmp/untrusted-helper")),
@@ -1044,6 +1746,24 @@ mod security_tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn elevated_helper_rejects_paths_outside_system_allowlist() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "neutrasearch-untrusted-helper-{}",
+            std::process::id()
+        ));
+        let helper = directory.join("neutrasearch-helper");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&helper, b"fixture").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(validate_elevated_helper(&helper).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn normal_helper_override_remains_available_for_development() {
         let helper = select_helper(
             Some(PathBuf::from("custom-helper")),
@@ -1052,5 +1772,124 @@ mod security_tests {
         )
         .unwrap();
         assert_eq!(helper, PathBuf::from("custom-helper"));
+    }
+
+    #[test]
+    fn missing_desktop_authorization_becomes_an_actionable_error() {
+        let stderr = Arc::new(Mutex::new(
+            "Error creating textual authentication agent: Error opening current controlling terminal"
+                .to_owned(),
+        ));
+        let error = helper_start_failure("handshake failed", &stderr);
+        assert!(error.contains("launch Neutrasearch from the desktop"));
+        assert!(!error.contains("handshake"));
+    }
+
+    #[test]
+    fn selected_roots_include_descendants_but_not_prefix_siblings() {
+        let roots = vec![PathBuf::from("/home/alex/Documents")];
+        assert!(record_in_roots("/home/alex/Documents/report.pdf", &roots));
+        assert!(record_in_roots("/home/alex/Documents", &roots));
+        assert!(!record_in_roots(
+            "/home/alex/Documents-old/report.pdf",
+            &roots
+        ));
+        assert!(!record_in_roots("/home/alex/Documents/report.pdf", &[]));
+        assert!(portable_path_in_root("/Users/alex/report.pdf", "/", false));
+        assert!(portable_path_in_root(
+            r"C:\Users\alex\report.pdf",
+            r"C:\",
+            false
+        ));
+        assert!(!portable_path_in_root(r"D:\report.pdf", r"C:\", false));
+        assert!(scope_within_selected_roots(
+            "/home/alex/Documents/reports",
+            &[PathBuf::from("/home/alex/Documents")]
+        ));
+        assert!(!scope_within_selected_roots(
+            "/home",
+            &[PathBuf::from("/home/alex/Documents")]
+        ));
+    }
+
+    #[test]
+    fn network_roots_do_not_fall_back_to_scanning_the_parent_local_volume() {
+        let trusted = vec![
+            MountInfo {
+                device: "server:/share".into(),
+                mountpoint: "/mnt/team".into(),
+                fs: neutra_core::FsKind::Network("nfs4".into()),
+                source: neutra_core::MountSource::Remote {
+                    host: "server".into(),
+                },
+            },
+            MountInfo {
+                device: "/dev/root".into(),
+                mountpoint: "/".into(),
+                fs: neutra_core::FsKind::Ext4,
+                source: neutra_core::MountSource::Local,
+            },
+        ];
+        assert!(select_mounts_for_roots(&[PathBuf::from("/mnt/team/docs")], &trusted).is_empty());
+        let local = select_mounts_for_roots(&[PathBuf::from("/home/alex")], &trusted);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].mountpoint, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn successful_empty_scans_still_replace_stale_results() {
+        assert!(scan_has_reachable_lane(1, 0));
+        assert!(scan_has_reachable_lane(3, 1));
+        assert!(!scan_has_reachable_lane(3, 3));
+        assert!(!scan_has_reachable_lane(0, 0));
+    }
+
+    #[test]
+    fn offline_network_errors_are_retryable_but_integrity_failures_are_not() {
+        assert!(remote_failure_is_offline(&anyhow::anyhow!(
+            "ssh: connect to host studio: Connection timed out"
+        )));
+        assert!(!remote_failure_is_offline(&anyhow::anyhow!(
+            "helper checksum mismatch"
+        )));
+        assert!(!remote_failure_is_offline(&anyhow::anyhow!(
+            "Permission denied (publickey)"
+        )));
+    }
+
+    #[test]
+    fn gui_settings_roundtrip_preserves_completed_onboarding_and_roots() {
+        let directory =
+            std::env::temp_dir().join(format!("neutrasearch-gui-settings-{}", std::process::id()));
+        let path = directory.join("gui-settings.json");
+        let _ = std::fs::remove_dir_all(&directory);
+        let root = std::env::temp_dir();
+        let settings = GuiSettings {
+            onboarding_complete: true,
+            roots: vec![root.clone()],
+        };
+        save_gui_settings(&path, &settings).unwrap();
+        let incomplete = GuiSettings {
+            onboarding_complete: false,
+            roots: vec![root.clone()],
+        };
+        save_gui_settings(&path, &incomplete).unwrap();
+        save_gui_settings(&path, &settings).unwrap();
+        let loaded = load_gui_settings(&path).unwrap();
+        assert!(loaded.onboarding_complete);
+        assert_eq!(loaded.roots, vec![root]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -187,7 +187,7 @@ fn treemap_legend(ui: &mut Ui) {
     ui.painter().rect_filled(rect, 0.0, CANVAS);
     let items = [
         ("PDF", Color32::from_rgb(132, 52, 52)),
-        ("Spreadsheet", Color32::from_rgb(54, 126, 87)),
+        ("Spreadsheet", Color32::from_rgb(91, 83, 134)),
         ("Document", Color32::from_rgb(57, 92, 145)),
         ("Archive", Color32::from_rgb(139, 105, 50)),
         ("Image", Color32::from_rgb(116, 64, 133)),

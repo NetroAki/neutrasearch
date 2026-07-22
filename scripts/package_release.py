@@ -207,15 +207,35 @@ def npm_platform_package(
     binary_dir.mkdir(parents=True)
     checksums: list[str] = []
     binary_links: dict[str, str] = {}
+    built_binaries: dict[str, bytes] = {}
     for binary in BINARIES:
         filename = binary + executable_suffix
         source = target_dir / filename
         data = regular_file_bytes(source)
+        built_binaries[binary] = data
         destination = binary_dir / filename
         destination.write_bytes(data)
         destination.chmod(0o755)
         checksums.append(f"{sha256_bytes(data)}  bin/{filename}\n")
         binary_links[binary] = f"bin/{filename}"
+
+    helper_dir = binary_dir / "helpers"
+    helper_dir.mkdir()
+    helper_name = helper_artifact_name(target)
+    helper_data = built_binaries["neutrasearch-helper"]
+    helper_path = helper_dir / helper_name
+    helper_path.write_bytes(helper_data)
+    helper_path.chmod(0o755)
+    helper_digest = sha256_bytes(helper_data)
+    (helper_dir / f"{helper_name}.sha256").write_text(
+        f"{helper_digest}  {helper_name}\n", encoding="utf-8"
+    )
+    checksums.extend(
+        [
+            f"{helper_digest}  bin/helpers/{helper_name}\n",
+            f"{sha256_bytes((helper_dir / f'{helper_name}.sha256').read_bytes())}  bin/helpers/{helper_name}.sha256\n",
+        ]
+    )
 
     metadata = {
         "name": package_name,
@@ -410,11 +430,14 @@ def self_test() -> None:
                 npm_metadata["cpu"],
             ) != (expected_name, [expected_os], [expected_cpu]):
                 raise AssertionError(f"incorrect npm platform metadata for {target}")
-            if set(path.name for path in (npm_dir / "bin").iterdir()) != {
+            if {path.name for path in (npm_dir / "bin").iterdir() if path.is_file()} != {
                 binary + suffix for binary in BINARIES
             }:
                 raise AssertionError(f"incorrect npm binary manifest for {target}")
-            if len((npm_dir / "SHA256SUMS").read_text().splitlines()) != len(BINARIES):
+            helper = npm_dir / "bin" / "helpers" / helper_artifact_name(target)
+            if not helper.is_file() or not Path(f"{helper}.sha256").is_file():
+                raise AssertionError(f"missing npm remote helper artifact for {target}")
+            if len((npm_dir / "SHA256SUMS").read_text().splitlines()) != len(BINARIES) + 2:
                 raise AssertionError(f"incorrect npm checksums for {target}")
 
         checksum_file = root / "one" / "SHA256SUMS"
