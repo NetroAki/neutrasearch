@@ -15,7 +15,7 @@ import {
 } from "./lib.js";
 
 function temporaryTree() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-")));
   const workspace = path.join(root, "workspace");
   const sibling = path.join(root, "private");
   fs.mkdirSync(workspace);
