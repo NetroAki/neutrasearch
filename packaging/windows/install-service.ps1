@@ -47,10 +47,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not reset scanner installation ACLs (icacls.exe exit $LASTEXITCODE)"
 }
 & "$env:SystemRoot\System32\icacls.exe" $resolvedInstallDir /inheritance:r `
-    /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' '*S-1-5-32-545:(OI)(CI)(RX)' /T /C /Q | Out-Null
+    /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' '*S-1-5-32-545:(OI)(CI)(RX)' /C /Q | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    throw "Could not harden scanner installation ACLs (icacls.exe exit $LASTEXITCODE)"
+    throw "Could not harden scanner installation directory ACL (icacls.exe exit $LASTEXITCODE)"
 }
+# The preceding recursive reset leaves children inheriting ordinary effective
+# ACEs from this protected directory. OI/CI grants must not be applied directly
+# to files: those become inherit-only and make the executable unreadable.
 
 $binaryPath = '"{0}" --windows-service' -f $executable
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
