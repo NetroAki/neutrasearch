@@ -4,6 +4,14 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-22
+
+### Distribution
+
+- Include Windows, Linux, and macOS installers in the downloadable release `SHA256SUMS` manifest.
+
+## [0.1.0] - 2026-07-22
+
 ### Security
 
 - Resolve privileged scan requests against trusted operating-system mount metadata.
@@ -46,7 +54,3 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Add the `pi-neutrasearch` Pi package with a workspace-confined, read-only, token-efficient indexed path tool; it defaults to 20 relative paths, paths-only JSON transport, and a 6,000-character output cap.
 - Make `pi install npm:pi-neutrasearch` install the matching native application through OS/CPU-constrained optional packages, with `/neutrasearch-setup` for explicit first-index approval and no postinstall scan or privilege action.
 - Add query-client `--scope` and `--json-paths` options for trusted agent integrations without unnecessary metadata payloads.
-
-## [0.1.0] - Unreleased
-
-Initial pre-1.0 release line.

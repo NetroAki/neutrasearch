@@ -332,16 +332,17 @@ def package(
 
 
 def write_checksums(input_dir: Path, output: Path) -> None:
-    archives = sorted(
+    release_suffixes = (".zip", ".tar.gz", ".exe", ".deb", ".dmg")
+    artifacts = sorted(
         path
         for path in input_dir.iterdir()
-        if path.is_file() and (path.name.endswith(".zip") or path.name.endswith(".tar.gz"))
+        if path.is_file() and path.name.endswith(release_suffixes)
     )
-    if not archives:
-        raise ValueError(f"no release archives found in {input_dir}")
+    if not artifacts:
+        raise ValueError(f"no release artifacts found in {input_dir}")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        "".join(f"{sha256_file(path)}  {path.name}\n" for path in archives),
+        "".join(f"{sha256_file(path)}  {path.name}\n" for path in artifacts),
         encoding="utf-8",
         newline="\n",
     )
@@ -440,10 +441,20 @@ def self_test() -> None:
             if len((npm_dir / "SHA256SUMS").read_text().splitlines()) != len(BINARIES) + 2:
                 raise AssertionError(f"incorrect npm checksums for {target}")
 
+        installer_names = (
+            "neutrasearch-1.2.3-rc.1-windows-x64-setup.exe",
+            "neutrasearch-1.2.3-rc.1-linux-amd64.deb",
+            "neutrasearch-1.2.3-rc.1-linux-arm64.deb",
+            "neutrasearch-1.2.3-rc.1-macos-x64.dmg",
+            "neutrasearch-1.2.3-rc.1-macos-arm64.dmg",
+        )
+        for name in installer_names:
+            (root / "one" / name).write_bytes(name.encode("utf-8"))
         checksum_file = root / "one" / "SHA256SUMS"
         write_checksums(root / "one", checksum_file)
-        if len(checksum_file.read_text(encoding="utf-8").splitlines()) != len(TARGETS):
-            raise AssertionError("release checksum manifest has the wrong archive count")
+        expected_artifacts = len(TARGETS) + len(installer_names)
+        if len(checksum_file.read_text(encoding="utf-8").splitlines()) != expected_artifacts:
+            raise AssertionError("release checksum manifest has the wrong artifact count")
     print("package_release.py self-test passed")
 
 
