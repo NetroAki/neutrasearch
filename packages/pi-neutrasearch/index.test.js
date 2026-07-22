@@ -20,7 +20,7 @@ test("registers one compact search tool and a status command", () => {
 });
 
 test("tool executes paths-only search and emits bounded relative paths", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-tool-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-tool-")));
   const executable = path.join(root, process.platform === "win32" ? "query.cmd" : "query");
   fs.writeFileSync(executable, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const previousQuery = process.env.NEUTRASEARCH_QUERY;
@@ -60,7 +60,7 @@ test("tool executes paths-only search and emits bounded relative paths", async (
 });
 
 test("tool falls back to legacy JSON transport without expanding model output", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-compat-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-neutrasearch-compat-")));
   const executable = path.join(root, process.platform === "win32" ? "query.cmd" : "query");
   fs.writeFileSync(executable, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const previous = process.env.NEUTRASEARCH_QUERY;
