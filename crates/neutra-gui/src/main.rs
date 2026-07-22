@@ -1664,7 +1664,7 @@ fn default_system_roots() -> Vec<PathBuf> {
         if roots.is_empty() {
             roots.push(PathBuf::from(r"C:\"));
         }
-        return roots;
+        roots
     }
     #[cfg(not(target_os = "windows"))]
     {
