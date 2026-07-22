@@ -90,15 +90,24 @@ jobs:
             if (Test-Path $setupLog) { Get-Content $setupLog }
             $serviceLog = Join-Path $env:ProgramData 'Neutrasearch/install-service.log'
             if (Test-Path $serviceLog) { Get-Content $serviceLog }
-            $uninstaller = Join-Path $env:ProgramFiles 'Neutrasearch/unins000.exe'
-            if (Test-Path $uninstaller) {
-              Start-Process -FilePath $uninstaller -ArgumentList @(
-                '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-              ) -Wait
-            }
+            $helperLog = Join-Path $env:ProgramData 'Neutrasearch/helper.log'
+            if (Test-Path $helperLog) { Get-Content $helperLog }
+            sc.exe qc NeutrasearchHelper
+            $installDir = Join-Path $env:ProgramFiles 'Neutrasearch'
+            if (Test-Path $installDir) { icacls.exe $installDir /T }
             if (Get-Service -Name NeutrasearchHelper -ErrorAction SilentlyContinue) {
               sc.exe stop NeutrasearchHelper | Out-Null
               sc.exe delete NeutrasearchHelper | Out-Null
+            }
+            $uninstaller = Join-Path $installDir 'unins000.exe'
+            if (Test-Path $uninstaller) {
+              try {
+                Start-Process -FilePath $uninstaller -ArgumentList @(
+                  '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+                ) -Wait
+              } catch {
+                Write-Warning "Uninstaller cleanup failed: $_"
+              }
             }
           }
       - run: cargo run --release --locked --bin neutrasearch -- --version
