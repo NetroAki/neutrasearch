@@ -180,13 +180,20 @@ impl NeutraApp {
         let has_durable_index = compact.is_some() || restored.is_some();
         let index = restored.unwrap_or_default();
         let settings_path = gui_settings_path();
+        let saved_settings = (!reference_mode)
+            .then(|| load_gui_settings(&settings_path))
+            .flatten();
+        let first_run = !reference_mode && saved_settings.is_none();
         let settings = if reference_mode {
             GuiSettings {
                 onboarding_complete: true,
                 roots: vec![PathBuf::from("/")],
             }
         } else {
-            load_gui_settings(&settings_path).unwrap_or_default()
+            saved_settings.unwrap_or_else(|| GuiSettings {
+                onboarding_complete: false,
+                roots: default_system_roots(),
+            })
         };
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
@@ -265,7 +272,11 @@ impl NeutraApp {
                 "welcome".into(),
                 LaneState {
                     label: "READY".into(),
-                    status: "Add folders, then choose Scan to build the local index".into(),
+                    status: if first_run {
+                        "Scanning all local system drives automatically".into()
+                    } else {
+                        "Choose Scan to build the local index".into()
+                    },
                     ..Default::default()
                 },
             );
@@ -280,7 +291,13 @@ impl NeutraApp {
             spawn_network_watcher(app.tx.clone());
             app.remote_watcher_started = true;
         }
-        if !reference_mode
+        if first_run && !app.selected_roots.is_empty() {
+            // A fresh install indexes the complete local machine immediately.
+            // Setup remains incomplete until a native lane returns usable data.
+            app.onboarding_scan = true;
+            app.save_settings();
+            app.begin_scan_with_elevation(cfg!(target_os = "linux"));
+        } else if !reference_mode
             && (env_flag("NEUTRASEARCH_AUTOSCAN", "NEUTRA_AUTOSCAN")
                 || env_flag("NEUTRASEARCH_FORCE_RESCAN", "NEUTRA_FORCE_RESCAN"))
         {
@@ -1609,6 +1626,50 @@ fn scope_within_selected_roots(scope: &str, selected_roots: &[PathBuf]) -> bool 
 fn is_windows_drive_root(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
+fn default_system_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED, DRIVE_REMOVABLE,
+        };
+
+        let required = unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) };
+        if required == 0 {
+            return vec![PathBuf::from(r"C:\")];
+        }
+        let mut buffer = vec![0u16; required as usize + 1];
+        let written = unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
+        if written == 0 || written as usize >= buffer.len() {
+            return vec![PathBuf::from(r"C:\")];
+        }
+
+        let mut roots = Vec::new();
+        let mut offset = 0usize;
+        while offset < written as usize {
+            let Some(length) = buffer[offset..].iter().position(|value| *value == 0) else {
+                break;
+            };
+            if length == 0 {
+                break;
+            }
+            let root = &buffer[offset..offset + length + 1];
+            offset += length + 1;
+            let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+            if matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE) {
+                roots.push(PathBuf::from(String::from_utf16_lossy(&root[..length])));
+            }
+        }
+        if roots.is_empty() {
+            roots.push(PathBuf::from(r"C:\"));
+        }
+        return roots;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![PathBuf::from("/")]
+    }
 }
 
 fn selected_scan_mounts(roots: &[PathBuf]) -> Vec<MountInfo> {

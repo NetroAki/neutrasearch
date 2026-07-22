@@ -4,6 +4,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$logDirectory = Join-Path $env:ProgramData 'Neutrasearch'
+$logPath = Join-Path $logDirectory 'install-service.log'
+New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+Start-Transcript -Path $logPath -Force | Out-Null
+trap {
+    $_ | Out-String | Add-Content -LiteralPath $logPath
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+    exit 1
+}
+
 $serviceName = 'NeutrasearchHelper'
 $executable = Join-Path $InstallDir 'neutrasearch-helper.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
@@ -69,3 +79,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 Start-Service -Name $serviceName
 (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
+Stop-Transcript | Out-Null

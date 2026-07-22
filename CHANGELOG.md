@@ -4,6 +4,17 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-22
+
+### Reliability
+
+- Treat a missing Windows scanner service as a clean install instead of aborting setup, and retain a local service-install transcript for actionable failures.
+- Exercise the compiled Windows installer and prove that `NeutrasearchHelper` reaches the Running state in CI before publishing it.
+
+### Interface
+
+- Start a whole-system native index automatically on first launch, selecting every fixed or removable local Windows drive and `/` on Linux and macOS; locations remain editable later in Settings.
+
 ## [0.1.2] - 2026-07-22
 
 ### Security
