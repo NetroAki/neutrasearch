@@ -93,6 +93,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
+      - name: Build Linux installer
+        if: runner.os == 'Linux'
+        run: >-
+          python scripts/package_installers.py linux-deb
+          --project-root .
+          --target-dir "target/${{ matrix.target }}/release"
+          --output-dir dist
+          --target "${{ matrix.target }}"
+          --version "${{ needs.prepare.outputs.version }}"
+      - name: Build macOS installer
+        if: runner.os == 'macOS'
+        run: >-
+          python scripts/package_installers.py macos-dmg
+          --project-root .
+          --target-dir "target/${{ matrix.target }}/release"
+          --output-dir dist
+          --target "${{ matrix.target }}"
+          --version "${{ needs.prepare.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}

@@ -36,7 +36,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Add conflict-free result shortcuts (`Ctrl+Up/Down`, `Ctrl+Insert`), focused onboarding actions, and a dedicated no-locations recovery state.
 - Group locations, index status, maintenance, scanner details, and network controls with progressive disclosure; adding or removing a location now refreshes the index automatically.
 - Make every details-table header directly sortable, expose selected-result actions, and distinguish invalid regular expressions from valid searches with no matches.
-- Publish an Inno Setup Windows x64 installer alongside the portable release archive.
+- Publish an Inno Setup Windows x64 installer, Debian x64/ARM64 packages, and macOS Intel/Apple Silicon disk images alongside portable release archives.
 - Switch the Linux desktop renderer to low-latency Glow without vsync and bound event draining during resize frames.
 - Add explicit Linux administrator rebuild actions backed by `pkexec` and trusted root-owned helper validation.
 

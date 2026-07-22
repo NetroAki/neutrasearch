@@ -4,21 +4,21 @@ This document separates verified support from experimental lanes. A successful b
 
 ## Support matrix
 
-| Platform | Portable archive | Native initial indexing | Freshness baseline | Release status |
-|---|---:|---|---|---|
-| Linux x86_64 | Yes | Btrfs, EXT2/3/4, NTFS; privileges commonly required | Manual atomic rebuild; fanotify is an experimental extra | Supported pre-1.0 |
-| Linux ARM64 | Yes, native ARM runner | Same compiled lanes; hardware evidence still limited | Manual atomic rebuild; fanotify is experimental | Preview |
-| Windows x86_64 | Yes | NTFS MFT lane; GUI can request an Administrator restart | Manual atomic rebuild | Preview pending hardware/signing evidence |
-| macOS x86_64 | Yes | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
-| macOS ARM64 | Yes | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
-| Windows ARM64 | No release artifact yet | Unverified | Manual rebuild code is portable but unverified | Unsupported |
-| ZFS | Included as experimental code only | Initial indexing intentionally refuses unsupported paths | Not implemented | Unsupported |
+| Platform | Portable archive | Installer | Native initial indexing | Freshness baseline | Release status |
+|---|---:|---:|---|---|---|
+| Linux x86_64 | Yes | Debian package | Btrfs, EXT2/3/4, NTFS; privileges commonly required | Manual atomic rebuild; fanotify is an experimental extra | Supported pre-1.0 |
+| Linux ARM64 | Yes, native ARM runner | Debian package | Same compiled lanes; hardware evidence still limited | Manual atomic rebuild; fanotify is experimental | Preview |
+| Windows x86_64 | Yes | Inno Setup EXE | NTFS MFT lane; GUI can request an Administrator restart | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| macOS x86_64 | Yes | DMG application image | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| macOS ARM64 | Yes | DMG application image | Spotlight; native bulk fallback | Manual atomic rebuild | Preview pending hardware/signing evidence |
+| Windows ARM64 | No release artifact yet | No | Unverified | Manual rebuild code is portable but unverified | Unsupported |
+| ZFS | Included as experimental code only | No | Initial indexing intentionally refuses unsupported paths | Not implemented | Unsupported |
 
 The parity baseline is the dense GUI, native initial indexing, manual rebuild, compact-index search, CLI, MCP, and remote-helper provisioning protocol. Native CI builds and tests that baseline on Linux, Windows, and macOS. The GUI now scans only the native volumes containing user-selected roots and publishes the reachable selected records atomically. Unavailable native lanes are skipped and shown as degraded; if every requested lane fails, the last complete index remains active. CLI index builds remain single-mount and fail closed.
 
 Linux fanotify is not part of that parity baseline. Windows USN-journal and macOS FSEvents freshness are not implemented, so all platforms must remain correct through manual rebuilds rather than pretending equivalent live-update guarantees.
 
-Release archives are currently unsigned. Stable Windows/macOS distribution requires code-signing/notarization credentials and real-hardware smoke evidence. Verify archive checksums and GitHub attestations.
+Release archives and installers are currently unsigned. Stable Windows/macOS distribution requires code-signing/notarization credentials and real-hardware smoke evidence. Verify checksums and GitHub attestations.
 
 ## Archive layout
 
@@ -69,4 +69,4 @@ The initial scan-to-watch handoff is not yet race-free. Do not promise continuou
 
 ## Uninstall
 
-Portable builds have no installer-owned state. Remove the extracted application directory. Delete indexes only if their absolute-path metadata is no longer needed. Remote helpers are stored under `~/.local/lib/neutrasearch/` on Unix servers and `%LOCALAPPDATA%\Neutrasearch\` on Windows servers; remove those explicitly over the same trusted administrative channel.
+Portable builds have no installer-owned state; remove the extracted application directory. Windows setup builds appear in Installed Apps, Debian packages can be removed with `sudo apt remove neutrasearch`, and macOS builds can be removed from Applications. Uninstalling does not delete indexes containing absolute-path metadata. Remote helpers are stored under `~/.local/lib/neutrasearch/` on Unix servers and `%LOCALAPPDATA%\Neutrasearch\` on Windows servers; remove those explicitly over the same trusted administrative channel.
