@@ -95,19 +95,13 @@ jobs:
             sc.exe qc NeutrasearchHelper
             $installDir = Join-Path $env:ProgramFiles 'Neutrasearch'
             if (Test-Path $installDir) { icacls.exe $installDir /T }
-            if (Get-Service -Name NeutrasearchHelper -ErrorAction SilentlyContinue) {
-              sc.exe stop NeutrasearchHelper | Out-Null
-              sc.exe delete NeutrasearchHelper | Out-Null
-            }
-            $uninstaller = Join-Path $installDir 'unins000.exe'
-            if (Test-Path $uninstaller) {
-              try {
-                Start-Process -FilePath $uninstaller -ArgumentList @(
-                  '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-                ) -Wait
-              } catch {
-                Write-Warning "Uninstaller cleanup failed: $_"
+            $installedService = Get-Service -Name NeutrasearchHelper -ErrorAction SilentlyContinue
+            if ($null -ne $installedService) {
+              if ($installedService.Status -ne 'Stopped') {
+                sc.exe stop NeutrasearchHelper | Out-Null
+                $installedService.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
               }
+              sc.exe delete NeutrasearchHelper | Out-Null
             }
           }
       - run: cargo run --release --locked --bin neutrasearch -- --version
