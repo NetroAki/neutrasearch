@@ -1458,6 +1458,7 @@ fn dispatch_lane(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<
         FsKind::Network(_) => anyhow::bail!(
             "network mounts are indexed by provisioning a helper on the server, not scanned locally"
         ),
+        #[cfg(not(target_os = "macos"))]
         other => anyhow::bail!(
             "no native metadata lane for filesystem '{}' on {} — refusing to walk",
             other.label(),
