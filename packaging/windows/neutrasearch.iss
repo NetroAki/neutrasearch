@@ -68,7 +68,7 @@ var
 begin
   { Stop and wait before [Files] replaces the service executable. }
   ResultCode := -1;
-  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$s = Get-Service -Name ''NeutrasearchHelper'' -ErrorAction SilentlyContinue; if ($null -ne $s -and $s.Status -ne ''Stopped'') { Stop-Service -Name ''NeutrasearchHelper'' -Force; $s.WaitForStatus(''Stopped'', [TimeSpan]::FromSeconds(30)) }"';
+  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference = ''Stop''; $s = Get-Service -Name ''NeutrasearchHelper'' -ErrorAction SilentlyContinue; if ($null -ne $s -and $s.Status -ne ''Stopped'') { Stop-Service -Name ''NeutrasearchHelper'' -Force; $s.WaitForStatus(''Stopped'', [TimeSpan]::FromSeconds(30)) }; exit 0"';
   if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     Result := Format('The existing Neutrasearch scanner service could not be stopped safely (exit code %d).', [ResultCode])
@@ -110,7 +110,7 @@ begin
     Parameters := ExpandConstant('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{app}\service\install-service.ps1" -InstallDir "{app}"');
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-      RaiseException(Format('The Neutrasearch scanner service could not be installed (exit code %d).', [ResultCode]));
+      RaiseException(Format('The Neutrasearch scanner service could not be installed (exit code %d). See C:\ProgramData\Neutrasearch\install-service.log for details.', [ResultCode]));
   end;
 end;
 
