@@ -87,14 +87,20 @@ function installWindows(application, home, runPowerShell) {
   return ["Windows Start Menu/Neutrasearch.lnk", "Windows Desktop/Neutrasearch.lnk"];
 }
 
-function installMac(application, home) {
+function installMac(application, home, packageRoot) {
   const app = path.join(home, "Applications", "Neutrasearch.app");
   const contents = path.join(app, "Contents");
   const launcher = path.join(contents, "MacOS", "Neutrasearch");
   writeExecutable(launcher, `#!/bin/sh\nexec ${shellQuote(application)} "$@"\n`);
+  const resources = path.join(contents, "Resources");
+  fs.mkdirSync(resources, { recursive: true });
+  fs.copyFileSync(
+    path.join(packageRoot, "assets", "Neutrasearch.icns"),
+    path.join(resources, "Neutrasearch.icns"),
+  );
   fs.writeFileSync(
     path.join(contents, "Info.plist"),
-    `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleName</key><string>Neutrasearch</string><key>CFBundleDisplayName</key><string>Neutrasearch</string><key>CFBundleIdentifier</key><string>dev.pi.neutrasearch</string><key>CFBundleExecutable</key><string>Neutrasearch</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n`,
+    `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleName</key><string>Neutrasearch</string><key>CFBundleDisplayName</key><string>Neutrasearch</string><key>CFBundleIdentifier</key><string>dev.pi.neutrasearch</string><key>CFBundleExecutable</key><string>Neutrasearch</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>Neutrasearch.icns</string></dict></plist>\n`,
   );
   const created = [app];
   const desktop = path.join(home, "Desktop");
@@ -118,6 +124,6 @@ export function installShortcuts(application, options = {}) {
   if (platform === "win32") {
     return installWindows(application, home, options.runPowerShell || execFileSync);
   }
-  if (platform === "darwin") return installMac(application, home);
+  if (platform === "darwin") return installMac(application, home, packageRoot);
   throw new Error(`shortcut installation is unsupported on ${platform}`);
 }

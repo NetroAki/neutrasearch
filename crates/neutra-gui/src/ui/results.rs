@@ -59,6 +59,7 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
                 paint_details_row(ui, rect, record, visible_row, selected);
                 if response.clicked() {
                     app.selected = Some(path.clone());
+                    surrender_widget_focus(ui);
                 }
                 if response.double_clicked() {
                     open_path = Some(path.clone());
@@ -90,45 +91,60 @@ fn details_header(app: &mut NeutraApp, ui: &mut Ui) {
         ui.painter()
             .vline(x, rect.y_range(), Stroke::new(1.0_f32, LINE));
     }
-    ui.painter().text(
-        columns.name.left_center() + Vec2::new(9.0, 0.0),
-        Align2::LEFT_CENTER,
-        "Name",
-        sans(10.0),
-        MUTED,
+    sort_header(app, ui, columns.name, SortMode::Name, "Name", false);
+    sort_header(app, ui, columns.path, SortMode::Path, "Path", false);
+    sort_header(
+        app,
+        ui,
+        columns.modified,
+        SortMode::Modified,
+        "Modified",
+        false,
     );
+    sort_header(app, ui, columns.size, SortMode::Size, "Size", true);
+}
+
+fn sort_header(
+    app: &mut NeutraApp,
+    ui: &mut Ui,
+    rect: Rect,
+    mode: SortMode,
+    label: &str,
+    align_right: bool,
+) {
+    let hit_rect = rect.shrink2(Vec2::new(5.0, 0.0));
+    let response = ui
+        .interact(hit_rect, Id::new(("sort", label)), Sense::click())
+        .on_hover_text(format!("Sort by {label}"));
+    let active = app.sort_mode == mode;
+    let arrow = if active {
+        match mode {
+            SortMode::Name | SortMode::Path => "  ↑",
+            SortMode::Modified | SortMode::Size => "  ↓",
+        }
+    } else {
+        ""
+    };
+    let (anchor, alignment) = if align_right {
+        (hit_rect.right_center(), Align2::RIGHT_CENTER)
+    } else {
+        (hit_rect.left_center(), Align2::LEFT_CENTER)
+    };
     ui.painter().text(
-        columns.path.left_center() + Vec2::new(7.0, 0.0),
-        Align2::LEFT_CENTER,
-        "Path",
+        anchor,
+        alignment,
+        format!("{label}{arrow}"),
         sans(10.0),
-        MUTED,
+        if active || response.hovered() {
+            ACID
+        } else {
+            MUTED
+        },
     );
-    let sort_rect = columns.modified.shrink2(Vec2::new(6.0, 0.0));
-    let response = ui.interact(sort_rect, Id::new("modified-sort"), Sense::click());
-    ui.painter().text(
-        sort_rect.left_center(),
-        Align2::LEFT_CENTER,
-        format!("{}  v", app.sort_mode.label()),
-        sans(10.0),
-        MUTED,
-    );
-    if response.clicked() {
-        app.sort_mode = match app.sort_mode {
-            SortMode::Modified => SortMode::Name,
-            SortMode::Name => SortMode::Size,
-            SortMode::Size => SortMode::Path,
-            SortMode::Path => SortMode::Modified,
-        };
+    if response.clicked() && !active {
+        app.sort_mode = mode;
         app.requery();
     }
-    ui.painter().text(
-        columns.size.right_center() - Vec2::new(7.0, 0.0),
-        Align2::RIGHT_CENTER,
-        "Size",
-        sans(10.0),
-        MUTED,
-    );
 }
 
 struct DetailColumns {
@@ -186,13 +202,13 @@ fn paint_details_row(
     } else if row.is_multiple_of(2) {
         CANVAS
     } else {
-        Color32::from_rgb(23, 26, 28)
+        Color32::from_rgb(25, 26, 36)
     };
     ui.painter().rect_filled(rect, 0.0, fill);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0_f32, Color32::from_rgb(35, 39, 41)),
+        Stroke::new(1.0_f32, Color32::from_rgb(39, 41, 54)),
     );
     let columns = detail_columns(rect);
     let badge = Rect::from_center_size(
@@ -227,7 +243,7 @@ fn paint_details_row(
             TEXT,
         );
     let metadata = if selected {
-        Color32::from_rgb(205, 220, 215)
+        Color32::from_rgb(207, 209, 222)
     } else {
         MUTED
     };
@@ -344,6 +360,7 @@ pub(super) fn list_view(app: &mut NeutraApp, ui: &mut Ui) {
                     );
                 if response.clicked() {
                     app.selected = Some(path.clone());
+                    surrender_widget_focus(ui);
                 }
                 if response.double_clicked() {
                     open_path = Some(path.clone());
@@ -428,6 +445,7 @@ pub(super) fn grid_view(app: &mut NeutraApp, ui: &mut Ui) {
                 );
                 if response.clicked() {
                     app.selected = Some(path.clone());
+                    surrender_widget_focus(ui);
                 }
                 if response.double_clicked() {
                     open_path = Some(path.clone());
@@ -468,26 +486,66 @@ fn paint_large_file_icon(ui: &Ui, center: egui::Pos2, record: &neutra_core::File
     );
 }
 
-fn empty_results(app: &NeutraApp, ui: &mut Ui) {
+fn empty_results(app: &mut NeutraApp, ui: &mut Ui) {
+    let invalid_regex = app.regex_mode
+        && !app.query.is_empty()
+        && RegexBuilder::new(&app.query)
+            .case_insensitive(!app.case_sensitive)
+            .build()
+            .is_err();
     ui.centered_and_justified(|ui| {
         ui.vertical_centered(|ui| {
-            paint_search_icon(ui, SUBTLE);
+            paint_search_icon(ui, if invalid_regex { ERROR } else { SUBTLE });
             ui.add_space(7.0);
             ui.label(
-                RichText::new("No matching objects")
-                    .font(sans(15.0))
-                    .strong(),
+                RichText::new(if invalid_regex {
+                    "Invalid regular expression"
+                } else {
+                    "No matching objects"
+                })
+                .font(sans(15.0))
+                .strong(),
             );
             ui.label(
-                RichText::new(if app.regex_mode {
-                    "Check the regular expression or change search mode."
+                RichText::new(if invalid_regex {
+                    "Edit the expression or reset search options."
+                } else if app.regex_mode {
+                    "No files match this regular expression."
                 } else {
                     "Try fewer words or search a different location."
                 })
                 .font(sans(11.0))
                 .color(MUTED),
             );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let action_width = if app.query.is_empty() { 132.0 } else { 222.0 };
+                ui.add_space((ui.available_width() - action_width).max(0.0) * 0.5);
+                if !app.query.is_empty() && secondary_button(ui, "Clear search", MUTED).clicked() {
+                    app.query.clear();
+                    app.requery();
+                }
+                let has_options = app.regex_mode
+                    || app.case_sensitive
+                    || app.search_mode != SearchMode::NameAndPath
+                    || app.scope_root.is_some();
+                if has_options && secondary_button(ui, "Reset search options", MUTED).clicked() {
+                    app.regex_mode = false;
+                    app.case_sensitive = false;
+                    app.search_mode = SearchMode::NameAndPath;
+                    app.scope_root = None;
+                    app.requery();
+                }
+            });
         });
+    });
+}
+
+fn surrender_widget_focus(ui: &Ui) {
+    ui.memory_mut(|memory| {
+        if let Some(focused) = memory.focused() {
+            memory.surrender_focus(focused);
+        }
     });
 }
 
@@ -538,8 +596,8 @@ fn result_context_menu(
             let _ = launch_file_action(FileAction::Reveal(PathBuf::from(path)));
             menu.close();
         }
-        if menu.button("Copy path").clicked() {
-            ui.ctx().copy_text(path.to_owned());
+        if menu.button("Copy full path    Ctrl+Insert").clicked() {
+            copy_to_clipboard(ui, path);
             menu.close();
         }
     });

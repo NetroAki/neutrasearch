@@ -204,8 +204,9 @@ fn safe_absolute_path(path: &str) -> bool {
         && bytes[1] == b':'
         && matches!(bytes[2], b'/' | b'\\')
         || path.starts_with("\\\\");
+    let portable_absolute = path.starts_with('/') || windows_absolute;
     !path.contains('\0')
-        && (std::path::Path::new(path).is_absolute() || windows_absolute)
+        && portable_absolute
         && !path
             .split(['/', '\\'])
             .any(|component| matches!(component, "." | ".."))

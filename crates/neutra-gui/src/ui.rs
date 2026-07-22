@@ -6,7 +6,7 @@ use egui::{
 use egui_expressive::widgets::SearchField;
 use egui_expressive::{ResizableSplit, SplitAxis, Theme};
 use regex::RegexBuilder;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod results;
@@ -16,22 +16,21 @@ use results::{details_view, grid_view, list_view, perform_file_action, visible_i
 use treemap::treemap_view;
 pub(super) use treemap::Hierarchy;
 
-const BLACK: Color32 = Color32::from_rgb(13, 15, 17);
-const CANVAS: Color32 = Color32::from_rgb(20, 23, 25);
-const SURFACE: Color32 = Color32::from_rgb(27, 30, 32);
-const RAISED: Color32 = Color32::from_rgb(35, 39, 42);
-const HOVER: Color32 = Color32::from_rgb(44, 49, 52);
-const ACTIVE: Color32 = Color32::from_rgb(35, 67, 59);
-const TEXT: Color32 = Color32::from_rgb(237, 240, 241);
-const MUTED: Color32 = Color32::from_rgb(174, 181, 184);
-const SUBTLE: Color32 = Color32::from_rgb(128, 137, 141);
-const LINE: Color32 = Color32::from_rgb(50, 55, 58);
-const LINE_STRONG: Color32 = Color32::from_rgb(72, 78, 81);
-const ACID: Color32 = Color32::from_rgb(128, 226, 151);
-const ACID_STRONG: Color32 = Color32::from_rgb(92, 194, 126);
-const ACID_DIM: Color32 = Color32::from_rgb(31, 69, 49);
-const BLUE: Color32 = Color32::from_rgb(104, 167, 228);
-const BLUE_DIM: Color32 = Color32::from_rgb(31, 53, 75);
+const BLACK: Color32 = Color32::from_rgb(18, 19, 26);
+const CANVAS: Color32 = Color32::from_rgb(23, 24, 33);
+const SURFACE: Color32 = Color32::from_rgb(30, 31, 43);
+const RAISED: Color32 = Color32::from_rgb(38, 40, 54);
+const HOVER: Color32 = Color32::from_rgb(47, 49, 66);
+const ACTIVE: Color32 = Color32::from_rgb(54, 56, 78);
+const TEXT: Color32 = Color32::from_rgb(232, 233, 239);
+const MUTED: Color32 = Color32::from_rgb(170, 172, 187);
+const SUBTLE: Color32 = Color32::from_rgb(121, 124, 143);
+const LINE: Color32 = Color32::from_rgb(47, 49, 63);
+const LINE_STRONG: Color32 = Color32::from_rgb(67, 70, 89);
+const ACID: Color32 = Color32::from_rgb(157, 162, 222);
+const ACID_STRONG: Color32 = Color32::from_rgb(126, 132, 205);
+const BLUE: Color32 = Color32::from_rgb(111, 145, 194);
+const BLUE_DIM: Color32 = Color32::from_rgb(36, 46, 66);
 const WARN: Color32 = Color32::from_rgb(224, 178, 74);
 const WARN_DIM: Color32 = Color32::from_rgb(67, 53, 28);
 const ERROR: Color32 = Color32::from_rgb(224, 101, 90);
@@ -40,7 +39,6 @@ const ERROR_DIM: Color32 = Color32::from_rgb(70, 35, 33);
 const MENU_H: f32 = 30.0;
 const QUERY_H: f32 = 44.0;
 const TOOLBAR_H: f32 = 38.0;
-const STATUS_H: f32 = 28.0;
 const BANNER_H: f32 = 44.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,17 +100,6 @@ pub(super) enum SortMode {
     Name,
     Size,
     Path,
-}
-
-impl SortMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Modified => "Modified",
-            Self::Name => "Name",
-            Self::Size => "Size",
-            Self::Path => "Path",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,8 +282,10 @@ fn mono(size: f32) -> FontId {
 }
 
 pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
-    app.process_events();
-    if app.scanning || app.building_cache || app.tree_building {
+    let more_events = app.process_events();
+    if more_events {
+        ui.ctx().request_repaint();
+    } else if app.scanning || app.building_cache || app.tree_building {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     } else if app.remote_watcher_started {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -311,15 +300,38 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
     if focus_search {
         app.search_focus_requested = true;
     }
+    let copy_selected = app.selected.is_some()
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Insert));
+    if copy_selected {
+        if let Some(path) = &app.selected {
+            copy_to_clipboard(ui, path);
+        }
+    }
+    let select_next =
+        ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowDown));
+    let select_previous =
+        ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowUp));
+    if select_next || select_previous {
+        move_result_selection(app, select_next);
+    }
 
     ui.spacing_mut().item_spacing = Vec2::ZERO;
     ui.set_min_size(ui.available_size());
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
+    let state = runtime_state(app);
     ui.vertical(|ui| {
         fixed_strip(ui, MENU_H, BLACK, |ui| menu_bar(app, ui));
-        fixed_strip(ui, QUERY_H, SURFACE, |ui| query_strip(app, ui));
+        if state == RuntimeState::FirstRun {
+            let content_h = ui.available_height();
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), content_h.max(0.0)),
+                Layout::top_down(Align::LEFT),
+                |ui| first_run_view(app, ui),
+            );
+            return;
+        }
 
-        let state = runtime_state(app);
+        fixed_strip(ui, QUERY_H, SURFACE, |ui| query_strip(app, ui));
         if matches!(
             state,
             RuntimeState::IndexingBackground | RuntimeState::Permission | RuntimeState::Stale
@@ -329,24 +341,28 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
             });
         }
 
-        let reserved = STATUS_H;
-        let content_h = ui.available_height() - reserved;
+        let content_h = ui.available_height();
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), content_h.max(0.0)),
             Layout::top_down(Align::LEFT),
             |ui| {
                 ui.set_min_size(Vec2::new(ui.available_width(), content_h.max(0.0)));
                 match state {
-                    RuntimeState::FirstRun => first_run_view(app, ui),
                     RuntimeState::IndexingInitial => indexing_view(app, ui),
                     _ => ready_view(app, ui),
                 }
             },
         );
-        fixed_strip(ui, STATUS_H, BLACK, |ui| status_bar(app, ui, state));
     });
     diagnostics_dialog(app, ui.ctx());
     about_dialog(app, ui.ctx());
+}
+
+fn copy_to_clipboard(ui: &Ui, text: &str) {
+    ui.ctx().copy_text(text.to_owned());
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_owned());
+    }
 }
 
 fn fixed_strip(ui: &mut Ui, height: f32, fill: Color32, add: impl FnOnce(&mut Ui)) {
@@ -362,6 +378,26 @@ fn fixed_strip(ui: &mut Ui, height: f32, fill: Color32, add: impl FnOnce(&mut Ui
             add(ui);
         },
     );
+}
+
+fn move_result_selection(app: &mut NeutraApp, forward: bool) {
+    let indices = visible_indices(app);
+    if indices.is_empty() {
+        app.selected = None;
+        return;
+    }
+    let current = app.selected.as_ref().and_then(|path| {
+        indices
+            .iter()
+            .position(|index| app.hits[*index].record.path.as_ref() == path)
+    });
+    let position = match (current, forward) {
+        (Some(position), true) => (position + 1).min(indices.len() - 1),
+        (Some(position), false) => position.saturating_sub(1),
+        (None, true) => 0,
+        (None, false) => indices.len() - 1,
+    };
+    app.selected = Some(app.hits[indices[position]].record.path.to_string());
 }
 
 fn runtime_state(app: &NeutraApp) -> RuntimeState {
@@ -394,10 +430,10 @@ fn runtime_state(app: &NeutraApp) -> RuntimeState {
         }
     } else if stale && has_results {
         RuntimeState::Stale
+    } else if !app.onboarding_complete {
+        RuntimeState::FirstRun
     } else if has_error {
         RuntimeState::Permission
-    } else if !has_results {
-        RuntimeState::FirstRun
     } else {
         RuntimeState::Ready
     }
@@ -417,39 +453,39 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
     ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
     ui.visuals_mut().widgets.inactive.corner_radius = 0.into();
     ui.add_space(8.0);
-    let (mark, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-    ui.painter().rect_stroke(
-        mark,
-        0.0,
-        Stroke::new(1.0_f32, ACID_STRONG),
-        StrokeKind::Inside,
-    );
-    ui.painter()
-        .text(mark.center(), Align2::CENTER_CENTER, "N", mono(10.0), ACID);
+    ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(20.0)));
     ui.add_space(6.0);
     ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
     ui.add_space(12.0);
 
+    if runtime_state(app) == RuntimeState::FirstRun {
+        return;
+    }
+
     ui.menu_button("File", |ui| {
+        if ui.button("Locations and index").clicked() {
+            app.diagnostics_open = true;
+            ui.close();
+        }
         if ui.button("Rebuild index").clicked() {
             app.begin_scan();
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                app.selected.is_some(),
+                egui::Button::new("Copy selected path    Ctrl+Insert"),
+            )
+            .clicked()
+        {
+            if let Some(path) = &app.selected {
+                copy_to_clipboard(ui, path);
+            }
             ui.close();
         }
         ui.separator();
         if ui.button("Exit").clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-    });
-    ui.menu_button("Edit", |ui| {
-        let enabled = app.selected.is_some();
-        if ui
-            .add_enabled(enabled, egui::Button::new("Copy selected path"))
-            .clicked()
-        {
-            if let Some(path) = &app.selected {
-                ui.ctx().copy_text(path.clone());
-            }
-            ui.close();
         }
     });
     ui.menu_button("Search", |ui| {
@@ -462,6 +498,59 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
             app.requery();
             ui.close();
         }
+        ui.separator();
+        ui.menu_button(format!("Match    {}", app.search_mode.label()), |ui| {
+            for mode in [SearchMode::Name, SearchMode::NameAndPath, SearchMode::Path] {
+                if ui
+                    .selectable_label(app.search_mode == mode, mode.label())
+                    .clicked()
+                {
+                    app.search_mode = mode;
+                    app.requery();
+                    ui.close();
+                }
+            }
+        });
+        if app.selected_roots.len() > 1 {
+            ui.menu_button("Location", |ui| {
+                if ui
+                    .selectable_label(app.scope_root.is_none(), "All selected folders")
+                    .clicked()
+                {
+                    app.scope_root = None;
+                    app.requery();
+                    ui.close();
+                }
+                let roots = app
+                    .selected_roots
+                    .iter()
+                    .map(|root| root.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                for root in roots {
+                    let selected = app.scope_root.as_deref() == Some(root.as_str());
+                    if ui.selectable_label(selected, &root).clicked() {
+                        app.scope_root = Some(root);
+                        app.requery();
+                        ui.close();
+                    }
+                }
+            });
+        }
+        let case = ui
+            .checkbox(&mut app.case_sensitive, "Case sensitive")
+            .changed();
+        let regex = ui
+            .checkbox(&mut app.regex_mode, "Regular expression")
+            .changed();
+        if case || regex {
+            app.requery();
+        }
+        ui.separator();
+        ui.label(
+            RichText::new("Ctrl+Up/Down selects results")
+                .font(mono(8.5))
+                .color(SUBTLE),
+        );
     });
     ui.menu_button("View", |ui| {
         for view in ResultView::ALL {
@@ -474,51 +563,20 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
             }
         }
     });
-    ui.menu_button("Tools", |ui| {
-        if ui.button("Diagnostics").clicked() {
-            app.diagnostics_open = true;
-            ui.close();
-        }
-        if !app.remote_watcher_started && ui.button("Enable network helpers").clicked() {
-            spawn_network_watcher(app.tx.clone());
-            app.remote_watcher_started = true;
-            ui.close();
-        }
-    });
     ui.menu_button("Help", |ui| {
         if ui.button("About Neutrasearch").clicked() {
             app.about_open = true;
             ui.close();
         }
-    });
-
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(8.0);
-        let state = runtime_state(app);
-        let (label, detail, color) = match state {
-            RuntimeState::Ready => ("Ready", "index current", ACID_STRONG),
-            RuntimeState::IndexingInitial | RuntimeState::IndexingBackground => {
-                ("Indexing", "results stay live", BLUE)
-            }
-            RuntimeState::Permission => ("Attention", "location unavailable", ERROR),
-            RuntimeState::Stale => ("Out of date", "last complete index", WARN),
-            RuntimeState::FirstRun => ("Not set up", "approve local scan", SUBTLE),
-        };
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new(format!("{label}  ·  {detail}"))
-                        .font(sans(10.5))
-                        .color(MUTED),
-                )
-                .frame(false),
-            )
-            .clicked()
-        {
-            app.diagnostics_open = true;
-        }
-        let (dot, _) = ui.allocate_exact_size(Vec2::splat(9.0), Sense::hover());
-        ui.painter().circle_filled(dot.center(), 3.5, color);
+        ui.separator();
+        ui.label(
+            RichText::new("Ctrl+K Search · Ctrl+Up/Down Select · Ctrl+Insert Copy")
+                .font(mono(8.5))
+                .color(SUBTLE),
+        );
+        ui.separator();
+        ui.hyperlink_to("Support on Ko-fi", "https://ko-fi.com/netroaki");
+        ui.hyperlink_to("Support on Patreon", "https://www.patreon.com/NetroAki");
     });
 }
 
@@ -527,9 +585,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
     paint_search_icon(ui, MUTED);
     ui.add_space(5.0);
 
-    let compact = ui.available_width() < 900.0;
-    let reserved = if compact { 190.0 } else { 430.0 };
-    let field_width = (ui.available_width() - reserved).max(220.0);
+    let field_width = (ui.available_width() - 26.0).max(220.0);
     let before = app.query.clone();
     let can_search = !matches!(
         runtime_state(app),
@@ -545,7 +601,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
                 let response = ui.add_enabled(
                     can_search,
                     SearchField::new(&mut app.query)
-                        .hint("Type a filename, path, or extension...")
+                        .hint("Search files and folders...")
                         .width((field_width - 44.0).max(160.0)),
                 );
                 ui.label(RichText::new("Ctrl K").font(mono(8.0)).color(SUBTLE));
@@ -569,27 +625,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
     if before != app.query {
         app.requery();
     }
-
-    ui.add_space(7.0);
-    scope_menu(app, ui);
-    if !compact {
-        ui.add_space(3.0);
-        search_mode_menu(app, ui);
-        ui.add_space(2.0);
-        if flat_toggle(ui, "Case", app.case_sensitive).clicked() {
-            app.case_sensitive = !app.case_sensitive;
-            app.requery();
-        }
-        if flat_toggle(ui, "Regex", app.regex_mode).clicked() {
-            app.regex_mode = !app.regex_mode;
-            app.requery();
-        }
-    }
-    ui.add_space(2.0);
-    if icon_button(ui, Icon::Settings, "Diagnostics").clicked() {
-        app.diagnostics_open = true;
-    }
-    ui.add_space(7.0);
+    ui.add_space(8.0);
 }
 
 fn paint_search_icon(ui: &mut Ui, color: Color32) {
@@ -603,105 +639,6 @@ fn paint_search_icon(ui: &mut Ui, color: Color32) {
     );
 }
 
-fn scope_menu(app: &mut NeutraApp, ui: &mut Ui) {
-    let label = app
-        .scope_root
-        .clone()
-        .unwrap_or_else(|| "Everywhere".into());
-    ui.menu_button(label, |ui| {
-        ui.set_min_width(286.0);
-        ui.label(
-            RichText::new("SEARCH LOCATION")
-                .font(sans(10.0))
-                .color(SUBTLE)
-                .strong(),
-        );
-        if ui
-            .selectable_label(
-                app.scope_root.is_none(),
-                format!("Everywhere    {}", fmt_count(app.index_len())),
-            )
-            .clicked()
-        {
-            app.scope_root = None;
-            app.requery();
-            ui.close();
-        }
-        for root in scope_roots(&app.hits) {
-            let selected = app.scope_root.as_deref() == Some(root.as_str());
-            if ui.selectable_label(selected, &root).clicked() {
-                app.scope_root = Some(root);
-                app.requery();
-                ui.close();
-            }
-        }
-        ui.separator();
-        if ui.button("Rebuild available locations").clicked() {
-            app.begin_scan();
-            ui.close();
-        }
-    });
-}
-
-fn search_mode_menu(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.menu_button(format!("Match  {}", app.search_mode.label()), |ui| {
-        for mode in [SearchMode::Name, SearchMode::NameAndPath, SearchMode::Path] {
-            if ui
-                .selectable_label(app.search_mode == mode, mode.label())
-                .clicked()
-            {
-                app.search_mode = mode;
-                app.requery();
-                ui.close();
-            }
-        }
-    });
-}
-
-fn flat_toggle(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
-    let button = egui::Button::new(RichText::new(label).font(sans(10.5)).color(if active {
-        ACID
-    } else {
-        MUTED
-    }))
-    .fill(if active { ACID_DIM } else { SURFACE })
-    .stroke(Stroke::new(
-        1.0_f32,
-        if active { ACID_STRONG } else { LINE_STRONG },
-    ))
-    .corner_radius(2)
-    .min_size(Vec2::new(0.0, 30.0));
-    ui.add(button)
-}
-
-#[derive(Clone, Copy)]
-enum Icon {
-    Settings,
-}
-
-fn icon_button(ui: &mut Ui, icon: Icon, description: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-    if response.hovered() || response.has_focus() {
-        ui.painter().rect_filled(rect, 2.0, HOVER);
-    }
-    let color = if response.hovered() { TEXT } else { MUTED };
-    match icon {
-        Icon::Settings => {
-            ui.painter()
-                .circle_stroke(rect.center(), 5.0, Stroke::new(1.4_f32, color));
-            ui.painter().circle_filled(rect.center(), 1.8, color);
-            for index in 0..8 {
-                let angle = index as f32 * std::f32::consts::TAU / 8.0;
-                let a = rect.center() + Vec2::angled(angle) * 7.0;
-                let b = rect.center() + Vec2::angled(angle) * 9.0;
-                ui.painter()
-                    .line_segment([a, b], Stroke::new(1.4_f32, color));
-            }
-        }
-    }
-    response.on_hover_text(description)
-}
-
 fn runtime_banner(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
     ui.add_space(10.0);
     let (marker, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
@@ -710,7 +647,7 @@ fn runtime_banner(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
             "Indexing in progress",
             "Existing results remain searchable.",
             "Run in background",
-            "Index details",
+            "Index status",
             BLUE,
         ),
         RuntimeState::Permission => (
@@ -722,17 +659,19 @@ fn runtime_banner(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
             },
             if cfg!(target_os = "windows") {
                 "Restart as Administrator"
+            } else if cfg!(target_os = "linux") {
+                "Retry as administrator"
             } else {
                 "Review access"
             },
-            "Index details",
+            "Review folders and access",
             ERROR,
         ),
         RuntimeState::Stale => (
             "Results may be out of date",
             "The last complete index remains searchable.",
             "Rebuild now",
-            "Use existing index",
+            "Index status",
             WARN,
         ),
         _ => return,
@@ -775,6 +714,9 @@ fn runtime_banner(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
                         }
                     }
                 }
+                RuntimeState::Permission if cfg!(target_os = "linux") => {
+                    app.begin_scan_with_elevation(true)
+                }
                 RuntimeState::Permission => app.diagnostics_open = true,
                 _ => {}
             }
@@ -785,138 +727,135 @@ fn runtime_banner(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
     });
 }
 
-fn platform_volume_copy() -> (&'static str, &'static str) {
-    #[cfg(target_os = "windows")]
-    {
-        return (
-            "NTFS volumes",
-            "Mounted fixed and removable NTFS volumes · Administrator access may be required",
-        );
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return (
-            "Mac volumes",
-            "User-visible APFS/HFS volumes · Spotlight with native bulk fallback",
-        );
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        (
-            "Linux native volumes",
-            "Mounted Btrfs, EXT2/3/4, and NTFS volumes · native metadata only",
-        )
-    }
-}
-
 fn first_run_view(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
-    egui::Frame::new()
-        .inner_margin(Margin::symmetric(24, 0))
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_max_width(812.0);
-                ui.add_space(34.0);
-                ui.horizontal(|ui| {
-                    task_icon(ui, ACID);
-                    ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Choose where to search")
-                                .font(sans(18.0))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Neutrasearch indexes supported local volumes only after you approve this scan.")
-                                .font(sans(12.0))
-                                .color(MUTED),
-                        );
-                    });
-                });
-                ui.add_space(22.0);
-                ui.label(
-                    RichText::new("Native indexing on this computer")
-                        .font(sans(9.5))
-                        .color(SUBTLE),
-                );
-                let (volume_title, volume_detail) = platform_volume_copy();
-                location_row(
-                    ui,
-                    true,
-                    volume_title,
-                    volume_detail,
-                    Some("Native metadata"),
-                );
-                let cache = shorten(&app.cache_path.display().to_string(), 72);
-                location_row(
-                    ui,
-                    true,
-                    "Private search index",
-                    &cache,
-                    Some("Included"),
-                );
-                location_row(
-                    ui,
-                    false,
-                    "Network shares",
-                    "Off until Tools → Enable network helpers is selected",
-                    None,
-                );
-                ui.add_space(9.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Supported local volumes")
-                            .font(sans(10.0))
-                            .strong(),
+    let has_error = app.lanes.values().any(|lane| lane.error);
+    ui.with_layout(Layout::top_down(Align::Center), |ui| {
+        ui.add_space(54.0);
+        ui.set_max_width(620.0);
+        ui.label(
+            RichText::new(if has_error {
+                "Let's try that scan again"
+            } else {
+                "Choose where to search"
+            })
+            .font(sans(20.0))
+            .strong(),
+        );
+        if has_error {
+            ui.add_space(7.0);
+            ui.label(
+                RichText::new("Your folders are still selected and no existing index was changed.")
+                    .font(sans(11.0))
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(18.0);
+        egui::Frame::new()
+            .fill(SURFACE)
+            .stroke(Stroke::new(
+                1.0_f32,
+                if has_error { ERROR } else { LINE_STRONG },
+            ))
+            .corner_radius(4)
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(560.0_f32.min(ui.available_width()));
+                if app.selected_roots.is_empty() {
+                    ui.add_sized(
+                        [ui.available_width(), 44.0],
+                        egui::Label::new(
+                            RichText::new("No folders selected")
+                                .font(sans(11.0))
+                                .color(SUBTLE),
+                        ),
                     );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("The helper verifies each filesystem before selecting a native lane")
-                            .font(sans(10.0))
-                            .color(MUTED),
-                    );
-                });
-                ui.add_space(15.0);
-                privacy_note(ui);
-                ui.add_space(18.0);
-                ui.horizontal(|ui| {
-                    if primary_button(ui, "Build search index", ACID_STRONG).clicked() {
-                        app.begin_scan();
+                } else {
+                    let mut remove = None;
+                    for (index, root) in app.selected_roots.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(root.display().to_string())
+                                    .font(mono(10.0))
+                                    .color(TEXT),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("Remove").clicked() {
+                                    remove = Some(index);
+                                }
+                            });
+                        });
+                        if index + 1 < app.selected_roots.len() {
+                            ui.separator();
+                        }
                     }
-                    if secondary_button(ui, "Scanner details", MUTED).clicked() {
-                        app.diagnostics_open = true;
+                    if let Some(index) = remove {
+                        app.remove_root(index);
                     }
-                });
+                }
             });
-        });
-}
-
-fn privacy_note(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 42.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, SURFACE);
-    ui.painter()
-        .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
-    ui.painter().text(
-        rect.left_center() + Vec2::new(16.0, 0.0),
-        Align2::CENTER_CENTER,
-        "✓",
-        sans(13.0),
-        ACID,
-    );
-    ui.painter().text(
-        rect.left_center() + Vec2::new(40.0, 0.0),
-        Align2::LEFT_CENTER,
-        "Your filenames stay on this computer.",
-        sans(10.5),
-        TEXT,
-    );
-    ui.painter().text(
-        rect.left_center() + Vec2::new(258.0, 0.0),
-        Align2::LEFT_CENTER,
-        "Neutrasearch does not upload your index or use telemetry.",
-        sans(10.5),
-        MUTED,
-    );
+        ui.add_space(12.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(560.0_f32.min(ui.available_width()), 36.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                let action_width = if cfg!(target_os = "linux") {
+                    252.0
+                } else {
+                    176.0
+                };
+                ui.add_space((ui.available_width() - action_width).max(0.0) * 0.5);
+                let add = secondary_button(ui, "+  Add folder", ACID_STRONG);
+                if app.setup_focus_requested && app.selected_roots.is_empty() {
+                    add.request_focus();
+                    app.setup_focus_requested = false;
+                }
+                if add.clicked() {
+                    if let Some(folder) = rfd::FileDialog::new()
+                        .set_title("Add search folder")
+                        .pick_folder()
+                    {
+                        app.add_root(folder);
+                    }
+                }
+                let scan_label = if has_error && cfg!(target_os = "linux") {
+                    "Allow access and scan again"
+                } else if has_error {
+                    "Retry scan"
+                } else if cfg!(target_os = "linux") {
+                    "Allow access and scan"
+                } else {
+                    "Scan"
+                };
+                let scan = ui.add_enabled(
+                    !app.selected_roots.is_empty(),
+                    egui::Button::new(RichText::new(scan_label).font(sans(10.5)).strong())
+                        .fill(ACID_STRONG)
+                        .stroke(Stroke::new(1.0_f32, ACID_STRONG))
+                        .corner_radius(2)
+                        .min_size(Vec2::new(76.0, 32.0)),
+                );
+                if app.setup_focus_requested && !app.selected_roots.is_empty() {
+                    scan.request_focus();
+                    app.setup_focus_requested = false;
+                }
+                if scan.has_focus() {
+                    ui.painter().rect_stroke(
+                        scan.rect.expand(2.0),
+                        3.0,
+                        Stroke::new(1.0_f32, TEXT),
+                        StrokeKind::Outside,
+                    );
+                }
+                if scan.clicked() {
+                    app.complete_onboarding_and_scan();
+                }
+                if has_error && ui.small_button("Review scan details").clicked() {
+                    app.diagnostics_open = true;
+                }
+            },
+        );
+    });
 }
 
 fn task_icon(ui: &mut Ui, color: Color32) {
@@ -938,60 +877,6 @@ fn task_icon(ui: &mut Ui, color: Color32) {
     );
 }
 
-fn location_row(ui: &mut Ui, checked: bool, title: &str, detail: &str, badge: Option<&str>) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, SURFACE);
-    ui.painter()
-        .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
-    let check =
-        Rect::from_center_size(rect.left_center() + Vec2::new(16.0, 0.0), Vec2::splat(15.0));
-    ui.painter().rect_stroke(
-        check,
-        2.0,
-        Stroke::new(1.0_f32, if checked { ACID_STRONG } else { LINE_STRONG }),
-        StrokeKind::Inside,
-    );
-    if checked {
-        ui.painter().line_segment(
-            [
-                check.left_center() + Vec2::new(3.0, 0.0),
-                check.center_bottom() - Vec2::new(0.0, 3.0),
-            ],
-            Stroke::new(1.5_f32, ACID),
-        );
-        ui.painter().line_segment(
-            [
-                check.center_bottom() - Vec2::new(0.0, 3.0),
-                check.right_top() + Vec2::new(-2.0, 3.0),
-            ],
-            Stroke::new(1.5_f32, ACID),
-        );
-    }
-    ui.painter().text(
-        rect.left_top() + Vec2::new(34.0, 10.0),
-        Align2::LEFT_TOP,
-        title,
-        sans(12.0),
-        TEXT,
-    );
-    ui.painter().text(
-        rect.left_top() + Vec2::new(34.0, 29.0),
-        Align2::LEFT_TOP,
-        detail,
-        sans(10.0),
-        MUTED,
-    );
-    if let Some(badge) = badge {
-        ui.painter().text(
-            rect.right_center() - Vec2::new(10.0, 0.0),
-            Align2::RIGHT_CENTER,
-            badge,
-            sans(9.0),
-            ACID,
-        );
-    }
-}
-
 fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
     ui.add_space(34.0);
@@ -1006,7 +891,7 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
             );
             ui.label(
                 RichText::new(
-                    "The new index is published only after every native metadata lane succeeds.",
+                    "Reachable selected locations are published together; unavailable locations are skipped.",
                 )
                 .font(sans(12.0))
                 .color(MUTED),
@@ -1039,7 +924,7 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
             ui.painter().rect_filled(segment.intersect(bar), 0.0, BLUE);
             ui.add_space(8.0);
             ui.label(
-                RichText::new("The last complete index remains untouched until publication")
+                RichText::new("Existing results remain untouched until the replacement is ready")
                     .font(sans(10.5))
                     .color(MUTED),
             );
@@ -1051,6 +936,10 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
 }
 
 fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
+    if app.selected_roots.is_empty() {
+        no_locations_view(app, ui);
+        return;
+    }
     fixed_strip(ui, TOOLBAR_H, SURFACE, |ui| results_toolbar(app, ui));
     egui::Frame::new()
         .fill(CANVAS)
@@ -1062,37 +951,88 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
         });
 }
 
+fn no_locations_view(app: &mut NeutraApp, ui: &mut Ui) {
+    ui.centered_and_justified(|ui| {
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("No folders selected")
+                    .font(sans(18.0))
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Add a folder to start searching again.")
+                    .font(sans(11.0))
+                    .color(MUTED),
+            );
+            ui.add_space(14.0);
+            if primary_button(ui, "Add folder", ACID_STRONG).clicked() {
+                if let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Add search folder")
+                    .pick_folder()
+                {
+                    app.add_root(folder);
+                    app.begin_scan_with_elevation(cfg!(target_os = "linux"));
+                }
+            }
+        });
+    });
+}
+
 fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
     let visible = visible_indices(app);
     ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("{} objects", fmt_count(visible.len() as u64)))
-                .font(sans(12.0))
-                .strong(),
-        );
-        ui.add_space(7.0);
-        let scope = app.scope_root.as_deref().unwrap_or("Everywhere");
-        let query = if app.query.is_empty() {
-            "all objects"
-        } else {
-            app.query.as_str()
-        };
-        ui.label(
-            RichText::new(format!(
-                "\"{query}\" in {scope} · {} µs",
-                app.search_stats.wall_us
-            ))
-            .font(sans(10.0))
-            .color(MUTED),
-        );
-    });
+    ui.label(
+        RichText::new(format!("{} results", fmt_count(visible.len() as u64)))
+            .font(sans(12.0))
+            .strong(),
+    );
+    if app.regex_mode && segment_button(ui, "Regex ×", true).clicked() {
+        app.regex_mode = false;
+        app.requery();
+    }
+    if app.case_sensitive && segment_button(ui, "Case ×", true).clicked() {
+        app.case_sensitive = false;
+        app.requery();
+    }
+    if app.search_mode != SearchMode::NameAndPath
+        && segment_button(ui, &format!("{} ×", app.search_mode.label()), true).clicked()
+    {
+        app.search_mode = SearchMode::NameAndPath;
+        app.requery();
+    }
+    if app.scope_root.is_some() && segment_button(ui, "Folder scope ×", true).clicked() {
+        app.scope_root = None;
+        app.requery();
+    }
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.add_space(7.0);
-        for view in ResultView::ALL.into_iter().rev() {
-            if segment_button(ui, view.label(), app.view_mode == view).clicked() {
-                app.view_mode = view;
+        ui.menu_button(format!("{}  ▾", app.view_mode.label()), |ui| {
+            for view in ResultView::ALL {
+                if ui
+                    .selectable_label(app.view_mode == view, view.label())
+                    .clicked()
+                {
+                    app.view_mode = view;
+                    ui.close();
+                }
             }
+        });
+        if let Some(path) = app.selected.clone() {
+            ui.menu_button("Selected  ▾", |ui| {
+                if ui.button("Open").clicked() {
+                    perform_file_action(app, FileAction::Open(path.clone().into()));
+                    ui.close();
+                }
+                if ui.button("Show in folder").clicked() {
+                    perform_file_action(app, FileAction::Reveal(path.clone().into()));
+                    ui.close();
+                }
+                if ui.button("Copy full path    Ctrl+Insert").clicked() {
+                    copy_to_clipboard(ui, &path);
+                    ui.close();
+                }
+            });
         }
         ui.add_space(5.0);
         ui.separator();
@@ -1102,7 +1042,6 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
                 app.requery();
             }
         }
-        ui.label(RichText::new("Show").font(sans(10.0)).color(SUBTLE));
     });
 }
 
@@ -1127,60 +1066,13 @@ fn segment_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
     )
 }
 
-fn status_bar(app: &mut NeutraApp, ui: &mut Ui, state: RuntimeState) {
-    ui.add_space(9.0);
-    let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-    let color = match state {
-        RuntimeState::Ready => ACID_STRONG,
-        RuntimeState::IndexingInitial | RuntimeState::IndexingBackground => BLUE,
-        RuntimeState::Permission => ERROR,
-        RuntimeState::Stale => WARN,
-        RuntimeState::FirstRun => SUBTLE,
-    };
-    ui.painter().circle_filled(dot.center(), 2.8, color);
-    ui.label(
-        RichText::new(format!("{} objects indexed", fmt_count(app.index_len())))
-            .font(sans(9.5))
-            .color(MUTED),
-    );
-    if ui.available_width() > 760.0 {
-        ui.add_space(14.0);
-        ui.label(
-            RichText::new("Up/Down Select    Enter Open    Ctrl+K Search")
-                .font(mono(8.5))
-                .color(SUBTLE),
-        );
-    }
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(7.0);
-        if ui
-            .add(
-                egui::Button::new(RichText::new("Diagnostics").font(sans(9.0)).color(MUTED))
-                    .frame(false),
-            )
-            .clicked()
-        {
-            app.diagnostics_open = true;
-        }
-        ui.add_space(8.0);
-        if let Some(path) = &app.selected {
-            ui.label(
-                RichText::new(shorten(path, 56))
-                    .font(mono(8.5))
-                    .color(MUTED),
-            );
-        } else {
-            ui.label(RichText::new("Ready").font(sans(9.0)).color(MUTED));
-        }
-    });
-}
-
 fn diagnostics_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
     if !app.diagnostics_open {
         return;
     }
     let mut open = app.diagnostics_open;
-    egui::Window::new("Settings and diagnostics")
+    let has_error = app.lanes.values().any(|lane| lane.error);
+    egui::Window::new("Locations and index")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
@@ -1193,69 +1085,95 @@ fn diagnostics_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
                 .fill(SURFACE),
         )
         .show(ctx, |ui| {
-            ui.label(
-                RichText::new("INDEX STATUS")
-                    .font(sans(10.0))
-                    .color(SUBTLE)
-                    .strong(),
-            );
+            locations_editor(app, ui);
+            ui.add_space(10.0);
+            ui.separator();
             ui.add_space(5.0);
-            diagnostic_row(ui, "Objects", &fmt_count(app.index_len()), false);
-            diagnostic_row(
-                ui,
-                "Search generation",
-                &app.last_generation.to_string(),
-                false,
-            );
-            diagnostic_row(
-                ui,
-                "Durable index",
-                &app.cache_path.display().to_string(),
-                false,
-            );
-            ui.add_space(12.0);
-            ui.label(
-                RichText::new("NATIVE LANES")
-                    .font(sans(10.0))
-                    .color(SUBTLE)
-                    .strong(),
-            );
-            ui.add_space(5.0);
-            egui::ScrollArea::vertical()
-                .max_height(260.0)
+
+            egui::CollapsingHeader::new("Index status")
+                .default_open(has_error)
                 .show(ui, |ui| {
-                    for lane in app.lanes.values() {
-                        let value = if lane.records > 0 {
-                            format!(
-                                "{} objects · {} ms · {}",
-                                fmt_count(lane.records),
-                                lane.ms,
-                                lane.status
-                            )
+                    diagnostic_row(ui, "Indexed items", &fmt_count(app.index_len()), false);
+                    diagnostic_row(
+                        ui,
+                        "Index generation",
+                        &app.last_generation.to_string(),
+                        false,
+                    );
+                    diagnostic_row(
+                        ui,
+                        "Saved index location",
+                        &app.cache_path.display().to_string(),
+                        false,
+                    );
+                });
+
+            egui::CollapsingHeader::new("Scanner details")
+                .default_open(has_error)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for lane in app.lanes.values() {
+                                let value = if lane.records > 0 {
+                                    format!(
+                                        "{} objects · {} ms · {}",
+                                        fmt_count(lane.records),
+                                        lane.ms,
+                                        lane.status
+                                    )
+                                } else {
+                                    lane.status.clone()
+                                };
+                                diagnostic_row(ui, &lane.label, &value, lane.error);
+                            }
+                        });
+                });
+
+            egui::CollapsingHeader::new("Index maintenance").show(ui, |ui| {
+                ui.label(
+                    RichText::new("Rebuilding replaces the index only after a complete scan.")
+                        .font(sans(10.0))
+                        .color(MUTED),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if secondary_button(
+                        ui,
+                        if app.scanning {
+                            "Indexing..."
                         } else {
-                            lane.status.clone()
-                        };
-                        diagnostic_row(ui, &lane.label, &value, lane.error);
+                            "Rebuild index"
+                        },
+                        ACID_STRONG,
+                    )
+                    .clicked()
+                    {
+                        app.begin_scan();
+                    }
+                    if cfg!(target_os = "linux")
+                        && !app.scanning
+                        && secondary_button(ui, "Rebuild as administrator", ACID_STRONG).clicked()
+                    {
+                        app.begin_scan_with_elevation(true);
                     }
                 });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if primary_button(
-                    ui,
-                    if app.scanning {
-                        "Indexing..."
-                    } else {
-                        "Rebuild index"
-                    },
-                    ACID_STRONG,
-                )
-                .clicked()
-                {
-                    app.begin_scan();
-                }
-                if !app.remote_watcher_started
-                    && secondary_button(ui, "Enable network helpers", MUTED).clicked()
-                {
+            });
+
+            egui::CollapsingHeader::new("Network folders").show(ui, |ui| {
+                ui.label(
+                    RichText::new("Look for Neutrasearch helpers on mounted network servers.")
+                        .font(sans(10.0))
+                        .color(MUTED),
+                );
+                ui.add_space(6.0);
+                if app.remote_watcher_started {
+                    ui.label(
+                        RichText::new("Watching for network servers")
+                            .font(sans(10.5))
+                            .color(BLUE),
+                    );
+                } else if secondary_button(ui, "Watch network servers", MUTED).clicked() {
                     spawn_network_watcher(app.tx.clone());
                     app.remote_watcher_started = true;
                 }
@@ -1264,29 +1182,96 @@ fn diagnostics_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
     app.diagnostics_open = open;
 }
 
-fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::hover());
-    ui.painter()
-        .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, LINE));
-    ui.painter().text(
-        rect.left_center() + Vec2::new(3.0, 0.0),
-        Align2::LEFT_CENTER,
-        key,
-        sans(10.0),
-        if error { ERROR } else { MUTED },
-    );
-    ui.painter()
-        .with_clip_rect(Rect::from_min_max(
-            egui::pos2(rect.left() + rect.width() * 0.38, rect.top()),
-            rect.max,
-        ))
-        .text(
-            rect.right_center() - Vec2::new(3.0, 0.0),
-            Align2::RIGHT_CENTER,
-            shorten(value, 72),
-            mono(8.5),
-            if error { ERROR } else { TEXT },
+fn locations_editor(app: &mut NeutraApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("SEARCH LOCATIONS")
+                .font(sans(10.0))
+                .color(SUBTLE)
+                .strong(),
         );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui
+                .add_enabled(
+                    !app.scanning && !app.building_cache,
+                    egui::Button::new("+ Add folder").small(),
+                )
+                .clicked()
+            {
+                if let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Add search folder")
+                    .pick_folder()
+                {
+                    app.add_root(folder);
+                }
+            }
+        });
+    });
+    ui.add_space(5.0);
+    if app.selected_roots.is_empty() {
+        diagnostic_row(ui, "Locations", "No folders selected", false);
+        return;
+    }
+    let mut remove = None;
+    for (index, root) in app.selected_roots.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [ui.available_width() - 58.0, 28.0],
+                egui::Label::new(
+                    RichText::new(shorten(&root.display().to_string(), 72))
+                        .font(mono(9.0))
+                        .color(TEXT),
+                ),
+            );
+            if ui
+                .add_enabled(
+                    !app.scanning && !app.building_cache,
+                    egui::Button::new("Remove").small(),
+                )
+                .clicked()
+            {
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove {
+        app.remove_root(index);
+    }
+}
+
+fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
+    let width = ui.available_width();
+    let response = ui.allocate_ui_with_layout(
+        Vec2::new(width, 34.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(RichText::new(key).font(sans(10.0)).color(if error {
+                    ERROR
+                } else {
+                    MUTED
+                }))
+                .selectable(true),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(3.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(shorten(value, 72))
+                            .font(mono(8.5))
+                            .color(if error { ERROR } else { TEXT }),
+                    )
+                    .selectable(true),
+                );
+            });
+        },
+    );
+    ui.painter().hline(
+        response.response.rect.x_range(),
+        response.response.rect.bottom(),
+        Stroke::new(1.0_f32, LINE),
+    );
 }
 
 fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
@@ -1307,15 +1292,7 @@ fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let (mark, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                ui.painter().rect_stroke(
-                    mark,
-                    0.0,
-                    Stroke::new(1.0_f32, ACID_STRONG),
-                    StrokeKind::Inside,
-                );
-                ui.painter()
-                    .text(mark.center(), Align2::CENTER_CENTER, "N", mono(15.0), ACID);
+                ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(30.0)));
                 ui.vertical(|ui| {
                     ui.label(RichText::new("Neutrasearch").font(sans(18.0)).strong());
                     ui.label(
@@ -1340,6 +1317,11 @@ fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
                 "Source · github.com/NetroAki/neutrasearch",
                 "https://github.com/NetroAki/neutrasearch",
             );
+            ui.horizontal(|ui| {
+                ui.hyperlink_to("Ko-fi", "https://ko-fi.com/netroaki");
+                ui.label(RichText::new("·").color(SUBTLE));
+                ui.hyperlink_to("Patreon", "https://www.patreon.com/NetroAki");
+            });
         });
     app.about_open = open;
 }
@@ -1365,29 +1347,6 @@ fn secondary_button(ui: &mut Ui, label: &str, color: Color32) -> egui::Response 
             .corner_radius(2)
             .min_size(Vec2::new(0.0, 32.0)),
     )
-}
-
-fn scope_roots(hits: &[SearchHit]) -> Vec<String> {
-    let mut roots = BTreeSet::new();
-    for hit in hits {
-        let normalized = normalize_path(&hit.record.path);
-        if is_drive_path(&normalized) {
-            let drive = &normalized[..3];
-            let first = normalized[3..].split('/').find(|part| !part.is_empty());
-            roots.insert(first.map_or_else(
-                || drive.to_owned(),
-                |component| format!("{drive}{component}"),
-            ));
-        } else if let Some(unc) = normalized.strip_prefix("//") {
-            let mut parts = unc.split('/').filter(|part| !part.is_empty());
-            if let (Some(server), Some(share)) = (parts.next(), parts.next()) {
-                roots.insert(format!("//{server}/{share}"));
-            }
-        } else if let Some(first) = normalized.split('/').find(|part| !part.is_empty()) {
-            roots.insert(format!("/{first}"));
-        }
-    }
-    roots.into_iter().collect()
 }
 
 fn is_drive_path(path: &str) -> bool {
