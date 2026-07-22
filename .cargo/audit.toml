@@ -1,0 +1,11 @@
+[advisories]
+# lopdf is pulled by egui_expressive. Its vulnerable load/load_mem parser is
+# used only by that dependency's standalone Illustrator parser binary, not by
+# the Neutrasearch GUI/library path.
+# quick-xml is a build dependency of wayland-scanner and parses only vendored,
+# trusted Wayland protocol XML while compiling; no runtime/untrusted XML reaches it.
+ignore = [
+  "RUSTSEC-2026-0187",
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

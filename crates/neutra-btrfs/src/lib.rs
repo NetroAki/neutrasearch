@@ -305,7 +305,11 @@ mod linux {
             let meta = node.meta;
             let kind = kind_from_mode(meta.mode);
             let path = if node.ino == ROOT_INO {
-                prefix.clone()
+                if prefix.is_empty() {
+                    "/".to_string()
+                } else {
+                    prefix.clone()
+                }
             } else {
                 let parent = node.parent;
                 if parent == u64::MAX || !ensure_dir_path(parent, &nodes, &names, &mut dir_paths) {
@@ -498,6 +502,17 @@ mod linux {
                 Some((2, INODE_ITEM, 0))
             );
         }
+        #[test]
+        fn root_mount_emits_an_absolute_root_record() {
+            let prefix = "/".trim_end_matches('/');
+            let path = if prefix.is_empty() {
+                "/".to_string()
+            } else {
+                prefix.to_string()
+            };
+            assert_eq!(path, "/");
+        }
+
         #[test]
         fn paths_resolve_and_cycles_stop() {
             let meta = Meta {

@@ -1813,25 +1813,32 @@ mod tests {
 
     #[test]
     fn approved_scan_roots_are_bounded_to_requested_mounts() {
+        let (device, mountpoint, root, inside, sibling) = if cfg!(target_os = "windows") {
+            (
+                r"C:",
+                r"C:\",
+                r"C:\Users\alex\Documents",
+                r"C:\Users\alex\Documents\report.pdf",
+                r"C:\Users\alex\Documents-old\report.pdf",
+            )
+        } else {
+            (
+                "/dev/root",
+                "/",
+                "/home/alex/Documents",
+                "/home/alex/Documents/report.pdf",
+                "/home/alex/Documents-old/report.pdf",
+            )
+        };
         let mount = MountInfo {
-            device: "/dev/root".into(),
-            mountpoint: "/".into(),
+            device: device.into(),
+            mountpoint: mountpoint.into(),
             fs: FsKind::Btrfs,
             source: neutra_core::MountSource::Local,
         };
-        let roots = validate_scan_roots(
-            vec!["/home/alex/Documents".into()],
-            std::slice::from_ref(&mount),
-        )
-        .unwrap();
-        assert!(portable_path_in_root(
-            "/home/alex/Documents/report.pdf",
-            &roots[0]
-        ));
-        assert!(!portable_path_in_root(
-            "/home/alex/Documents-old/report.pdf",
-            &roots[0]
-        ));
+        let roots = validate_scan_roots(vec![root.into()], std::slice::from_ref(&mount)).unwrap();
+        assert!(portable_path_in_root(inside, &roots[0]));
+        assert!(!portable_path_in_root(sibling, &roots[0]));
         assert!(validate_scan_roots(Vec::new(), std::slice::from_ref(&mount)).is_err());
         assert!(validate_scan_roots(vec!["relative".into()], &[mount]).is_err());
     }
