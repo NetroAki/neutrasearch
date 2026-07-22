@@ -1688,6 +1688,7 @@ fn requested_mount_with_fs(mountpoint: PathBuf, fs: neutra_core::FsKind) -> Moun
     }
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn select_mounts_for_roots(roots: &[PathBuf], trusted: &[MountInfo]) -> Vec<MountInfo> {
     let mut selected = Vec::<MountInfo>::new();
     for root in roots {
@@ -1712,20 +1713,20 @@ fn select_mounts_for_roots(roots: &[PathBuf], trusted: &[MountInfo]) -> Vec<Moun
 fn gui_settings_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("APPDATA")
+        std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/gui-settings.json");
+            .join("Neutrasearch/gui-settings.json")
     }
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME")
+        std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .map(|home| home.join("Library/Application Support"))
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/gui-settings.json");
+            .join("Neutrasearch/gui-settings.json")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -1851,20 +1852,20 @@ fn legacy_cache_path() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.bin");
+            .join("Neutrasearch/index.bin")
     }
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME")
+        std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .map(|home| home.join("Library/Caches"))
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.bin");
+            .join("Neutrasearch/index.bin")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -1887,20 +1888,20 @@ fn compact_cache_path() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx");
+            .join("Neutrasearch/index.nsx")
     }
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME")
+        std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .map(|home| home.join("Library/Application Support"))
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx");
+            .join("Neutrasearch/index.nsx")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
