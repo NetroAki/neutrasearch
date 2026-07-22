@@ -31,7 +31,13 @@ Tagged releases provide portable archives containing four sibling executables:
 - `neutrasearch-query`
 - `neutrasearch-mcp`
 
-Windows x64 releases also provide `neutrasearch-<version>-windows-x64-setup.exe`, which installs all four executables and Start-menu/uninstall entries; a portable ZIP remains available. Verify the release `SHA256SUMS` and GitHub artifact attestation before installing or extracting. Linux archives require the distribution's libext2fs runtime package (for example `libext2fs2` on Debian/Ubuntu or `e2fsprogs` on Arch). Windows and macOS artifacts remain unsigned until signing/notarization credentials and hardware smoke evidence are configured, so Windows SmartScreen may require explicit confirmation for this pre-1.0 build.
+Tagged releases also provide native installers alongside the portable archives:
+
+- Windows x64: `neutrasearch-<version>-windows-x64-setup.exe`
+- Debian/Ubuntu x64 and ARM64: `neutrasearch-<version>-linux-<architecture>.deb`
+- macOS Intel and Apple Silicon: `neutrasearch-<version>-macos-<architecture>.dmg`
+
+The Windows setup installs all four executables plus Start-menu/uninstall entries. The Linux package installs the GUI/CLI tools, desktop entry, icon, documentation, and the helper in its trusted root-owned location. The macOS disk image contains `Neutrasearch.app` and an Applications shortcut. Verify the release `SHA256SUMS` and GitHub artifact attestation before installing or extracting. Linux packages require the distribution's libext2fs runtime package (`libext2fs2` on Debian/Ubuntu). Windows and macOS artifacts remain unsigned until signing/notarization credentials and hardware smoke evidence are configured, so Windows SmartScreen or macOS Gatekeeper may require explicit confirmation for this pre-1.0 build.
 
 For Linux elevation, install the verified sibling binaries as root rather than making the helper setuid:
 
