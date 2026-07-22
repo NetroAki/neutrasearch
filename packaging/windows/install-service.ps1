@@ -9,8 +9,9 @@ $logPath = Join-Path $logDirectory 'install-service.log'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 Start-Transcript -Path $logPath -Force | Out-Null
 trap {
-    $_ | Out-String | Add-Content -LiteralPath $logPath
+    $failure = $_ | Out-String
     Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+    $failure | Add-Content -LiteralPath $logPath
     exit 1
 }
 
@@ -25,7 +26,7 @@ $programFilesRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\\') }
 if (-not ($programFilesRoots | Where-Object {
-    $resolvedInstallDir.StartsWith($_ + '\\', [StringComparison]::OrdinalIgnoreCase)
+    $resolvedInstallDir.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
 })) {
     throw "The privileged scanner must be installed beneath Program Files: $resolvedInstallDir"
 }
