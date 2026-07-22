@@ -223,20 +223,20 @@ fn default_index_path() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx");
+            .join("Neutrasearch/index.nsx")
     }
     #[cfg(target_os = "macos")]
     {
-        return std::env::var_os("HOME")
+        std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .map(|home| home.join("Library/Application Support"))
             .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx");
+            .join("Neutrasearch/index.nsx")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -262,9 +262,14 @@ mod tests {
     fn ndjson_api() {
         let path =
             std::env::temp_dir().join(format!("neutra-query-test-{}.nsx", std::process::id()));
+        let (allowed_file, private_file, allowed_root) = if cfg!(target_os = "windows") {
+            ("C:/src/needle.rs", "C:/private/needle-key.txt", "C:/src")
+        } else {
+            ("/src/needle.rs", "/private/needle-key.txt", "/src")
+        };
         let records = vec![
             FileRecord {
-                path: "/src/needle.rs".into(),
+                path: allowed_file.into(),
                 size: 7,
                 mtime: 1,
                 mode: 0,
@@ -275,7 +280,7 @@ mod tests {
                 source: 0,
             },
             FileRecord {
-                path: "/private/needle-key.txt".into(),
+                path: private_file.into(),
                 size: 9,
                 mtime: 2,
                 mode: 0,
@@ -289,16 +294,12 @@ mod tests {
         CompactIndex::build(&records, &path).unwrap();
         let index = CompactIndex::open(&path).unwrap();
         let mut output = Vec::new();
-        serve(
-            &path,
-            index,
-            None,
-            "{\"query\":\"needle\",\"limit\":5,\"scope_roots\":[\"/src\"],\"scope_case_sensitive\":true}\n".as_bytes(),
-            &mut output,
-        )
-        .unwrap();
+        let request = format!(
+            "{{\"query\":\"needle\",\"limit\":5,\"scope_roots\":[{allowed_root:?}],\"scope_case_sensitive\":true}}\n"
+        );
+        serve(&path, index, None, request.as_bytes(), &mut output).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-        assert_eq!(value["paths"], serde_json::json!(["/src/needle.rs"]));
+        assert_eq!(value["paths"], serde_json::json!([allowed_file]));
 
         let index = CompactIndex::open(&path).unwrap();
         let error = match run(
