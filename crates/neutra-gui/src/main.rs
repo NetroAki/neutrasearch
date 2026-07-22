@@ -1631,9 +1631,9 @@ fn is_windows_drive_root(path: &str) -> bool {
 fn default_system_roots() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Storage::FileSystem::{
-            GetDriveTypeW, GetLogicalDriveStringsW, DRIVE_FIXED, DRIVE_REMOVABLE,
-        };
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDriveStringsW};
+        const DRIVE_REMOVABLE: u32 = 2;
+        const DRIVE_FIXED: u32 = 3;
 
         let required = unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) };
         if required == 0 {
