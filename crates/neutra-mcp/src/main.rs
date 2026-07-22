@@ -386,8 +386,21 @@ mod tests {
 
     #[test]
     fn allowed_roots_apply_before_query_limit() {
+        let (denied, allowed_file, allowed_root) = if cfg!(target_os = "windows") {
+            (
+                r"C:\denied\needle.txt",
+                r"C:\allowed\path\has-needle-here.txt",
+                r"C:\allowed",
+            )
+        } else {
+            (
+                "/denied/needle.txt",
+                "/allowed/path/has-needle-here.txt",
+                "/allowed",
+            )
+        };
         let mut index = Index::new();
-        for path in ["/denied/needle.txt", "/allowed/path/has-needle-here.txt"] {
+        for path in [denied, allowed_file] {
             index.push(FileRecord {
                 path: path.into(),
                 size: 1,
@@ -406,14 +419,11 @@ mod tests {
         };
         let result = call_tool(
             &mut store,
-            &[PathBuf::from("/allowed")],
+            &[PathBuf::from(allowed_root)],
             "neutra_search",
             json!({"query":"needle", "limit":1}),
         );
-        assert_eq!(
-            result["structuredContent"]["paths"][0],
-            "/allowed/path/has-needle-here.txt"
-        );
+        assert_eq!(result["structuredContent"]["paths"][0], allowed_file);
     }
 
     #[test]
@@ -443,11 +453,26 @@ mod tests {
 
     #[test]
     fn allowed_roots_use_path_component_boundaries() {
-        let roots = vec![PathBuf::from("/home/a")];
-        assert!(path_is_allowed(Path::new("/home/a/file.txt"), &roots));
-        assert!(path_is_allowed(Path::new("/home/a"), &roots));
-        assert!(!path_is_allowed(Path::new("/home/ab/file.txt"), &roots));
-        assert!(!path_is_allowed(Path::new("/home/a/../secret"), &roots));
+        let (root, file, sibling, unsafe_path) = if cfg!(target_os = "windows") {
+            (
+                r"C:\home\a",
+                r"C:\home\a\file.txt",
+                r"C:\home\ab\file.txt",
+                r"C:\home\a\..\secret",
+            )
+        } else {
+            (
+                "/home/a",
+                "/home/a/file.txt",
+                "/home/ab/file.txt",
+                "/home/a/../secret",
+            )
+        };
+        let roots = vec![PathBuf::from(root)];
+        assert!(path_is_allowed(Path::new(file), &roots));
+        assert!(path_is_allowed(Path::new(root), &roots));
+        assert!(!path_is_allowed(Path::new(sibling), &roots));
+        assert!(!path_is_allowed(Path::new(unsafe_path), &roots));
         assert!(!path_is_allowed(Path::new("relative/file.txt"), &roots));
     }
 }

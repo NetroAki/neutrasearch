@@ -19,6 +19,9 @@ jobs:
       - uses: actions/dependency-review-action@v4
 
   security-audit:
+    permissions:
+      contents: read
+      checks: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
