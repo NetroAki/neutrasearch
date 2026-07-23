@@ -1,0 +1,10 @@
+[package]
+name = "neutra-ntfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neutra-core.workspace = true
+anyhow.workspace = true
+libc.workspace = true

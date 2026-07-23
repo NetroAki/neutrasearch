@@ -1,0 +1,123 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+
+  security-audit:
+    permissions:
+      contents: read
+      checks: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libext2fs-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo build --workspace --bins --release --locked
+      - name: Validate Windows service packaging
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw packaging/windows/install-service.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw packaging/windows/remove-service.ps1))
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+          }
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $compiler "/DAppVersion=$version" "/DBinDir=$((Resolve-Path 'target/release').Path)" "/DOutputDir=$((Resolve-Path 'dist').Path)" packaging/windows/neutrasearch.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+      - name: Prove Windows service install and startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = (Resolve-Path 'dist/neutrasearch-*-windows-x64-setup.exe').Path
+          $setupLog = Join-Path $env:RUNNER_TEMP 'neutrasearch-setup.log'
+          try {
+            $process = Start-Process -FilePath $installer -ArgumentList @(
+              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$setupLog"
+            ) -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "Installer failed with exit code $($process.ExitCode)"
+            }
+            $service = Get-Service -Name NeutrasearchHelper
+            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+            if ($service.Status -ne 'Running') {
+              throw "NeutrasearchHelper did not reach Running state"
+            }
+          } finally {
+            if (Test-Path $setupLog) { Get-Content $setupLog }
+            $serviceLog = Join-Path $env:ProgramData 'Neutrasearch/install-service.log'
+            if (Test-Path $serviceLog) { Get-Content $serviceLog }
+            $helperLog = Join-Path $env:ProgramData 'Neutrasearch/helper.log'
+            if (Test-Path $helperLog) { Get-Content $helperLog }
+            sc.exe qc NeutrasearchHelper
+            $installDir = Join-Path $env:ProgramFiles 'Neutrasearch'
+            if (Test-Path $installDir) { icacls.exe $installDir /T }
+            $installedService = Get-Service -Name NeutrasearchHelper -ErrorAction SilentlyContinue
+            if ($null -ne $installedService) {
+              if ($installedService.Status -ne 'Stopped') {
+                sc.exe stop NeutrasearchHelper | Out-Null
+                $installedService.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+              }
+              sc.exe delete NeutrasearchHelper | Out-Null
+            }
+          }
+      - run: cargo run --release --locked --bin neutrasearch -- --version
+      - run: cargo run --release --locked --bin neutrasearch -- index --help
+      - run: cargo run --release --locked --bin neutrasearch -- search --help
+      - run: cargo run --release --locked --bin neutrasearch-helper -- --version
+      - run: cargo run --release --locked --bin neutrasearch-helper -- --build
+      - run: python scripts/package_release.py self-test
+      - run: npm test
+        working-directory: packages/pi-neutrasearch
+      - run: npm pack --dry-run
+        working-directory: packages/pi-neutrasearch
+      - if: runner.os == 'Linux'
+        run: bash scripts/check-no-walk.sh
+      - if: runner.os == 'Linux'
+        run: |
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python scripts/package_release.py package --project-root . --target-dir target/release --output-dir dist --target x86_64-unknown-linux-gnu --version "$VERSION" --format tar.gz
+          tar -tzf dist/*.tar.gz >/dev/null

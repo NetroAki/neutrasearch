@@ -1,0 +1,29 @@
+[package]
+name = "neutra-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neutrasearch"
+path = "src/main.rs"
+
+[dependencies]
+neutra-core.workspace = true
+neutra-remote = { path = "../neutra-remote" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex = "1"
+arboard = { version = "3", default-features = false }
+eframe = { version = "0.34", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui = "0.34"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", rev = "10e4f801efab1e777efb02258327ca6b64aaefa7", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

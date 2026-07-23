@@ -1,0 +1,37 @@
+name: publish-pi-package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'pi-neutrasearch-v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-pi-neutrasearch
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - name: Use current npm CLI for trusted publishing
+        run: npm install --global npm@latest
+      - name: Test package
+        run: npm test
+        working-directory: packages/pi-neutrasearch
+      - name: Verify package contents
+        run: npm pack --dry-run
+        working-directory: packages/pi-neutrasearch
+      - name: Publish public Pi package
+        run: npm publish --access public --provenance
+        working-directory: packages/pi-neutrasearch
