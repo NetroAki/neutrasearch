@@ -291,9 +291,13 @@ impl NeutraApp {
             spawn_network_watcher(app.tx.clone());
             app.remote_watcher_started = true;
         }
-        if first_run && !app.selected_roots.is_empty() {
-            // A fresh install indexes the complete local machine immediately.
-            // Setup remains incomplete until a native lane returns usable data.
+        if !reference_mode && app.index_is_empty() {
+            // A missing or empty index is never a valid idle first screen. This
+            // also repairs partial installs that wrote settings before their
+            // first usable scan completed.
+            if !app.onboarding_complete || app.selected_roots.is_empty() {
+                app.selected_roots = default_system_roots();
+            }
             app.onboarding_scan = true;
             app.save_settings();
             app.begin_scan_with_elevation(cfg!(target_os = "linux"));
@@ -597,6 +601,20 @@ impl NeutraApp {
                             );
                         } else if scan_has_reachable_lane(mounts, errors) {
                             let staging = staging.unwrap_or_default();
+                            if staging.is_empty() {
+                                self.onboarding_scan = false;
+                                self.setup_focus_requested = true;
+                                self.lanes.insert(
+                                    "scan".into(),
+                                    LaneState {
+                                        label: "EMPTY INDEX".into(),
+                                        status: "the native scanner returned no files; the previous index was kept".into(),
+                                        error: true,
+                                        ..Default::default()
+                                    },
+                                );
+                                continue;
+                            }
                             if self.onboarding_scan || !self.onboarding_complete {
                                 self.onboarding_complete = true;
                                 self.onboarding_scan = false;
@@ -811,7 +829,13 @@ impl NeutraApp {
             }
         }
         let mut q = Query::parse(if self.regex_mode { "" } else { &self.query });
-        q.limit = 1_000;
+        // The unfiltered home view is the complete index, like Everything or
+        // FSearch. Typed searches stay bounded to keep interactive queries fast.
+        q.limit = if self.query.trim().is_empty() {
+            0
+        } else {
+            1_000
+        };
         q.sort = match self.sort_mode {
             ui::SortMode::Modified => SortKey::MtimeDesc,
             ui::SortMode::Name => SortKey::NameAsc,

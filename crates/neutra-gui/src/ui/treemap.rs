@@ -105,6 +105,22 @@ struct MapBlock {
 }
 
 pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
+    if app.index_is_empty() {
+        ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+                if app.scanning {
+                    ui.spinner();
+                }
+                let message = if app.scanning {
+                    "Indexing system files..."
+                } else {
+                    "No indexed files yet"
+                };
+                ui.label(RichText::new(message).font(sans(11.0)).color(MUTED));
+            });
+        });
+        return;
+    }
     if app.tree_model.is_none() {
         app.request_tree_model();
         ui.centered_and_justified(|ui| {

@@ -16,6 +16,11 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
+      - name: Restore ignored release tooling
+        shell: bash
+        run: |
+          git fetch --depth=1 origin refs/tags/v0.1.3
+          git archive FETCH_HEAD scripts packaging packages/pi-neutrasearch | tar -xf -
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -51,6 +56,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - name: Restore ignored release tooling
+        shell: bash
+        run: |
+          git fetch --depth=1 origin refs/tags/v0.1.3
+          git archive FETCH_HEAD scripts packaging packages/pi-neutrasearch | tar -xf -
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -127,6 +137,11 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v5
+      - name: Restore ignored release tooling
+        shell: bash
+        run: |
+          git fetch --depth=1 origin refs/tags/v0.1.3
+          git archive FETCH_HEAD scripts packaging packages/pi-neutrasearch | tar -xf -
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
