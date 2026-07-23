@@ -4,6 +4,18 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-23
+
+### Interface
+
+- Automatically repair a missing or empty startup index by scanning configured system roots instead of showing an idle zero-result screen.
+- Show the complete indexed file list while the search box is empty; typed searches remain bounded for responsiveness.
+- Distinguish active indexing and a genuinely empty index from hierarchy preparation in Treemap view.
+
+### Repository
+
+- Publish the cleaned source tree with concise project documentation and CI aligned to the intentionally tracked files.
+
 ## [0.1.3] - 2026-07-22
 
 ### Reliability
