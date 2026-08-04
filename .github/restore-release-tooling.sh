@@ -15,4 +15,20 @@ source = path.read_text()
 source = source.replace('    ("SECURITY.md", "SECURITY.md"),\n', '')
 source = source.replace('    ("docs/production.md", "docs/production.md"),\n', '')
 path.write_text(source)
+
+path = Path("scripts/package_installers.py")
+source = path.read_text()
+source = source.replace(
+    '("README.md", "LICENSE", "SECURITY.md", "CHANGELOG.md")',
+    '("README.md", "LICENSE", "CHANGELOG.md")',
+)
+path.write_text(source)
+
+path = Path("packaging/windows/neutrasearch.iss")
+source = path.read_text()
+source = source.replace(
+    'Source: "..\\..\\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion\n',
+    '',
+)
+path.write_text(source)
 PY

@@ -295,9 +295,7 @@ impl NeutraApp {
             // A missing or empty index is never a valid idle first screen. This
             // also repairs partial installs that wrote settings before their
             // first usable scan completed.
-            if !app.onboarding_complete || app.selected_roots.is_empty() {
-                app.selected_roots = default_system_roots();
-            }
+            app.selected_roots = default_system_roots();
             app.onboarding_scan = true;
             app.save_settings();
             app.begin_scan_with_elevation(cfg!(target_os = "linux"));
