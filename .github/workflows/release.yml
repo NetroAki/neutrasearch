@@ -105,21 +105,36 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = (Resolve-Path 'dist/neutrasearch-*-windows-x64-setup.exe').Path
-          $setupLog = Join-Path $env:RUNNER_TEMP 'neutrasearch-setup.log'
+          $setupLogs = @()
           try {
-            $process = Start-Process -FilePath $installer -ArgumentList @(
-              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$setupLog"
-            ) -Wait -PassThru
-            if ($process.ExitCode -ne 0) {
-              throw "Installer failed with exit code $($process.ExitCode)"
+            # The second pass exercises the existing-service upgrade path.
+            foreach ($pass in 1..2) {
+              $setupLog = Join-Path $env:RUNNER_TEMP "neutrasearch-setup-$pass.log"
+              $setupLogs += $setupLog
+              $process = Start-Process -FilePath $installer -ArgumentList @(
+                '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$setupLog"
+              ) -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                throw "Installer pass $pass failed with exit code $($process.ExitCode)"
+              }
+              $service = Get-Service -Name NeutrasearchHelper
+              $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+              if ($service.Status -ne 'Running') {
+                throw "NeutrasearchHelper did not reach Running state after installer pass $pass"
+              }
             }
-            $service = Get-Service -Name NeutrasearchHelper
-            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
-            if ($service.Status -ne 'Running') {
-              throw 'NeutrasearchHelper did not reach Running state'
+            $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'NeutrasearchHelper'"
+            $expectedPath = '"{0}" --windows-service' -f (Join-Path $env:ProgramFiles 'Neutrasearch\neutrasearch-helper.exe')
+            if ($serviceConfig.PathName -ne $expectedPath) {
+              throw "Unexpected service path: $($serviceConfig.PathName)"
+            }
+            if ($serviceConfig.StartMode -ne 'Auto') {
+              throw "Unexpected service start mode: $($serviceConfig.StartMode)"
             }
           } finally {
-            if (Test-Path $setupLog) { Get-Content $setupLog }
+            foreach ($setupLog in $setupLogs) {
+              if (Test-Path $setupLog) { Get-Content $setupLog }
+            }
             foreach ($name in @('install-service.log', 'helper.log')) {
               $log = Join-Path $env:ProgramData "Neutrasearch/$name"
               if (Test-Path $log) { Get-Content $log }

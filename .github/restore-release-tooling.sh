@@ -3,6 +3,7 @@ set -euo pipefail
 
 git fetch --depth=1 origin refs/tags/v0.1.3
 git archive FETCH_HEAD scripts packaging packages/pi-neutrasearch | tar -xf -
+cp .github/windows/install-service.ps1 packaging/windows/install-service.ps1
 
 # v0.1.3 packaged internal documents that are intentionally absent from the
 # cleaned public source tree. Keep the reusable packaging implementation while

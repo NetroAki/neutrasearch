@@ -4,6 +4,13 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-04
+
+### Reliability
+
+- Fix Windows upgrades when the existing scanner service binary path contains spaces.
+- Exercise clean install and in-place reinstall service paths before publishing Windows releases.
+
 ## [0.1.4] - 2026-07-23
 
 ### Interface
