@@ -25,12 +25,24 @@ pub struct DeltaIndex {
     path: PathBuf,
     generation: u64,
     writer: Option<BufWriter<File>>,
-    _lock_file: Option<File>,
+    lock_file: Option<File>,
     upserts: HashMap<Box<str>, FileRecord>,
     removed: HashSet<Box<str>>,
     wal_bytes: u64,
     compact_at: u64,
 }
+
+impl Drop for DeltaIndex {
+    fn drop(&mut self) {
+        // Explicitly release BSD flock locks before closing the descriptor.
+        // macOS can otherwise briefly report the just-dropped writer as busy
+        // when the same process immediately reopens it.
+        if let Some(lock_file) = self.lock_file.take() {
+            let _ = FileExt::unlock(&lock_file);
+        }
+    }
+}
+
 impl DeltaIndex {
     pub fn open(path: &Path, generation: u64) -> io::Result<Self> {
         Self::open_mode(path, generation, DEFAULT_COMPACT_AT, true)
@@ -72,7 +84,7 @@ impl DeltaIndex {
             path: path.to_path_buf(),
             generation,
             writer: Some(writer),
-            _lock_file: Some(lock_file),
+            lock_file: Some(lock_file),
             upserts: HashMap::new(),
             removed: HashSet::new(),
             wal_bytes: HEADER,
@@ -139,7 +151,7 @@ impl DeltaIndex {
             path: path.to_path_buf(),
             generation,
             writer,
-            _lock_file: lock_file,
+            lock_file,
             upserts,
             removed,
             wal_bytes,
