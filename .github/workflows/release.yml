@@ -99,6 +99,40 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
+      - name: Prove Windows service install and lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = (Resolve-Path 'dist/neutrasearch-*-windows-x64-setup.exe').Path
+          $setupLog = Join-Path $env:RUNNER_TEMP 'neutrasearch-setup.log'
+          try {
+            $process = Start-Process -FilePath $installer -ArgumentList @(
+              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$setupLog"
+            ) -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "Installer failed with exit code $($process.ExitCode)"
+            }
+            $service = Get-Service -Name NeutrasearchHelper
+            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+            if ($service.Status -ne 'Running') {
+              throw 'NeutrasearchHelper did not reach Running state'
+            }
+          } finally {
+            if (Test-Path $setupLog) { Get-Content $setupLog }
+            foreach ($name in @('install-service.log', 'helper.log')) {
+              $log = Join-Path $env:ProgramData "Neutrasearch/$name"
+              if (Test-Path $log) { Get-Content $log }
+            }
+            $installed = Get-Service -Name NeutrasearchHelper -ErrorAction SilentlyContinue
+            if ($null -ne $installed) {
+              if ($installed.Status -ne 'Stopped') {
+                sc.exe stop NeutrasearchHelper | Out-Null
+                $installed.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+              }
+              sc.exe delete NeutrasearchHelper | Out-Null
+            }
+          }
       - name: Build Linux installer
         if: runner.os == 'Linux'
         run: >-
