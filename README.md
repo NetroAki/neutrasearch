@@ -6,6 +6,7 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 
 - Fast filename, path, type, size, and filesystem filters
 - Details, List, Grid, and hierarchical Treemap views
+- Persisted logical folder totals for responsive hierarchy views
 - GUI, CLI, MCP server, and Pi integration
 - Checksummed compact index with durable updates
 - No telemetry and no hidden directory-walking fallback
@@ -20,7 +21,7 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 | macOS | Spotlight or `getattrlistbulk` |
 | ZFS | Experimental |
 
-A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings.
+A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings. Compact indexes also write a generation-bound `.dirs` sidecar containing logical folder totals and direct children, so hierarchy views do not need to decode every search record.
 
 ## Install
 

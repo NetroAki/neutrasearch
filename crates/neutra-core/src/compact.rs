@@ -3,7 +3,7 @@
 //! The base is immutable and mmapped on Unix. Windows snapshots use owned
 //! bytes because Windows forbids atomically replacing a file with live mapped
 //! views; this keeps compaction compatible with persistent readers.
-use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats, SortKey};
+use crate::{DeltaIndex, DirectorySummary, FileRecord, Query, SearchHit, SearchStats, SortKey};
 use fs2::FileExt;
 #[cfg(not(windows))]
 use memmap2::Mmap;
@@ -49,6 +49,11 @@ pub struct CompactIndex {
 
 impl CompactIndex {
     pub fn build(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+        let order = compact_record_order(records)?;
+        Self::build_ordered(records, path, &order)
+    }
+
+    fn build_ordered(records: &[FileRecord], path: &Path, order: &[u32]) -> io::Result<BuildStats> {
         if records.len() > u32::MAX as usize {
             return Err(invalid("compact index supports at most u32::MAX records"));
         }
@@ -71,8 +76,6 @@ impl CompactIndex {
         file.get_ref()
             .set_len(HEADER + block_count as u64 * DESC_SIZE)?;
         file.seek(SeekFrom::Start(HEADER + block_count as u64 * DESC_SIZE))?;
-        let mut order = (0..records.len() as u32).collect::<Vec<_>>();
-        order.sort_unstable_by(|a, b| records[*a as usize].path.cmp(&records[*b as usize].path));
         let mut descs = Vec::with_capacity(block_count);
         let mut postings = HashMap::<u32, Vec<u32>>::new();
         let mut grams = HashSet::<u32>::new();
@@ -173,6 +176,15 @@ impl CompactIndex {
         })
     }
 
+    /// Build a compact base and its generation-bound directory-summary sidecar.
+    pub fn build_with_summary(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+        let compact_order = compact_record_order(records)?;
+        let summary_order = crate::dir_summary::summary_order(records)?;
+        let built = Self::build_ordered(records, path, &compact_order)?;
+        DirectorySummary::build_sidecar_ordered(records, &summary_order, path, built.generation)?;
+        Ok(built)
+    }
+
     /// Rebuild a base while holding its single-writer delta lock, then remove
     /// the obsolete generation-bound WAL before readers reopen the pair.
     pub fn rebuild(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
@@ -211,7 +223,7 @@ impl CompactIndex {
             }
         }
         lock.try_lock_exclusive()?;
-        let built = Self::build(records, path)?;
+        let built = Self::build_with_summary(records, path)?;
         match std::fs::remove_file(&delta) {
             Ok(()) => sync_parent(&delta)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -225,6 +237,7 @@ impl CompactIndex {
     /// not permit replacing a mapped file.
     pub fn publish(staged: &Path, destination: &Path) -> io::Result<()> {
         let verified = Self::open(staged)?;
+        let generation = verified.generation();
         drop(verified);
         let temporary = temp_path(destination);
         let mut source = File::open(staged)?;
@@ -234,7 +247,8 @@ impl CompactIndex {
         copy.get_ref().sync_all()?;
         drop(copy);
         replace_file(&temporary, destination)?;
-        sync_parent(destination)
+        sync_parent(destination)?;
+        DirectorySummary::publish(staged, destination, generation)
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -382,6 +396,76 @@ impl CompactIndex {
             out.extend(self.read_block(id)?);
         }
         Ok(out)
+    }
+
+    /// Find a base record by its source/path without materializing the whole
+    /// compact index. Blocks are path-sorted, so common normalized paths use a
+    /// logarithmic candidate lookup; unusual separator/case variants use a
+    /// correctness-first full scan.
+    pub fn record_by_path(&self, source: u32, path: &str) -> io::Result<Option<FileRecord>> {
+        if let Some(record) = self.record_by_path_ordered(Some(source), path)? {
+            return Ok(Some(record));
+        }
+        Ok(self
+            .records_by_path(path)?
+            .into_iter()
+            .find(|record| record.source == source))
+    }
+
+    pub fn record_by_path_any_source(&self, path: &str) -> io::Result<Option<FileRecord>> {
+        Ok(self.records_by_path(path)?.into_iter().next())
+    }
+
+    /// Return every base record whose source-independent path matches the
+    /// delta path. Delta tombstones are path-keyed, so all matching sources
+    /// must be shadowed consistently.
+    pub fn records_by_path(&self, path: &str) -> io::Result<Vec<FileRecord>> {
+        let mut matches = Vec::new();
+        for block_id in 0..self.blocks.len() {
+            for record in self.read_block(block_id as u32)? {
+                if equivalent_index_path(record.path.as_ref(), path) {
+                    matches.push(record);
+                }
+            }
+        }
+        Ok(matches)
+    }
+
+    fn record_by_path_ordered(
+        &self,
+        source: Option<u32>,
+        path: &str,
+    ) -> io::Result<Option<FileRecord>> {
+        let mut low = 0usize;
+        let mut high = self.blocks.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let records = self.read_block(middle as u32)?;
+            if records.last().is_some_and(|record| {
+                compare_index_paths(record.path.as_ref(), path) == std::cmp::Ordering::Less
+            }) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        for block_id in low..self.blocks.len() {
+            let records = self.read_block(block_id as u32)?;
+            for record in records {
+                match compare_index_paths(record.path.as_ref(), path) {
+                    std::cmp::Ordering::Less => {}
+                    std::cmp::Ordering::Equal => {
+                        if equivalent_index_path(record.path.as_ref(), path)
+                            && source.is_none_or(|wanted| wanted == record.source)
+                        {
+                            return Ok(Some(record));
+                        }
+                    }
+                    std::cmp::Ordering::Greater => return Ok(None),
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub fn search(&self, q: &Query) -> io::Result<(Vec<SearchHit>, SearchStats)> {
@@ -630,6 +714,59 @@ fn binerr(e: impl std::fmt::Display) -> io::Error {
 fn invalid(e: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.into())
 }
+fn compact_record_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
+    if records.len() > u32::MAX as usize {
+        return Err(invalid("compact index supports at most u32::MAX records"));
+    }
+    let mut order = (0..records.len() as u32).collect::<Vec<_>>();
+    order.sort_unstable_by(|left, right| {
+        compare_index_paths(
+            records[*left as usize].path.as_ref(),
+            records[*right as usize].path.as_ref(),
+        )
+    });
+    Ok(order)
+}
+
+fn compare_index_paths(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left = left.bytes();
+    let mut right = right.bytes();
+    loop {
+        let (Some(left), Some(right)) = (left.next(), right.next()) else {
+            return left.size_hint().0.cmp(&right.size_hint().0);
+        };
+        let fold = |byte: u8| {
+            let byte = if byte == b'\\' { b'/' } else { byte };
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                byte.to_ascii_lowercase()
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                byte
+            }
+        };
+        match fold(left).cmp(&fold(right)) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+}
+
+fn equivalent_index_path(left: &str, right: &str) -> bool {
+    let normalize = |path: &str| path.replace('\\', "/");
+    let left = normalize(left);
+    let right = normalize(right);
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        left.to_lowercase() == right.to_lowercase()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        left == right
+    }
+}
+
 fn safe_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     let windows_absolute = bytes.len() >= 3

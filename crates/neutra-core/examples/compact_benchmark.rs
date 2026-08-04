@@ -1,4 +1,4 @@
-use neutra_core::{CompactIndex, FileKind, FileRecord, FsKind, Query};
+use neutra_core::{CompactIndex, DirectorySummary, FileKind, FileRecord, FsKind, Query};
 use std::path::PathBuf;
 use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,8 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let generated_ms = started.elapsed().as_millis();
-    let built = CompactIndex::build(&records, &output)?;
+    let built = CompactIndex::build_with_summary(&records, &output)?;
     drop(records);
+    let sidecar_bytes = std::fs::metadata(DirectorySummary::path_for(&output))?.len();
     let index = CompactIndex::open(&output)?;
     let query = Query::parse(&format!("needle{:08x}", count.saturating_sub(1)));
     let mut best = u64::MAX;
@@ -55,6 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         best = best.min(start.elapsed().as_micros() as u64);
         returned = hits.len();
     }
-    println!("records={} generated_ms={} build_ms={} bytes={} bytes_per_record={:.2} blocks={} trigrams={} query_best_us={} returned={} output={}",count,generated_ms,built.wall_ms,built.bytes,built.bytes as f64/count.max(1)as f64,built.blocks,built.trigrams,best,returned,output.display());
+    println!("records={} generated_ms={} build_ms={} bytes={} sidecar_bytes={} bytes_per_record={:.2} blocks={} trigrams={} query_best_us={} returned={} output={}",count,generated_ms,built.wall_ms,built.bytes,sidecar_bytes,built.bytes as f64/count.max(1)as f64,built.blocks,built.trigrams,best,returned,output.display());
     Ok(())
 }

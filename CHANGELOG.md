@@ -11,6 +11,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Let `neutrasearch index` scan the full machine without requiring a mount or output path.
 - Make search, serve, MCP, GUI, and Pi reuse the last successful index location automatically; a missing search index triggers a full native-metadata build.
 - Keep explicit index paths as optional overrides and reject directory-depth options.
+- Persist generation-bound logical folder totals and direct children in a compact `.dirs` sidecar so Treemap preparation avoids materializing the full search index.
 
 ### Reliability
 
