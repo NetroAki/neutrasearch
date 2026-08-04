@@ -11,6 +11,7 @@ pub mod compact;
 pub mod delta;
 pub mod index;
 pub mod mounts;
+pub mod paths;
 pub mod proto;
 pub mod query;
 pub mod types;

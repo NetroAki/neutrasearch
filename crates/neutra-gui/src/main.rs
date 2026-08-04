@@ -465,6 +465,17 @@ impl NeutraApp {
                 Event::CompactReady(index) => {
                     self.last_generation = index.generation();
                     self.compact = Some(index);
+                    if let Err(error) = neutra_core::paths::remember_index_path(&self.cache_path) {
+                        self.lanes.insert(
+                            "settings".into(),
+                            LaneState {
+                                label: "INDEX LOCATION".into(),
+                                status: format!("cannot remember index location: {error}"),
+                                error: true,
+                                ..Default::default()
+                            },
+                        );
+                    }
                     // The resident copy stayed searchable throughout the build;
                     // reclaim it only after the replacement mmap is verified.
                     self.index = Index::new();
@@ -726,7 +737,8 @@ impl NeutraApp {
             std::thread::spawn(move || {
                 let model = ui::Hierarchy::from_records(&records);
                 let _ = tx.send(Event::TreeReady { generation, model });
-                match CompactIndex::build(&records, &path).and_then(|_| CompactIndex::open(&path)) {
+                match CompactIndex::rebuild(&records, &path).and_then(|_| CompactIndex::open(&path))
+                {
                     Ok(compact) => {
                         let _ = tx.send(Event::CompactReady(compact));
                     }
@@ -1773,7 +1785,22 @@ fn requested_mount_with_fs(mountpoint: PathBuf, fs: neutra_core::FsKind) -> Moun
 
 #[cfg(any(not(target_os = "windows"), test))]
 fn select_mounts_for_roots(roots: &[PathBuf], trusted: &[MountInfo]) -> Vec<MountInfo> {
+    let full_machine = roots
+        .iter()
+        .any(|root| matches!(root.to_string_lossy().as_ref(), "/" | r"\"));
     let mut selected = Vec::<MountInfo>::new();
+    if full_machine {
+        for mount in trusted {
+            if mount.fs.is_indexable_local()
+                && !selected
+                    .iter()
+                    .any(|existing| existing.mountpoint == mount.mountpoint)
+            {
+                selected.push(mount.clone());
+            }
+        }
+        return selected;
+    }
     for root in roots {
         let Some(mount) = trusted
             .iter()
@@ -1966,40 +1993,7 @@ fn legacy_cache_path() -> PathBuf {
     }
 }
 fn compact_cache_path() -> PathBuf {
-    if let Some(path) = configured_index() {
-        return path;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|home| home.join("Library/Application Support"))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx")
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_absolute())
-                    .map(|home| home.join(".local/share"))
-            })
-            .unwrap_or_else(std::env::temp_dir)
-            .join("neutrasearch/index.nsx")
-    }
+    neutra_core::paths::resolve_index_path(None)
 }
 
 #[cfg(test)]
@@ -2089,6 +2083,49 @@ mod security_tests {
             "/home",
             &[PathBuf::from("/home/alex/Documents")]
         ));
+    }
+
+    #[test]
+    fn full_machine_root_selects_every_supported_local_mount() {
+        let trusted = vec![
+            MountInfo {
+                device: "/dev/root".into(),
+                mountpoint: "/".into(),
+                fs: neutra_core::FsKind::Ext4,
+                source: neutra_core::MountSource::Local,
+            },
+            MountInfo {
+                device: "/dev/home".into(),
+                mountpoint: "/home".into(),
+                fs: neutra_core::FsKind::Btrfs,
+                source: neutra_core::MountSource::Local,
+            },
+            MountInfo {
+                device: "/dev/data".into(),
+                mountpoint: "/mnt/data".into(),
+                fs: neutra_core::FsKind::Ext4,
+                source: neutra_core::MountSource::Local,
+            },
+            MountInfo {
+                device: "nas:/share".into(),
+                mountpoint: "/mnt/team".into(),
+                fs: neutra_core::FsKind::Network("nfs4".into()),
+                source: neutra_core::MountSource::Remote { host: "nas".into() },
+            },
+        ];
+        let selected = select_mounts_for_roots(&[PathBuf::from("/")], &trusted);
+        let mountpoints: Vec<_> = selected
+            .iter()
+            .map(|mount| mount.mountpoint.clone())
+            .collect();
+        assert_eq!(
+            mountpoints,
+            vec![
+                PathBuf::from("/"),
+                PathBuf::from("/home"),
+                PathBuf::from("/mnt/data")
+            ]
+        );
     }
 
     #[test]

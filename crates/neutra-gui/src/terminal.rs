@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use neutra_core::proto::HelperMsg;
+use neutra_core::{CompactIndex, Index};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub enum Action {
@@ -55,59 +57,165 @@ fn search(args: Vec<std::ffi::OsString>) -> i32 {
     if args.is_empty() {
         return error("search requires a query");
     }
+    let explicit = match index_override(&args) {
+        Ok(path) => path,
+        Err(message) => return error(&message),
+    };
+    let path = neutra_core::paths::resolve_index_path(explicit);
+    if let Err(message) = ensure_index(&path) {
+        return error(&message);
+    }
     run_companion("NEUTRASEARCH_QUERY", "neutrasearch-query", args, None)
 }
 
 fn index(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch index MOUNT --output INDEX.nsx");
+        println!("Usage: neutrasearch index [--output INDEX.nsx]");
         return 0;
     }
-    let (mount, output) = match parse_index(args) {
-        Ok(paths) => paths,
+    let output = match parse_index(args) {
+        Ok(path) => neutra_core::paths::resolve_index_path(path),
         Err(message) => return error(&message),
     };
-    run_companion(
-        "NEUTRASEARCH_HELPER",
-        "neutrasearch-helper",
-        vec![
-            "--build-index".into(),
-            mount.into_os_string(),
-            output.into_os_string(),
-        ],
-        None,
-    )
+    match build_machine_index(&output) {
+        Ok(()) => 0,
+        Err(message) => error(&message),
+    }
 }
 
-fn parse_index(mut args: Vec<std::ffi::OsString>) -> Result<(PathBuf, PathBuf), String> {
-    let mut mount = None;
+fn parse_index(mut args: Vec<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
     let mut output = None;
     while !args.is_empty() {
-        if args[0] == "--output" || args[0] == "-o" {
-            if args.len() < 2 {
+        let option = args.remove(0);
+        if option == "--output" || option == "-o" {
+            if args.is_empty() {
                 return Err("--output requires a path".into());
             }
-            output = Some(PathBuf::from(args.remove(1)));
-            args.remove(0);
-        } else if args[0].to_string_lossy().starts_with('-') {
-            return Err(format!(
-                "unknown index option {}",
-                args[0].to_string_lossy()
-            ));
-        } else if mount.is_none() {
-            mount = Some(PathBuf::from(args.remove(0)));
+            if output.is_some() {
+                return Err("--output may be specified only once".into());
+            }
+            output = Some(PathBuf::from(args.remove(0)));
         } else {
-            return Err("index accepts one mount point".into());
+            return Err(format!(
+                "unknown index option {}; indexing always covers the full machine",
+                option.to_string_lossy()
+            ));
         }
     }
-    let mount = mount.ok_or_else(|| "index requires a mount point".to_string())?;
-    let output = output.ok_or_else(|| "index requires --output INDEX.nsx".to_string())?;
-    Ok((mount, output))
+    Ok(output)
+}
+
+fn index_override(args: &[std::ffi::OsString]) -> Result<Option<PathBuf>, String> {
+    let mut index = None;
+    let mut position = 0;
+    while position < args.len() {
+        if args[position] == "--index" {
+            let value = args
+                .get(position + 1)
+                .ok_or_else(|| "--index requires a path".to_string())?;
+            if index.replace(PathBuf::from(value)).is_some() {
+                return Err("--index may be specified only once".into());
+            }
+            position += 2;
+        } else {
+            position += 1;
+        }
+    }
+    Ok(index)
+}
+
+fn ensure_index(path: &Path) -> Result<(), String> {
+    match CompactIndex::open_with_delta_snapshot(path) {
+        Ok((index, _delta)) => {
+            drop(index);
+            neutra_core::paths::remember_index_path(path)
+                .map_err(|error| format!("cannot remember {}: {error}", path.display()))?;
+            return Ok(());
+        }
+        Err(error) if path.exists() => {
+            eprintln!(
+                "neutrasearch: index at {} is not usable ({error}); indexing the full machine first",
+                path.display()
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "neutrasearch: no usable index exists at {}; indexing the full machine first",
+                path.display()
+            );
+        }
+    }
+    build_machine_index(path)
+}
+
+fn build_machine_index(output: &Path) -> Result<(), String> {
+    let roots = super::default_system_roots();
+    let mounts = super::selected_scan_mounts(&roots);
+    if mounts.is_empty() {
+        return Err("no supported local native filesystems were discovered".into());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    super::spawn_local_helper(tx, cfg!(target_os = "linux"), mounts, roots.clone());
+    let mut staging = Index::new();
+    let (completed_mounts, errors) = loop {
+        match rx.recv() {
+            Ok(super::Event::Message(HelperMsg::ScanBegin { mount })) => {
+                eprintln!("neutrasearch: indexing {}", mount.mountpoint.display());
+            }
+            Ok(super::Event::Message(HelperMsg::Records(records))) => {
+                staging.extend(
+                    records
+                        .into_iter()
+                        .filter(|record| super::record_in_roots(record.path.as_ref(), &roots)),
+                );
+            }
+            Ok(super::Event::Message(HelperMsg::ScanDone { mount, stats })) => {
+                eprintln!(
+                    "neutrasearch: indexed {} records from {} in {} ms",
+                    stats.records,
+                    mount.mountpoint.display(),
+                    stats.wall_ms
+                );
+            }
+            Ok(super::Event::Message(HelperMsg::ScanError { mount, error })) => {
+                eprintln!(
+                    "neutrasearch: skipped {}: {error}",
+                    mount.mountpoint.display()
+                );
+            }
+            Ok(super::Event::Message(HelperMsg::ScanComplete { mounts, errors })) => {
+                break (mounts, errors);
+            }
+            Ok(super::Event::Fatal(error)) => return Err(error),
+            Ok(_) => {}
+            Err(_) => return Err("native scanner stopped before completing".into()),
+        }
+    };
+    if !super::scan_has_reachable_lane(completed_mounts, errors) {
+        return Err(format!(
+            "no native filesystem completed successfully ({errors} error(s))"
+        ));
+    }
+    if staging.is_empty() {
+        return Err("native scanners returned no files; the previous index was kept".into());
+    }
+    let built = CompactIndex::rebuild(staging.records(), output)
+        .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
+    let remembered = neutra_core::paths::remember_index_path(output)
+        .map_err(|error| format!("cannot remember {}: {error}", output.display()))?;
+    println!(
+        "indexed={} bytes={} build_ms={} output={}",
+        built.records,
+        built.bytes,
+        built.wall_ms,
+        remembered.display()
+    );
+    Ok(())
 }
 
 fn serve(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch serve --index INDEX.nsx [--watch MOUNT] [--source ID]");
+        println!("Usage: neutrasearch serve [--index INDEX.nsx] [--watch MOUNT] [--source ID]");
         println!("\nLinux watch mode requires CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH (or root).");
         return 0;
     }
@@ -115,6 +223,9 @@ fn serve(args: Vec<std::ffi::OsString>) -> i32 {
         Ok(config) => config,
         Err(message) => return error(&message),
     };
+    if let Err(message) = ensure_index(&index) {
+        return error(&message);
+    }
     let helper_args = if let Some(mount) = watch {
         vec![
             "--watch-index".into(),
@@ -162,7 +273,7 @@ fn parse_serve(
             return Err(format!("unknown serve option {}", option.to_string_lossy()));
         }
     }
-    let index = index.ok_or_else(|| "serve requires --index INDEX.nsx".to_string())?;
+    let index = neutra_core::paths::resolve_index_path(index);
     if source.is_some() && watch.is_none() {
         return Err("--source requires --watch MOUNT".into());
     }
@@ -175,13 +286,19 @@ fn with_index(
     run: impl FnOnce(PathBuf) -> i32,
 ) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch {command} --index INDEX.nsx");
+        println!("Usage: neutrasearch {command} [--index INDEX.nsx]");
         return 0;
     }
-    if args.len() != 2 || args[0] != "--index" {
-        return error(&format!("{command} requires exactly --index INDEX.nsx"));
+    let explicit = match args.len() {
+        0 => None,
+        2 if args[0] == "--index" => Some(PathBuf::from(args.remove(1))),
+        _ => return error(&format!("{command} accepts only [--index INDEX.nsx]")),
+    };
+    let index = neutra_core::paths::resolve_index_path(explicit);
+    if let Err(message) = ensure_index(&index) {
+        return error(&message);
     }
-    run(PathBuf::from(args.remove(1)))
+    run(index)
 }
 
 fn run_companion(
@@ -245,13 +362,13 @@ fn print_help() {
 Usage:\n  \
   neutrasearch [gui]\n  \
   neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]\n  \
-  neutrasearch index MOUNT --output INDEX.nsx\n  \
-  neutrasearch serve --index INDEX.nsx [--watch MOUNT]\n  \
-  neutrasearch mcp --index INDEX.nsx\n\n\
+  neutrasearch index [--output INDEX.nsx]\n  \
+  neutrasearch serve [--index INDEX.nsx] [--watch MOUNT]\n  \
+  neutrasearch mcp [--index INDEX.nsx]\n\n\
 Commands:\n  \
   gui      Open the desktop application (default)\n  \
-  search   Search an existing index\n  \
-  index    Build an index from one mounted native filesystem\n  \
+  search   Search the last index, building it when missing\n  \
+  index    Fully index all supported local filesystems\n  \
   serve    Run the framed index service on stdin/stdout\n  \
   mcp      Run the MCP server on stdin/stdout"
     );
@@ -274,23 +391,22 @@ mod tests {
     }
 
     #[test]
-    fn index_command_accepts_human_ordering() {
-        let (mount, output) = parse_index(vec![
-            "/mnt/data".into(),
-            "--output".into(),
-            "files.nsx".into(),
-        ])
-        .unwrap();
-        assert_eq!(mount, PathBuf::from("/mnt/data"));
-        assert_eq!(output, PathBuf::from("files.nsx"));
+    fn index_command_defaults_to_the_machine_index_location() {
+        assert_eq!(parse_index(Vec::new()).unwrap(), None);
+        assert_eq!(
+            parse_index(vec!["--output".into(), "files.nsx".into()]).unwrap(),
+            Some(PathBuf::from("files.nsx"))
+        );
     }
 
     #[test]
-    fn index_command_explains_missing_output() {
-        assert_eq!(
-            parse_index(vec!["/mnt/data".into()]).unwrap_err(),
-            "index requires --output INDEX.nsx"
-        );
+    fn index_command_has_no_root_or_depth_mode() {
+        assert!(parse_index(vec!["/mnt/data".into()])
+            .unwrap_err()
+            .contains("full machine"));
+        assert!(parse_index(vec!["--depth".into(), "2".into()])
+            .unwrap_err()
+            .contains("full machine"));
     }
 
     #[test]

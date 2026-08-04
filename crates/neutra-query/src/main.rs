@@ -93,7 +93,7 @@ fn main() -> Result<()> {
             _ => i += 1,
         }
     }
-    let path = index_path.unwrap_or_else(default_index_path);
+    let path = neutra_core::paths::resolve_index_path(index_path);
     let (index, delta) = open_pair(&path)?;
     if stdio {
         return serve(
@@ -213,45 +213,6 @@ fn delta_path(base: &std::path::Path) -> PathBuf {
     let mut path = base.to_path_buf();
     path.set_extension("delta");
     path
-}
-
-fn default_index_path() -> PathBuf {
-    if let Some(path) =
-        std::env::var_os("NEUTRASEARCH_INDEX").or_else(|| std::env::var_os("NEUTRA_INDEX"))
-    {
-        return path.into();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .map(|home| home.join("Library/Application Support"))
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Neutrasearch/index.nsx")
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_absolute())
-                    .map(|home| home.join(".local/share"))
-            })
-            .unwrap_or_else(std::env::temp_dir)
-            .join("neutrasearch/index.nsx")
-    }
 }
 
 #[cfg(test)]

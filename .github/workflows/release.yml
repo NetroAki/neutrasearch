@@ -29,6 +29,8 @@ jobs:
           --cargo-toml Cargo.toml
           --github-output "${GITHUB_OUTPUT}"
       - run: python scripts/package_release.py self-test
+      - name: Test restored Pi integration
+        run: node --test packages/pi-neutrasearch/index.test.js packages/pi-neutrasearch/lib.test.js
 
   build:
     needs: prepare

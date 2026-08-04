@@ -4,6 +4,7 @@
 //! bytes because Windows forbids atomically replacing a file with live mapped
 //! views; this keeps compaction compatible with persistent readers.
 use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats, SortKey};
+use fs2::FileExt;
 #[cfg(not(windows))]
 use memmap2::Mmap;
 use std::collections::{HashMap, HashSet};
@@ -170,6 +171,53 @@ impl CompactIndex {
             bytes,
             wall_ms: started.elapsed().as_millis() as u64,
         })
+    }
+
+    /// Rebuild a base while holding its single-writer delta lock, then remove
+    /// the obsolete generation-bound WAL before readers reopen the pair.
+    pub fn rebuild(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+        let mut delta = path.to_path_buf();
+        delta.set_extension("delta");
+        let lock_path = suffix_path(&delta, ".lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let lock = options.open(lock_path)?;
+        let metadata = lock.metadata()?;
+        if !metadata.is_file() {
+            return Err(invalid("compact rebuild lock is not a regular file"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 || metadata.mode() & 0o077 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "compact rebuild lock must be private and single-linked",
+                ));
+            }
+        }
+        lock.try_lock_exclusive()?;
+        let built = Self::build(records, path)?;
+        match std::fs::remove_file(&delta) {
+            Ok(()) => sync_parent(&delta)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        Ok(built)
     }
 
     /// Atomically publish a fully built sibling index at the destination.
@@ -896,6 +944,33 @@ mod tests {
         ] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn rebuild_resets_the_delta_and_rejects_an_active_writer() {
+        let stem = format!("neutra-rebuild-{}", std::process::id());
+        let base_path = std::env::temp_dir().join(format!("{stem}.idx"));
+        let mut delta_path = base_path.clone();
+        delta_path.set_extension("delta");
+        let lock_path = suffix_path(&delta_path, ".lock");
+        for path in [&base_path, &delta_path, &lock_path] {
+            let _ = std::fs::remove_file(path);
+        }
+        CompactIndex::build(&[rec("/old.txt", 1)], &base_path).unwrap();
+        let generation = CompactIndex::open(&base_path).unwrap().generation();
+        let writer = DeltaIndex::open(&delta_path, generation).unwrap();
+        let error = CompactIndex::rebuild(&[rec("/new.txt", 2)], &base_path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(writer);
+
+        CompactIndex::rebuild(&[rec("/new.txt", 2)], &base_path).unwrap();
+        assert!(!delta_path.exists());
+        let (rebuilt, delta) = CompactIndex::open_with_delta_snapshot(&base_path).unwrap();
+        assert!(delta.is_none());
+        assert_eq!(rebuilt.records().unwrap()[0].path.as_ref(), "/new.txt");
+
+        std::fs::remove_file(base_path).unwrap();
+        std::fs::remove_file(lock_path).unwrap();
     }
 
     #[test]
