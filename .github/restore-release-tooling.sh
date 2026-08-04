@@ -31,5 +31,12 @@ source = source.replace(
     'Source: "..\\..\\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion\n',
     '',
 )
+blocking_stop = "Stop-Service -Name ''NeutrasearchHelper'' -Force; $s.WaitForStatus"
+if source.count(blocking_stop) != 1:
+    raise SystemExit("expected exactly one blocking Windows service stop")
+source = source.replace(
+    blocking_stop,
+    "sc.exe stop NeutrasearchHelper | Out-Null; if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1062) { exit $LASTEXITCODE }; $s.WaitForStatus",
+)
 path.write_text(source)
 PY

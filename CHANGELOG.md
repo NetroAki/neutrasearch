@@ -9,6 +9,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 ### Reliability
 
 - Fix Windows upgrades when the existing scanner service binary path contains spaces.
+- Stop the existing scanner through a non-blocking service-control request with a bounded status wait.
 - Exercise clean install and in-place reinstall service paths before publishing Windows releases.
 
 ## [0.1.4] - 2026-07-23
