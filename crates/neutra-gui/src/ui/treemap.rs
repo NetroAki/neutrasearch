@@ -22,6 +22,51 @@ pub(crate) struct Hierarchy {
 }
 
 impl Hierarchy {
+    /// Build the file-manager hierarchy from the persisted projection. This
+    /// avoids decoding every compact search record when the disk map opens.
+    pub(crate) fn from_summary(summary: &DirectorySummary) -> Self {
+        let mut folders = BTreeMap::<String, FolderSummary>::new();
+        for entry in summary.entries() {
+            let path = entry.path.to_string();
+            let children = entry
+                .children
+                .iter()
+                .filter(|child| child.kind == FileKind::Dir)
+                .map(|child| child.path.to_string())
+                .collect::<Vec<_>>();
+            let direct_files = entry
+                .children
+                .iter()
+                .filter(|child| child.kind != FileKind::Dir)
+                .map(|child| {
+                    let path = child.path.to_string();
+                    let name = path_name(&path);
+                    let extension = name
+                        .rsplit_once('.')
+                        .map_or("", |(_, extension)| extension)
+                        .to_ascii_lowercase();
+                    TreeFile {
+                        path,
+                        name,
+                        size: child.logical_bytes,
+                        extension,
+                    }
+                })
+                .collect::<Vec<_>>();
+            folders.insert(
+                path,
+                FolderSummary {
+                    size: entry.logical_bytes,
+                    count: entry.file_count,
+                    children: children.into_iter().collect(),
+                    direct_files,
+                },
+            );
+        }
+        folders.entry("/".into()).or_default();
+        Self { folders }
+    }
+
     pub(crate) fn from_records(records: &[FileRecord]) -> Self {
         let mut folders = BTreeMap::<String, FolderSummary>::new();
         let mut connected_parents = HashSet::<String>::new();
@@ -45,11 +90,13 @@ impl Hierarchy {
             }
             if record.kind == FileKind::Dir {
                 folders.entry(normalized.clone()).or_default();
-                folders
-                    .entry(parent)
-                    .or_default()
-                    .children
-                    .insert(normalized);
+                if normalized != parent {
+                    folders
+                        .entry(parent)
+                        .or_default()
+                        .children
+                        .insert(normalized);
+                }
             } else {
                 let name = path_name(&normalized);
                 let extension = name
@@ -57,8 +104,10 @@ impl Hierarchy {
                     .map_or("", |(_, extension)| extension)
                     .to_ascii_lowercase();
                 let summary = folders.entry(parent).or_default();
-                summary.size = summary.size.saturating_add(record.size.max(1));
-                summary.count += 1;
+                if matches!(record.kind, FileKind::File | FileKind::Symlink) {
+                    summary.size = summary.size.saturating_add(record.size);
+                    summary.count += 1;
+                }
                 summary.direct_files.push(TreeFile {
                     path: record.path.to_string(),
                     name,
@@ -686,6 +735,50 @@ mod tests {
             native_parent: 0,
             source: 0,
         }
+    }
+
+    #[test]
+    fn hierarchy_reads_folder_totals_and_files_from_summary_sidecar() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-gui-summary-{}.nsx", std::process::id()));
+        let records = vec![
+            FileRecord {
+                path: "/docs/readme.md".into(),
+                size: 12,
+                mtime: 0,
+                mode: 0,
+                kind: FileKind::File,
+                fs: neutra_core::FsKind::Btrfs,
+                native_id: 1,
+                native_parent: 0,
+                source: 0,
+            },
+            FileRecord {
+                path: "/docs/archive".into(),
+                size: 0,
+                mtime: 0,
+                mode: 0,
+                kind: FileKind::Dir,
+                fs: neutra_core::FsKind::Btrfs,
+                native_id: 2,
+                native_parent: 0,
+                source: 0,
+            },
+        ];
+        DirectorySummary::build(&records, &path, 1).unwrap();
+        let summary = DirectorySummary::open_for_compact(&path, 1).unwrap();
+        let hierarchy = Hierarchy::from_summary(&summary);
+        assert_eq!(hierarchy.folders["/"].size, 12);
+        assert_eq!(hierarchy.folders["/docs"].size, 12);
+        assert_eq!(hierarchy.folders["/docs"].direct_files[0].name, "readme.md");
+        assert!(hierarchy.folders["/docs"]
+            .children
+            .contains("/docs/archive"));
+        let _ = std::fs::remove_file(path);
+        let sidecar = DirectorySummary::path_for(
+            &std::env::temp_dir().join(format!("neutra-gui-summary-{}.nsx", std::process::id())),
+        );
+        let _ = std::fs::remove_file(sidecar);
     }
 
     #[test]

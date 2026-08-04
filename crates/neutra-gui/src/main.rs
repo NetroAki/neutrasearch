@@ -4,7 +4,8 @@ mod ui;
 use eframe::egui;
 use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
 use neutra_core::{
-    CompactIndex, FileKind, FileRecord, Index, MountInfo, Query, SearchHit, SearchStats, SortKey,
+    CompactIndex, DirectorySummary, FileKind, FileRecord, Index, MountInfo, Query, SearchHit,
+    SearchStats, SortKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -720,7 +721,6 @@ impl NeutraApp {
             && self.last_cache.elapsed() > Duration::from_secs(2)
         {
             let records = self.index.records().to_vec();
-            let generation = self.data_generation();
             let path = self.cache_path.clone();
             let tx = self.tx.clone();
             self.building_cache = true;
@@ -735,12 +735,15 @@ impl NeutraApp {
                 },
             );
             std::thread::spawn(move || {
-                let model = ui::Hierarchy::from_records(&records);
-                let _ = tx.send(Event::TreeReady { generation, model });
                 match CompactIndex::rebuild(&records, &path).and_then(|_| CompactIndex::open(&path))
                 {
                     Ok(compact) => {
+                        let generation = compact.generation();
+                        let model = DirectorySummary::open_for_compact(&path, generation)
+                            .map(|summary| ui::Hierarchy::from_summary(&summary))
+                            .unwrap_or_else(|_| ui::Hierarchy::from_records(&records));
                         let _ = tx.send(Event::CompactReady(compact));
+                        let _ = tx.send(Event::TreeReady { generation, model });
                     }
                     Err(error) => {
                         let _ = tx.send(Event::CompactFailed(error.to_string()));
@@ -780,16 +783,25 @@ impl NeutraApp {
             .is_none()
             .then(|| self.index.records().to_vec());
         std::thread::spawn(move || {
-            let records: Result<Vec<FileRecord>, String> = if let Some(path) = compact_path {
-                CompactIndex::open(&path)
-                    .and_then(|index| index.records())
-                    .map_err(|error| format!("cannot prepare disk hierarchy: {error}"))
+            let model = if let Some(path) = compact_path {
+                match DirectorySummary::open_for_compact(&path, generation) {
+                    Ok(summary) => Ok(ui::Hierarchy::from_summary(&summary)),
+                    Err(summary_error) => CompactIndex::open(&path)
+                        .and_then(|index| index.records())
+                        .map(|records| ui::Hierarchy::from_records(&records))
+                        .map_err(|error| {
+                            format!(
+                                "cannot prepare disk hierarchy (summary: {summary_error}; records: {error})"
+                            )
+                        }),
+                }
             } else {
-                Ok(memory_records.unwrap_or_default())
+                Ok(ui::Hierarchy::from_records(
+                    &memory_records.unwrap_or_default(),
+                ))
             };
-            match records {
-                Ok(records) => {
-                    let model = ui::Hierarchy::from_records(&records);
+            match model {
+                Ok(model) => {
                     let _ = tx.send(Event::TreeReady { generation, model });
                 }
                 Err(error) => {
@@ -808,7 +820,10 @@ impl NeutraApp {
             match CompactIndex::generation_on_disk(&self.cache_path) {
                 Ok(on_disk) if on_disk == current_generation => {}
                 Ok(_) => match CompactIndex::open(&self.cache_path) {
-                    Ok(index) => self.compact = Some(index),
+                    Ok(index) => {
+                        self.compact = Some(index);
+                        self.tree_model = None;
+                    }
                     Err(error) => {
                         self.hits.clear();
                         self.lanes.insert(

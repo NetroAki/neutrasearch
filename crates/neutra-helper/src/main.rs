@@ -21,8 +21,8 @@ use neutra_core::proto::{
     read_frame, write_frame, ClientMsg, HelperMsg, HELPER_BUILD, PROTO_VERSION,
 };
 use neutra_core::{
-    CompactIndex, DeltaChange, DeltaIndex, FileRecord, Index, Query, ScanStats, SearchHit,
-    SearchStats, DELTA_HEADER_BYTES,
+    CompactIndex, DeltaChange, DeltaIndex, DirectorySummary, FileRecord, Index, Query, ScanStats,
+    SearchHit, SearchStats, DELTA_HEADER_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Read, Write};
@@ -140,7 +140,7 @@ impl DurableStore {
         self.delta.sync().context("sync delta before compaction")?;
         let staged = compaction_stage(&self.path);
         let marker = compaction_marker(&self.path);
-        let built = CompactIndex::build(&records, &staged)
+        let built = CompactIndex::build_with_summary(&records, &staged)
             .context("build staged replacement compact base")?;
         write_compaction_marker(&marker, built.generation)?;
         self.delta
@@ -218,6 +218,7 @@ fn open_durable_pair(
         };
         for stale in [
             append_suffix(&staged_path, ".new"),
+            DirectorySummary::path_for(&staged_path),
             staged_path,
             compaction_marker_temp(base_path),
         ] {
@@ -240,7 +241,10 @@ fn open_durable_pair(
             Err(error) => return Err(error).context("open delta after completed compaction"),
         };
         if staged_path.is_file() {
+            DirectorySummary::publish(&staged_path, base_path, expected_generation)?;
             let _ = std::fs::remove_file(&staged_path);
+        } else {
+            let _ = std::fs::remove_file(DirectorySummary::path_for(base_path));
         }
         remove_compaction_marker(&marker)?;
         return Ok((base, delta));
@@ -580,7 +584,7 @@ fn main() -> Result<()> {
                     records.push(record);
                 }
             })?;
-            let built = CompactIndex::build(&records, &output)?;
+            let built = CompactIndex::build_with_summary(&records, &output)?;
             match std::fs::remove_file(&delta_path) {
                 Ok(()) => sync_parent(&delta_path)?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

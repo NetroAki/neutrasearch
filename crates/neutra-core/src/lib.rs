@@ -9,6 +9,7 @@
 
 pub mod compact;
 pub mod delta;
+pub mod dir_summary;
 pub mod index;
 pub mod mounts;
 pub mod paths;
@@ -18,6 +19,9 @@ pub mod types;
 
 pub use compact::{BuildStats as CompactBuildStats, CompactIndex};
 pub use delta::{DeltaChange, DeltaIndex, DEFAULT_COMPACT_AT, DELTA_HEADER_BYTES};
+pub use dir_summary::{
+    DirectoryChild, DirectorySummary, DirectorySummaryEntry, DirectorySummaryOverlay,
+};
 pub use index::{Index, SearchHit, SearchStats};
 pub use mounts::{FsKind, MountInfo, MountSource};
 pub use query::{Query, SortKey};
