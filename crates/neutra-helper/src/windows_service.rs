@@ -36,15 +36,17 @@ use windows_sys::Win32::System::Services::{
     SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentThreadId, OpenProcess, OpenThread, QueryFullProcessImageNameW,
+    PROCESS_QUERY_LIMITED_INFORMATION, THREAD_TERMINATE,
 };
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
 pub(crate) const SERVICE_NAME: &str = "NeutrasearchHelper";
 pub(crate) const PIPE_PATH: &str = r"\\.\pipe\Neutrasearch.Helper.v1";
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STATUS_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-static ACTIVE_PIPE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static SERVICE_THREAD: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
 pub(crate) fn run() -> Result<()> {
     let mut name = wide(SERVICE_NAME);
@@ -70,6 +72,16 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
         return;
     }
     STATUS_HANDLE.store(handle.cast(), Ordering::Release);
+    let thread = unsafe { OpenThread(THREAD_TERMINATE, 0, GetCurrentThreadId()) };
+    if thread.is_null() {
+        report_status(SERVICE_STOPPED, unsafe { GetLastError() }, 0);
+        STATUS_HANDLE.store(null_mut(), Ordering::Release);
+        return;
+    }
+    // CancelSynchronousIo requires a real thread handle, not the pseudo-handle
+    // returned by GetCurrentThread. The service process exits after this body,
+    // so Windows closes this handle during process teardown.
+    SERVICE_THREAD.store(thread.cast(), Ordering::Release);
     report_status(SERVICE_START_PENDING, 0, 3_000);
 
     let result = service_body();
@@ -79,9 +91,9 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
     let exit_code = i32::from(result.is_err());
     report_status(SERVICE_STOPPED, exit_code as u32, 0);
     STATUS_HANDLE.store(null_mut(), Ordering::Release);
-    // This executable hosts exactly one SCM service. A stop disconnects the
-    // protocol pipe, which releases the service thread immediately; exiting
-    // the process then cancels any read-only native scan worker still parsing
+    // This executable hosts exactly one SCM service. A stop cancels the
+    // service thread's blocking pipe I/O; exiting then cancels any read-only
+    // native scan worker still parsing
     // the volume. The GUI keeps those records in staging and never publishes a
     // scan whose completion frame was interrupted.
     std::process::exit(exit_code);
@@ -96,18 +108,15 @@ unsafe extern "system" fn control_handler(
     if control == SERVICE_CONTROL_STOP {
         STOP_REQUESTED.store(true, Ordering::Release);
         report_status(SERVICE_STOP_PENDING, 0, 5_000);
-        let pipe = ACTIVE_PIPE.load(Ordering::Acquire) as HANDLE;
-        if !pipe.is_null() {
+        // ConnectNamedPipe and protocol reads are synchronous. Cancel the
+        // service thread's current I/O so it can observe STOP_REQUESTED and
+        // report SERVICE_STOPPED without waiting for a client connection.
+        let thread = SERVICE_THREAD.load(Ordering::Acquire) as HANDLE;
+        if !thread.is_null() {
             unsafe {
-                DisconnectNamedPipe(pipe);
+                CancelSynchronousIo(thread);
             }
         }
-        // Also connect to our own pipe to release a ConnectNamedPipe call that
-        // raced with the active-handle disconnect above.
-        let _ = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(PIPE_PATH);
     }
     0
 }
@@ -143,10 +152,8 @@ fn service_body() -> Result<()> {
 
     while !STOP_REQUESTED.load(Ordering::Acquire) {
         let pipe = create_pipe().context("create privileged scanner pipe")?;
-        ACTIVE_PIPE.store(pipe.cast(), Ordering::Release);
         let connected = unsafe { ConnectNamedPipe(pipe, null_mut()) };
         if connected == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
-            ACTIVE_PIPE.store(null_mut(), Ordering::Release);
             unsafe { CloseHandle(pipe) };
             if STOP_REQUESTED.load(Ordering::Acquire) {
                 break;
@@ -154,7 +161,6 @@ fn service_body() -> Result<()> {
             return Err(std::io::Error::last_os_error()).context("accept scanner pipe client");
         }
         if STOP_REQUESTED.load(Ordering::Acquire) {
-            ACTIVE_PIPE.store(null_mut(), Ordering::Release);
             unsafe {
                 DisconnectNamedPipe(pipe);
                 CloseHandle(pipe);
@@ -164,7 +170,6 @@ fn service_body() -> Result<()> {
 
         if let Err(error) = verify_client(pipe) {
             service_log(&format!("rejected pipe client: {error:#}"));
-            ACTIVE_PIPE.store(null_mut(), Ordering::Release);
             unsafe {
                 DisconnectNamedPipe(pipe);
                 CloseHandle(pipe);
@@ -187,7 +192,6 @@ fn service_body() -> Result<()> {
                 service_log(&format!("client protocol ended with error: {error:#}"));
             }
         }
-        ACTIVE_PIPE.store(null_mut(), Ordering::Release);
         unsafe {
             DisconnectNamedPipe(pipe);
         }
