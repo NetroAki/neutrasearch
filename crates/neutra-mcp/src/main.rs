@@ -244,13 +244,13 @@ fn write_json(w: &mut impl Write, v: &Value) -> Result<()> {
 }
 
 fn configured_index_from(primary: Option<OsString>, legacy: Option<OsString>) -> Result<PathBuf> {
-    let Some(path) = primary.or(legacy) else {
-        bail!("NEUTRASEARCH_INDEX (or legacy NEUTRA_INDEX) must be configured for MCP");
-    };
-    if path.is_empty() {
-        bail!("configured MCP index path must not be empty");
+    if let Some(path) = primary.or(legacy) {
+        if path.is_empty() {
+            bail!("configured MCP index path must not be empty");
+        }
+        return Ok(PathBuf::from(path));
     }
-    Ok(PathBuf::from(path))
+    Ok(neutra_core::paths::resolve_index_path(None))
 }
 
 fn allowed_roots_from(value: Option<OsString>) -> Result<Vec<PathBuf>> {
@@ -373,8 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn index_configuration_and_missing_file_fail() {
-        assert!(configured_index_from(None, None).is_err());
+    fn index_location_defaults_and_missing_file_fails() {
+        assert_eq!(
+            configured_index_from(None, None).unwrap(),
+            neutra_core::paths::resolve_index_path(None)
+        );
+        assert!(configured_index_from(Some(OsString::new()), None).is_err());
 
         let missing = std::env::temp_dir().join(format!(
             "neutrasearch-mcp-missing-{}-{}",

@@ -45,17 +45,21 @@ sudo pacman -S e2fsprogs
 
 ## CLI
 
-Search an existing index:
+Fully index the machine, then search the most recently used index:
 
 ```sh
+neutrasearch index
+neutrasearch search "example.exe"
+```
+
+An index location remains optional for both commands:
+
+```sh
+neutrasearch index --output /path/to/index.nsx
 neutrasearch search 'report ext:pdf' --index /path/to/index.nsx --json
 ```
 
-Build an index from a native filesystem:
-
-```sh
-neutrasearch index /mnt/data --output /path/to/index.nsx
-```
+Indexing always covers the full depth of every supported local native filesystem; there is no directory-depth mode.
 
 Example filters:
 
@@ -67,13 +71,13 @@ size:>1G
 
 ## MCP and Pi
 
-Run the MCP server with an explicit index:
+Run the MCP server with the last index automatically:
 
 ```sh
-NEUTRASEARCH_INDEX=/path/to/index.nsx \
-NEUTRASEARCH_MCP_ALLOWED_ROOTS=/home/user/projects \
-neutrasearch-mcp
+NEUTRASEARCH_MCP_ALLOWED_ROOTS=/home/user/projects neutrasearch mcp
 ```
+
+`--index INDEX.nsx` and `NEUTRASEARCH_INDEX` remain optional overrides.
 
 Install the Pi extension:
 

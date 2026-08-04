@@ -59,11 +59,14 @@ $binaryPath = '"{0}" --windows-service' -f $executable
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($null -ne $existing) {
     if ($existing.Status -ne 'Stopped') {
-        Stop-Service -Name $serviceName -Force
-        $existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(15))
+        & "$env:SystemRoot\System32\sc.exe" stop $serviceName | Out-Null
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1062) {
+            throw "Could not stop $serviceName service (sc.exe exit $LASTEXITCODE)"
+        }
+        $existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
-    # Avoid sc.exe here: Windows PowerShell 5.1 can corrupt the embedded
-    # quotes in a service binary path containing spaces. CIM passes each
+    # Avoid sc.exe for service configuration: Windows PowerShell 5.1 can corrupt
+    # embedded quotes in a service binary path containing spaces. CIM passes each
     # ChangeServiceConfig value as structured data instead of a command line.
     $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name = '$serviceName'"
     if ($null -eq $serviceConfig) {

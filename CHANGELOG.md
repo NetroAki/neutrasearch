@@ -6,6 +6,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [0.1.5] - 2026-08-04
 
+### Interface
+
+- Let `neutrasearch index` scan the full machine without requiring a mount or output path.
+- Make search, serve, MCP, GUI, and Pi reuse the last successful index location automatically; a missing search index triggers a full native-metadata build.
+- Keep explicit index paths as optional overrides and reject directory-depth options.
+
 ### Reliability
 
 - Fix Windows upgrades when the existing scanner service binary path contains spaces.
