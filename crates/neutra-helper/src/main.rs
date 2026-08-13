@@ -1385,6 +1385,36 @@ fn parse_macos_mount_output(output: &str) -> Vec<MountInfo> {
         .collect()
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn run_bounded<T, F>(label: &'static str, timeout: std::time::Duration, operation: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(operation());
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(value) => Some(value),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            tracing::warn!(
+                operation = label,
+                ?timeout,
+                "bounded operation timed out; worker left to finish"
+            );
+            None
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            tracing::warn!(
+                operation = label,
+                "bounded operation worker exited without a result"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn windows_local_mounts() -> Vec<MountInfo> {
     use std::ffi::OsString;
@@ -1437,18 +1467,29 @@ fn windows_local_mounts() -> Vec<MountInfo> {
         if !matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE) {
             continue;
         }
-        let mut filesystem = [0u16; 32];
-        let ok = unsafe {
-            GetVolumeInformationW(
-                root.as_ptr(),
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                filesystem.as_mut_ptr(),
-                filesystem.len() as u32,
-            )
+        let root = root.to_vec();
+        let Some((ok, filesystem)) = run_bounded(
+            "GetVolumeInformationW",
+            std::time::Duration::from_millis(500),
+            move || {
+                let mut filesystem = [0u16; 32];
+                let ok = unsafe {
+                    GetVolumeInformationW(
+                        root.as_ptr(),
+                        std::ptr::null_mut(),
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        filesystem.as_mut_ptr(),
+                        filesystem.len() as u32,
+                    )
+                };
+                (ok, filesystem)
+            },
+        ) else {
+            tracing::warn!(drive = %String::from_utf16_lossy(&root[..length]), "skipping drive after volume metadata timeout");
+            continue;
         };
         if ok == 0 {
             continue;
@@ -1797,6 +1838,21 @@ mod tests {
             true,
         )
         .is_err());
+    }
+
+    #[test]
+    fn bounded_call_returns_before_a_slow_operation_finishes() {
+        let started = std::time::Instant::now();
+        let result = run_bounded(
+            "test operation",
+            std::time::Duration::from_millis(10),
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                42
+            },
+        );
+        assert_eq!(result, None);
+        assert!(started.elapsed() < std::time::Duration::from_millis(80));
     }
 
     #[cfg(target_os = "windows")]
