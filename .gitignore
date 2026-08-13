@@ -17,6 +17,8 @@ __pycache__/
 *.delta
 *.delta.new
 *.delta.lock
+*.dirs
+*.dirs.new-*
 *.bin
 .env
 .env.*

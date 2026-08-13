@@ -20,6 +20,9 @@ jobs:
     environment: npm
     steps:
       - uses: actions/checkout@v5
+      - name: Restore ignored release tooling
+        shell: bash
+        run: bash .github/restore-release-tooling.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
