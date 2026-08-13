@@ -1467,7 +1467,7 @@ fn windows_local_mounts() -> Vec<MountInfo> {
         if !matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE) {
             continue;
         }
-        let root = root.to_vec();
+        let volume_root = root.to_vec();
         let Some((ok, filesystem)) = run_bounded(
             "GetVolumeInformationW",
             std::time::Duration::from_millis(500),
@@ -1475,7 +1475,7 @@ fn windows_local_mounts() -> Vec<MountInfo> {
                 let mut filesystem = [0u16; 32];
                 let ok = unsafe {
                     GetVolumeInformationW(
-                        root.as_ptr(),
+                        volume_root.as_ptr(),
                         std::ptr::null_mut(),
                         0,
                         std::ptr::null_mut(),
