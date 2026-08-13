@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-13
+
+### Reliability
+
+- Bound and cancel Windows client executable authentication so a blocked process-image lookup cannot stall the scanner service handshake or prevent later clients from connecting.
+
 ## [0.1.8] - 2026-08-13
 
 ### Reliability
