@@ -186,6 +186,7 @@ fn build_machine_index(output: &Path) -> Result<(), String> {
             Ok(super::Event::Message(HelperMsg::ScanComplete { mounts, errors })) => {
                 break (mounts, errors);
             }
+            Ok(super::Event::Message(HelperMsg::Error(error))) => return Err(error),
             Ok(super::Event::Fatal(error)) => return Err(error),
             Ok(_) => {}
             Err(_) => return Err("native scanner stopped before completing".into()),
