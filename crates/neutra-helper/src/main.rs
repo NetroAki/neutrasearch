@@ -631,6 +631,17 @@ fn run_protocol<R: Read>(
     watch_mount: Option<(std::path::PathBuf, u32)>,
     stop_requested: Option<&AtomicBool>,
 ) -> Result<()> {
+    run_protocol_with_auth(rin, writer, serve_index, watch_mount, stop_requested, None)
+}
+
+fn run_protocol_with_auth<R: Read>(
+    rin: &mut R,
+    writer: Box<dyn Write + Send>,
+    serve_index: Option<std::path::PathBuf>,
+    watch_mount: Option<(std::path::PathBuf, u32)>,
+    stop_requested: Option<&AtomicBool>,
+    authenticate: Option<&dyn Fn() -> Result<()>>,
+) -> Result<()> {
     let out: ProtocolOutput = Arc::new(Mutex::new(BufWriter::new(writer)));
 
     // Expect Hello first.
@@ -646,6 +657,12 @@ fn run_protocol<R: Read>(
                     arch: std::env::consts::ARCH.to_string(),
                 },
             )?;
+            // The client needs the Hello response before image verification can
+            // complete on Windows. Authentication still happens before any
+            // command is read or executed.
+            if let Some(authenticate) = authenticate {
+                authenticate().context("authenticate pipe client")?;
+            }
         }
         Some(ClientMsg::Hello { proto }) => {
             send(
@@ -1917,6 +1934,60 @@ mod tests {
             read_frame::<_, HelperMsg>(&mut output).unwrap(),
             Some(HelperMsg::Error(error)) if error.contains("not present in the trusted OS mount table")
         ));
+    }
+
+    #[test]
+    fn authentication_runs_after_hello_before_commands() {
+        use std::io::Cursor;
+        use std::sync::Mutex;
+
+        #[derive(Clone)]
+        struct SharedOutput(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedOutput {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut input = Vec::new();
+        write_frame(
+            &mut input,
+            &ClientMsg::Hello {
+                proto: PROTO_VERSION,
+            },
+        )
+        .unwrap();
+        write_frame(&mut input, &ClientMsg::Shutdown).unwrap();
+
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_authenticated = Arc::clone(&authenticated);
+        let callback_output = Arc::clone(&bytes);
+        let authenticate = move || {
+            let mut output = Cursor::new(callback_output.lock().unwrap().clone());
+            assert!(matches!(
+                read_frame::<_, HelperMsg>(&mut output).unwrap(),
+                Some(HelperMsg::Hello { .. })
+            ));
+            callback_authenticated.store(true, Ordering::Release);
+            Ok(())
+        };
+
+        run_protocol_with_auth(
+            &mut Cursor::new(input),
+            Box::new(SharedOutput(Arc::clone(&bytes))),
+            None,
+            None,
+            None,
+            Some(&authenticate),
+        )
+        .unwrap();
+        assert!(authenticated.load(Ordering::Acquire));
     }
 
     #[test]

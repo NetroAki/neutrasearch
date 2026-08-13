@@ -168,28 +168,22 @@ fn service_body() -> Result<()> {
             break;
         }
 
-        if let Err(error) = verify_client(pipe) {
-            service_log(&format!("rejected pipe client: {error:#}"));
-            unsafe {
-                DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
-            }
-            continue;
-        }
-
-        // File owns the pipe handle from here. A cloned handle lets the framed
-        // protocol read and write concurrently while scan workers stream data.
+        // File owns the pipe handle from here. The protocol sends Hello before
+        // authenticating the client because process-image inspection can block.
+        // No command is read until this callback has accepted the client.
         let mut reader = unsafe { File::from_raw_handle(pipe.cast()) };
         let writer = reader.try_clone().context("clone scanner pipe handle")?;
-        if let Err(error) = super::run_protocol(
+        let authenticate = || verify_client(pipe);
+        if let Err(error) = super::run_protocol_with_auth(
             &mut reader,
             Box::new(writer),
             None,
             None,
             Some(&STOP_REQUESTED),
+            Some(&authenticate),
         ) {
             if !STOP_REQUESTED.load(Ordering::Acquire) {
-                service_log(&format!("client protocol ended with error: {error:#}"));
+                service_log(&format!("rejected pipe client: {error:#}"));
             }
         }
         unsafe {
