@@ -4,6 +4,13 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-13
+
+### Reliability
+
+- Surface Windows scanner-service preparation errors instead of leaving the indexing client blocked indefinitely.
+- Close one-shot scanner sessions after unrecoverable preparation errors while keeping the background service available for the next request.
+
 ## [0.1.5] - 2026-08-04
 
 ### Interface
