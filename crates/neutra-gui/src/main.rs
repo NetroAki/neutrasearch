@@ -1333,6 +1333,7 @@ fn scan_via_windows_service(
     // accepting Scan/Search. Do not inspect the server image here: doing so would
     // synchronously inspect the service while it synchronously inspects this
     // process, recreating the cross-authentication deadlock.
+    eprintln!("neutrasearch: service Hello write");
     write_frame(
         &mut input,
         &ClientMsg::Hello {
@@ -1340,6 +1341,7 @@ fn scan_via_windows_service(
         },
     )
     .map_err(|error| format!("cannot contact the installed scanner service: {error}"))?;
+    eprintln!("neutrasearch: service Hello read");
     let hello: Option<HelperMsg> = match read_frame(&mut output) {
         Ok(hello) => hello,
         Err(error) => {
@@ -1365,6 +1367,7 @@ fn scan_via_windows_service(
     };
     let _ = tx.send(Event::Message(hello));
 
+    eprintln!("neutrasearch: service Scan write");
     if let Err(error) = write_frame(&mut input, &ClientMsg::Scan { mounts, roots }) {
         let _ = write_frame(&mut input, &ClientMsg::Shutdown);
         return Err(format!(
@@ -1374,6 +1377,7 @@ fn scan_via_windows_service(
 
     let mut completed = false;
     loop {
+        eprintln!("neutrasearch: service response read");
         match read_frame::<_, HelperMsg>(&mut output) {
             Ok(Some(message)) => {
                 let terminal_error = matches!(message, HelperMsg::Error(_));
