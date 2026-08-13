@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-13
+
+### Reliability
+
+- Trace Windows scanner handshake, command dispatch, and response boundaries to diagnose pipe stalls without logging indexed paths or metadata.
+
 ## [0.1.11] - 2026-08-13
 
 ### Reliability

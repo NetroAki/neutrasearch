@@ -667,6 +667,7 @@ fn run_protocol_with_auth<R: Read>(
                 authenticate().context("authenticate pipe client")?;
                 tracing::info!(target: "neutra_helper::protocol", "client authentication completed");
             }
+            tracing::info!(target: "neutra_helper::protocol", "authentication boundary passed; entering command loop");
         }
         Some(ClientMsg::Hello { proto }) => {
             send(
@@ -713,6 +714,7 @@ fn run_protocol_with_auth<R: Read>(
         );
     }
     let mut scan_threads = Vec::new();
+    tracing::info!(target: "neutra_helper::protocol", "waiting for command frame");
     loop {
         let frame = read_frame(rin);
         if stop_requested.is_some_and(|stop| stop.load(Ordering::Acquire)) {
@@ -722,6 +724,7 @@ fn run_protocol_with_auth<R: Read>(
             return Ok(());
         }
         let msg: Option<ClientMsg> = frame.context("reading command")?;
+        tracing::info!(target: "neutra_helper::protocol", received = msg.is_some(), "command frame read");
         reap_scan_threads(&mut scan_threads);
         match msg {
             None | Some(ClientMsg::Shutdown) => break,
@@ -729,6 +732,7 @@ fn run_protocol_with_auth<R: Read>(
                 send(&out, &HelperMsg::Error("duplicate Hello".into()))?;
             }
             Some(ClientMsg::Scan { mounts, roots }) => {
+                tracing::info!(target: "neutra_helper::protocol", "Scan command dispatch");
                 match prepare_scan(mounts, roots, scan_threads.is_empty()) {
                     Ok((mounts, roots)) => {
                         launch_scans(mounts, roots, &out, None, &mut scan_threads)
