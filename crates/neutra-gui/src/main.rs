@@ -1358,8 +1358,15 @@ fn scan_via_windows_service(
     loop {
         match read_frame::<_, HelperMsg>(&mut output) {
             Ok(Some(message)) => {
+                let terminal_error = matches!(message, HelperMsg::Error(_));
                 completed |= matches!(message, HelperMsg::ScanComplete { .. });
                 let _ = tx.send(Event::Message(message));
+                if terminal_error {
+                    // A service Error ends this one-shot client session. The
+                    // service itself remains alive and accepts the next client.
+                    let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+                    return Ok(true);
+                }
                 if completed {
                     break;
                 }
