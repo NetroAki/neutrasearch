@@ -1327,10 +1327,12 @@ fn scan_via_windows_service(
     let mut input = BufWriter::new(writer);
     let mut output = BufReader::new(pipe);
 
-    // Authenticate the protocol before inspecting the server process. The service
-    // must read Hello before it can reply, so verifying the process first would
-    // block while the service waits for that frame. We still authenticate the
-    // executable before sending any Scan request.
+    // The service is the authority for this pipe: startup validates both installed
+    // binaries under Program Files, the named-pipe ACL excludes remote clients,
+    // and the service authenticates this GUI executable after Hello and before
+    // accepting Scan/Search. Do not inspect the server image here: doing so would
+    // synchronously inspect the service while it synchronously inspects this
+    // process, recreating the cross-authentication deadlock.
     write_frame(
         &mut input,
         &ClientMsg::Hello {
@@ -1363,10 +1365,6 @@ fn scan_via_windows_service(
     };
     let _ = tx.send(Event::Message(hello));
 
-    if let Err(error) = verify_windows_service_server(output.get_ref()) {
-        let _ = write_frame(&mut input, &ClientMsg::Shutdown);
-        return Err(error);
-    }
     if let Err(error) = write_frame(&mut input, &ClientMsg::Scan { mounts, roots }) {
         let _ = write_frame(&mut input, &ClientMsg::Shutdown);
         return Err(format!(
@@ -1422,69 +1420,6 @@ fn windows_scanner_service_installed() -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
-}
-
-#[cfg(target_os = "windows")]
-fn verify_windows_service_server(pipe: &std::fs::File) -> Result<(), String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let handle = pipe.as_raw_handle().cast();
-    let mut pid = 0u32;
-    if unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } == 0 || pid == 0 {
-        return Err(format!(
-            "cannot authenticate the scanner service process: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
-        return Err(format!(
-            "cannot inspect the scanner service process: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut path = vec![0u16; 32_768];
-    let mut length = path.len() as u32;
-    let queried = unsafe { QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length) };
-    let query_error = (queried == 0).then(std::io::Error::last_os_error);
-    unsafe {
-        CloseHandle(process);
-    }
-    if let Some(error) = query_error {
-        return Err(format!(
-            "cannot read the scanner service executable path: {error}"
-        ));
-    }
-    path.truncate(length as usize);
-    let actual = PathBuf::from(String::from_utf16_lossy(&path));
-    let expected = std::env::current_exe()
-        .map_err(|error| format!("cannot locate the installed GUI: {error}"))?
-        .with_file_name("neutrasearch-helper.exe");
-    if !windows_paths_equal(&actual, &expected) {
-        return Err(format!(
-            "refusing an untrusted scanner pipe server at {}; repair the Neutrasearch installation",
-            actual.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_paths_equal(left: &std::path::Path, right: &std::path::Path) -> bool {
-    left.to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .replace('/', "\\")
-        .eq_ignore_ascii_case(
-            &right
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .replace('/', "\\"),
-        )
 }
 
 fn helper_start_failure(summary: &str, stderr: &Arc<Mutex<String>>) -> String {
