@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-13
+
+### Reliability
+
+- Add bounded Windows scanner-service pipe lifecycle diagnostics to identify handshake and client-authentication stalls without exposing file metadata.
+
 ## [0.1.10] - 2026-08-13
 
 ### Reliability

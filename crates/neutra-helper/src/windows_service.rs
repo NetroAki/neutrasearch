@@ -154,6 +154,7 @@ fn service_body() -> Result<()> {
 
     while !STOP_REQUESTED.load(Ordering::Acquire) {
         let pipe = create_pipe().context("create privileged scanner pipe")?;
+        service_log("pipe created; waiting for client");
         let connected = unsafe { ConnectNamedPipe(pipe, null_mut()) };
         if connected == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
             unsafe { CloseHandle(pipe) };
@@ -170,11 +171,13 @@ fn service_body() -> Result<()> {
             break;
         }
 
+        service_log("pipe client connected; entering protocol");
         // File owns the pipe handle from here. The protocol sends Hello before
         // authenticating the client because process-image inspection can block.
         // No command is read until this callback has accepted the client.
         let mut reader = unsafe { File::from_raw_handle(pipe.cast()) };
         let writer = reader.try_clone().context("clone scanner pipe handle")?;
+        service_log("pipe handles cloned; starting protocol Hello exchange");
         let authenticate = || verify_client(pipe);
         if let Err(error) = super::run_protocol_with_auth(
             &mut reader,
@@ -399,10 +402,14 @@ enum AuthEvent {
 }
 
 fn verify_client(pipe: HANDLE) -> Result<()> {
+    service_log("client auth: querying named-pipe client PID");
     let mut pid = 0u32;
     if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 || pid == 0 {
         return Err(std::io::Error::last_os_error()).context("identify pipe client process");
     }
+    service_log(&format!(
+        "client auth: identified PID {pid}; starting image query worker"
+    ));
     // Process-image inspection is a synchronous kernel call. Keep it off the
     // sole service accept thread and cancel it on a deadline so a bad client
     // cannot prevent the next named-pipe client from connecting.
@@ -436,8 +443,12 @@ fn verify_client(pipe: HANDLE) -> Result<()> {
     let mut worker_thread = None;
     loop {
         match events_rx.recv_timeout(CLIENT_AUTH_TIMEOUT) {
-            Ok(AuthEvent::WorkerThread(handle)) => worker_thread = Some(handle),
+            Ok(AuthEvent::WorkerThread(handle)) => {
+                service_log("client auth: image query worker started");
+                worker_thread = Some(handle)
+            }
             Ok(AuthEvent::Finished(result)) => {
+                service_log("client auth: image query worker completed");
                 if let Some(handle) = worker_thread {
                     unsafe { CloseHandle(handle as HANDLE) };
                 }
@@ -447,6 +458,7 @@ fn verify_client(pipe: HANDLE) -> Result<()> {
                 return validate_client_path(&helper, &client);
             }
             Err(RecvTimeoutError::Timeout) => {
+                service_log("client auth: image query timed out after 2 seconds");
                 if let Some(handle) = worker_thread.or_else(|| match events_rx.try_recv() {
                     Ok(AuthEvent::WorkerThread(handle)) => Some(handle),
                     _ => None,
@@ -462,6 +474,7 @@ fn verify_client(pipe: HANDLE) -> Result<()> {
                 anyhow::bail!("pipe client authentication timed out after 2 seconds");
             }
             Err(RecvTimeoutError::Disconnected) => {
+                service_log("client auth: image query worker channel disconnected");
                 let _ = worker.join();
                 anyhow::bail!("pipe client authentication worker stopped unexpectedly");
             }
