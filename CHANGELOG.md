@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-13
+
+### Reliability
+
+- Remove redundant GUI-side Windows service process inspection so the authenticated pipe handshake cannot deadlock before a scan request.
+
 ## [0.1.9] - 2026-08-13
 
 ### Reliability
