@@ -222,7 +222,19 @@ impl CompactIndex {
                 ));
             }
         }
-        lock.try_lock_exclusive()?;
+        match lock.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(error) => {
+                // Windows reports LockFileEx contention as ERROR_LOCK_VIOLATION
+                // (33), which fs2 exposes as Uncategorized rather than WouldBlock.
+                // Keep other lock/open failures intact.
+                #[cfg(windows)]
+                if error.raw_os_error() == Some(33) {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, error));
+                }
+                return Err(error);
+            }
+        }
         let built = Self::build_with_summary(records, path)?;
         match std::fs::remove_file(&delta) {
             Ok(()) => sync_parent(&delta)?,
