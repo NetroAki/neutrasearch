@@ -1321,12 +1321,16 @@ fn scan_via_windows_service(
             }
         }
     };
-    verify_windows_service_server(&pipe)?;
     let writer = pipe
         .try_clone()
         .map_err(|error| format!("cannot clone the scanner service pipe: {error}"))?;
     let mut input = BufWriter::new(writer);
     let mut output = BufReader::new(pipe);
+
+    // Authenticate the protocol before inspecting the server process. The service
+    // must read Hello before it can reply, so verifying the process first would
+    // block while the service waits for that frame. We still authenticate the
+    // executable before sending any Scan request.
     write_frame(
         &mut input,
         &ClientMsg::Hello {
@@ -1334,16 +1338,23 @@ fn scan_via_windows_service(
         },
     )
     .map_err(|error| format!("cannot contact the installed scanner service: {error}"))?;
-    let hello: Option<HelperMsg> = read_frame(&mut output)
-        .map_err(|error| format!("scanner service handshake failed: {error}"))?;
+    let hello: Option<HelperMsg> = match read_frame(&mut output) {
+        Ok(hello) => hello,
+        Err(error) => {
+            let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+            return Err(format!("scanner service handshake failed: {error}"));
+        }
+    };
     let hello = match hello {
         Some(message @ HelperMsg::Hello { proto, .. }) if proto == PROTO_VERSION => message,
         Some(HelperMsg::Hello { proto, .. }) => {
+            let _ = write_frame(&mut input, &ClientMsg::Shutdown);
             return Err(format!(
                 "scanner service protocol mismatch: GUI={PROTO_VERSION}, service={proto}; repair the installation"
             ));
         }
         Some(message) => {
+            let _ = write_frame(&mut input, &ClientMsg::Shutdown);
             return Err(format!(
                 "scanner service returned an invalid handshake: {message:?}"
             ));
@@ -1351,8 +1362,17 @@ fn scan_via_windows_service(
         None => return Err("the installed scanner service closed during handshake".into()),
     };
     let _ = tx.send(Event::Message(hello));
-    write_frame(&mut input, &ClientMsg::Scan { mounts, roots })
-        .map_err(|error| format!("cannot send locations to the scanner service: {error}"))?;
+
+    if let Err(error) = verify_windows_service_server(output.get_ref()) {
+        let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+        return Err(error);
+    }
+    if let Err(error) = write_frame(&mut input, &ClientMsg::Scan { mounts, roots }) {
+        let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+        return Err(format!(
+            "cannot send locations to the scanner service: {error}"
+        ));
+    }
 
     let mut completed = false;
     loop {
@@ -1372,10 +1392,14 @@ fn scan_via_windows_service(
                 }
             }
             Ok(None) => break,
-            Err(error) => return Err(format!("scanner service protocol failed: {error}")),
+            Err(error) => {
+                let _ = write_frame(&mut input, &ClientMsg::Shutdown);
+                return Err(format!("scanner service protocol failed: {error}"));
+            }
         }
     }
     if !completed {
+        let _ = write_frame(&mut input, &ClientMsg::Shutdown);
         return Err("the installed scanner service stopped before completing".into());
     }
     // End this per-client service session explicitly; the service remains

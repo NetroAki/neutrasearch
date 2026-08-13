@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-13
+
+### Reliability
+
+- Complete the Windows scanner handshake before authenticating the helper process, preventing a pre-hello pipe deadlock during indexing.
+
 ## [0.1.6] - 2026-08-13
 
 ### Reliability
