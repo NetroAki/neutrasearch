@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-13
+
+### Reliability
+
+- Bound Windows volume-filesystem metadata discovery so an unavailable local drive cannot stall scan preparation before native indexing begins.
+
 ## [0.1.12] - 2026-08-13
 
 ### Reliability
