@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-13
+
+### Reliability
+
+- Authenticate Windows scanner clients after the protocol greeting but before accepting scan or query commands, preventing service-side pipe handshake deadlocks.
+
 ## [0.1.7] - 2026-08-13
 
 ### Reliability
