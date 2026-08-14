@@ -478,7 +478,8 @@ fn ensure_dir_path(
     entries: &HashMap<u64, Entry>,
     cache: &mut HashMap<u64, String>,
 ) -> bool {
-    if expected_sequence != 0
+    if id != 5
+        && expected_sequence != 0
         && entries
             .get(&id)
             .is_none_or(|entry| entry.sequence != expected_sequence)
@@ -502,7 +503,8 @@ fn ensure_dir_path(
             return false;
         }
         chain.push(current);
-        if e.parent_sequence != 0
+        if e.parent != 5
+            && e.parent_sequence != 0
             && entries
                 .get(&e.parent)
                 .is_none_or(|parent| parent.sequence != e.parent_sequence)
@@ -657,6 +659,25 @@ mod tests {
         assert_eq!(&r[510..512], &[1, 2]);
         assert_eq!(&r[1022..1024], &[3, 4]);
     }
+    #[test]
+    fn root_parent_sequence_uses_the_preseeded_root_path() {
+        let entries = HashMap::from([(
+            6,
+            Entry {
+                parent: 5,
+                parent_sequence: 42,
+                sequence: 1,
+                name: "Windows".into(),
+                size: 0,
+                mtime: 0,
+                dir: true,
+            },
+        )]);
+        let mut cache = HashMap::from([(5, String::new())]);
+        assert!(ensure_dir_path(5, 42, &entries, &mut cache));
+        assert_eq!(cache.get(&5).map(String::as_str), Some(""));
+    }
+
     #[test]
     fn path_cycles_stop() {
         let mut e = HashMap::new();
