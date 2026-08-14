@@ -77,10 +77,21 @@ fn index(args: Vec<std::ffi::OsString>) -> i32 {
         Ok(path) => neutra_core::paths::resolve_index_path(path),
         Err(message) => return error(&message),
     };
-    match build_machine_index(&output) {
+    match build_machine_index_on_large_stack(output) {
         Ok(()) => 0,
         Err(message) => error(&message),
     }
+}
+
+fn build_machine_index_on_large_stack(output: PathBuf) -> Result<(), String> {
+    let worker = std::thread::Builder::new()
+        .name("neutrasearch-index".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || build_machine_index(&output))
+        .map_err(|error| format!("cannot start index builder: {error}"))?;
+    worker
+        .join()
+        .map_err(|_| "the index builder overflowed its stack".to_string())?
 }
 
 fn parse_index(mut args: Vec<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
