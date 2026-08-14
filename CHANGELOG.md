@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-08-14
+
+### Reliability
+
+- Preserve NTFS records whose parent is the pre-seeded MFT root even when the root sequence is not present in the parsed entry map.
+
 ## [0.1.19] - 2026-08-14
 
 ### Reliability
