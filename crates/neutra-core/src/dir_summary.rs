@@ -321,7 +321,7 @@ pub(crate) fn summary_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
             u32::try_from(index).map_err(|_| invalid("too many records for summary order"))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    order.sort_unstable_by(|left, right| {
+    order.sort_by(|left, right| {
         records[*left as usize]
             .source
             .cmp(&records[*right as usize].source)

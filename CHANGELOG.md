@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-08-14
+
+### Reliability
+
+- Use stable heap-backed ordering for the multi-million-record directory-summary sidecar build.
+
 ## [0.1.21] - 2026-08-14
 
 ### Reliability
