@@ -1134,6 +1134,11 @@ fn launch_scans(
     index: Option<&Arc<RwLock<Index>>>,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
 ) {
+    tracing::info!(
+        target: "neutra_helper::protocol",
+        mounts = mounts.len(),
+        "native scan workers launching"
+    );
     let out = Arc::clone(out);
     let index = index.map(Arc::clone);
     threads.push(std::thread::spawn(move || {
@@ -1178,6 +1183,7 @@ fn run_scan(
     out: ProtocolOutput,
     index: Option<Arc<RwLock<Index>>>,
 ) -> bool {
+    tracing::info!(target: "neutra_helper::protocol", "native scan worker started");
     send_lossy(
         &out,
         &HelperMsg::ScanBegin {
@@ -1213,6 +1219,11 @@ fn run_scan(
         };
         dispatch_lane(&mount, &mut sink)
     };
+    tracing::info!(
+        target: "neutra_helper::protocol",
+        success = result.is_ok(),
+        "native scan worker finished"
+    );
 
     match result {
         Ok(mut stats) => {
