@@ -644,28 +644,26 @@ fn compare_key(left_source: u32, left_path: &str, right_source: u32, right_path:
 }
 
 fn compare_paths(left: &str, right: &str) -> Ordering {
-    let mut left = left.bytes();
-    let mut right = right.bytes();
-    loop {
-        let (Some(left), Some(right)) = (left.next(), right.next()) else {
-            return left.size_hint().0.cmp(&right.size_hint().0);
-        };
-        let fold = |byte: u8| {
-            let byte = if byte == b'\\' { b'/' } else { byte };
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            {
-                byte.to_ascii_lowercase()
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                byte
-            }
-        };
-        match fold(left).cmp(&fold(right)) {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let fold = |byte: u8| {
+        let byte = if byte == b'\\' { b'/' } else { byte };
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            byte.to_ascii_lowercase()
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            byte
+        }
+    };
+    for (left, right) in left.iter().zip(right) {
+        match fold(*left).cmp(&fold(*right)) {
             Ordering::Equal => {}
             other => return other,
         }
     }
+    left.len().cmp(&right.len())
 }
 
 fn canonical_path(path: &str) -> String {
