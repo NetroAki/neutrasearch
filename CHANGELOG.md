@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-08-14
+
+### Reliability
+
+- Make compact-index and directory-summary path ordering explicit total byte comparisons for multi-million-record publications.
+
 ## [0.1.23] - 2026-08-14
 
 ### Reliability
