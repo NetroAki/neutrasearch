@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-08-14
+
+### Diagnostics
+
+- Trace the native scan-begin emission boundary without logging indexed paths or metadata.
+
 ## [0.1.16] - 2026-08-14
 
 ### Diagnostics
