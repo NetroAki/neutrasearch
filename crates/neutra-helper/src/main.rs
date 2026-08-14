@@ -1127,6 +1127,7 @@ fn reap_scan_threads(threads: &mut Vec<std::thread::JoinHandle<()>>) {
     }
 }
 
+#[allow(clippy::ptr_arg)]
 fn launch_scans(
     mounts: Vec<MountInfo>,
     roots: Vec<std::path::PathBuf>,
@@ -1162,7 +1163,7 @@ fn launch_scans(
                 errors,
             },
         );
-        return;
+        let _ = threads;
     }
 
     #[cfg(not(target_os = "windows"))]

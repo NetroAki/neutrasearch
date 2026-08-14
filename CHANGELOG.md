@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-08-14
+
+### Reliability
+
+- Keep the Windows service scan path synchronous on the authenticated pipe thread while retaining asynchronous native scans on Unix.
+
 ## [0.1.18] - 2026-08-14
 
 ### Reliability
