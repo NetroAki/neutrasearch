@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-08-14
+
+### Reliability
+
+- Build multi-million-record indexes on a dedicated 16 MiB stack so Windows publication does not overflow the CLI main stack.
+
 ## [0.1.22] - 2026-08-14
 
 ### Reliability
