@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-08-14
+
+### Diagnostics
+
+- Record privacy-safe scan-preparation counts in helper logs to distinguish service discovery stalls from native worker or pipe failures.
+
 ## [0.1.14] - 2026-08-14
 
 ### Reliability
