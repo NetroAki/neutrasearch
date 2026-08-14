@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-08-14
+
+### Diagnostics
+
+- Record privacy-safe native worker lifecycle counts to distinguish scan-worker stalls from Windows service pipe delivery failures.
+
 ## [0.1.15] - 2026-08-14
 
 ### Diagnostics
