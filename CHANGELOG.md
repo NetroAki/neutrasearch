@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-08-14
+
+### Reliability
+
+- Run Windows service scans on the authenticated pipe thread so native scan frames cannot block in a secondary thread before reaching the GUI.
+
 ## [0.1.17] - 2026-08-14
 
 ### Diagnostics

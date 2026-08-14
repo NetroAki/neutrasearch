@@ -1134,16 +1134,17 @@ fn launch_scans(
     index: Option<&Arc<RwLock<Index>>>,
     threads: &mut Vec<std::thread::JoinHandle<()>>,
 ) {
-    tracing::info!(
-        target: "neutra_helper::protocol",
-        mounts = mounts.len(),
-        "native scan workers launching"
-    );
-    let out = Arc::clone(out);
-    let index = index.map(Arc::clone);
-    threads.push(std::thread::spawn(move || {
+    #[cfg(target_os = "windows")]
+    {
+        let out = Arc::clone(out);
+        let index = index.map(Arc::clone);
         let mount_count = mounts.len() as u32;
         let mut errors = 0u32;
+        tracing::info!(
+            target: "neutra_helper::protocol",
+            mounts = mount_count,
+            "native Windows scans running on service pipe thread"
+        );
         for mount in mounts {
             if !run_scan(
                 mount,
@@ -1161,7 +1162,40 @@ fn launch_scans(
                 errors,
             },
         );
-    }));
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::info!(
+            target: "neutra_helper::protocol",
+            mounts = mounts.len(),
+            "native scan workers launching"
+        );
+        let out = Arc::clone(out);
+        let index = index.map(Arc::clone);
+        threads.push(std::thread::spawn(move || {
+            let mount_count = mounts.len() as u32;
+            let mut errors = 0u32;
+            for mount in mounts {
+                if !run_scan(
+                    mount,
+                    &roots,
+                    Arc::clone(&out),
+                    index.as_ref().map(Arc::clone),
+                ) {
+                    errors += 1;
+                }
+            }
+            send_lossy(
+                &out,
+                &HelperMsg::ScanComplete {
+                    mounts: mount_count,
+                    errors,
+                },
+            );
+        }));
+    }
 }
 
 fn send(out: &ProtocolOutput, msg: &HelperMsg) -> Result<()> {
