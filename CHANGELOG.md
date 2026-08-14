@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-08-14
+
+### Reliability
+
+- Use a heap-backed stable compact-order sort so multi-million-record Windows indexes do not overflow the process stack during publication.
+
 ## [0.1.20] - 2026-08-14
 
 ### Reliability
