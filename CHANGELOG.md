@@ -4,6 +4,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-08-14
+
+### Reliability
+
+- Bound all Windows logical-drive discovery calls, including drive-type probing, so unavailable volumes cannot stall native scan preparation.
+
 ## [0.1.13] - 2026-08-13
 
 ### Reliability

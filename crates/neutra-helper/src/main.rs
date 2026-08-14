@@ -1439,12 +1439,29 @@ fn windows_local_mounts() -> Vec<MountInfo> {
 
     const DRIVE_REMOVABLE: u32 = 2;
     const DRIVE_FIXED: u32 = 3;
-    let required = unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) };
+    let Some(required) = run_bounded(
+        "GetLogicalDriveStringsW(length)",
+        std::time::Duration::from_millis(500),
+        || unsafe { GetLogicalDriveStringsW(0, std::ptr::null_mut()) },
+    ) else {
+        return Vec::new();
+    };
     if required == 0 {
         return Vec::new();
     }
-    let mut buffer = vec![0u16; required as usize + 1];
-    let written = unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
+    let capacity = required as usize + 1;
+    let Some((written, buffer)) = run_bounded(
+        "GetLogicalDriveStringsW(values)",
+        std::time::Duration::from_millis(500),
+        move || {
+            let mut buffer = vec![0u16; capacity];
+            let written =
+                unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
+            (written, buffer)
+        },
+    ) else {
+        return Vec::new();
+    };
     if written == 0 || written as usize >= buffer.len() {
         return Vec::new();
     }
@@ -1463,7 +1480,15 @@ fn windows_local_mounts() -> Vec<MountInfo> {
         }
         let root = &buffer[offset..offset + length + 1];
         offset += length + 1;
-        let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+        let drive_root = root.to_vec();
+        let Some(drive_type) = run_bounded(
+            "GetDriveTypeW",
+            std::time::Duration::from_millis(500),
+            move || unsafe { GetDriveTypeW(drive_root.as_ptr()) },
+        ) else {
+            tracing::warn!(drive = %String::from_utf16_lossy(&root[..length]), "skipping drive after drive-type timeout");
+            continue;
+        };
         if !matches!(drive_type, DRIVE_FIXED | DRIVE_REMOVABLE) {
             continue;
         }
