@@ -731,7 +731,7 @@ fn compact_record_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
         return Err(invalid("compact index supports at most u32::MAX records"));
     }
     let mut order = (0..records.len() as u32).collect::<Vec<_>>();
-    order.sort_unstable_by(|left, right| {
+    order.sort_by(|left, right| {
         compare_index_paths(
             records[*left as usize].path.as_ref(),
             records[*right as usize].path.as_ref(),
