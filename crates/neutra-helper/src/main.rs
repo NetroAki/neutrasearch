@@ -1190,6 +1190,7 @@ fn run_scan(
             mount: mount.clone(),
         },
     );
+    tracing::info!(target: "neutra_helper::protocol", "native scan begin emitted");
 
     let started = Instant::now();
     let mountpoint = mount.mountpoint.clone();
