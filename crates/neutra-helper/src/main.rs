@@ -989,6 +989,12 @@ fn prepare_scan(
 ) -> Result<(Vec<MountInfo>, Vec<std::path::PathBuf>)> {
     let mounts = resolve_scan_mounts(requested, discover_local_mounts(), idle)?;
     let roots = validate_scan_roots(roots, &mounts)?;
+    tracing::info!(
+        target: "neutra_helper::protocol",
+        mounts = mounts.len(),
+        roots = roots.len(),
+        "scan preparation complete"
+    );
     Ok((mounts, roots))
 }
 
