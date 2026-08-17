@@ -3,7 +3,7 @@
 /docs/
 /scripts/
 /packaging/
-/packages/pi-neutrasearch/
+/packages/pi-neutrasearch/node_modules/
 __pycache__/
 *.pyc
 *.nsx

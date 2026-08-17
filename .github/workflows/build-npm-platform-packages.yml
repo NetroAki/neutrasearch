@@ -6,10 +6,16 @@ on:
       version:
         description: Neutrasearch binary package version
         required: true
-        default: '0.1.0'
+        default: '0.1.24'
+      publish:
+        description: Publish platform packages to npm (trusted publishing)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build:
@@ -33,6 +39,7 @@ jobs:
             target: aarch64-apple-darwin
             package: neutrasearch-darwin-arm64
     runs-on: ${{ matrix.os }}
+    environment: npm
     steps:
       - uses: actions/checkout@v5
       - name: Restore ignored release tooling
@@ -66,6 +73,12 @@ jobs:
           --version "${{ inputs.version }}"
       - name: Pack platform npm package
         run: npm pack
+        working-directory: dist/npm/${{ matrix.package }}
+      - name: Publish platform npm package
+        if: inputs.publish
+        run: >-
+          npm install --global npm@latest &&
+          npm publish --access public --provenance
         working-directory: dist/npm/${{ matrix.package }}
       - uses: actions/upload-artifact@v4
         with:
