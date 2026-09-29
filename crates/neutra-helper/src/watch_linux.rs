@@ -124,6 +124,29 @@ impl FanotifyWatcher {
         Ok(WatchBatch::Changes(changes.into_values().collect()))
     }
 
+    /// Block until events are readable or the timeout elapses. Returns true
+    /// when a subsequent read_batch will not block. Used to coalesce event
+    /// bursts before committing them.
+    pub fn wait_readable(&self, timeout: std::time::Duration) -> io::Result<bool> {
+        let mut fds = [libc::pollfd {
+            fd: self.events.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        loop {
+            let ready =
+                unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            return Ok(ready > 0);
+        }
+    }
+
     /// Returns true when a raced/deleted handle makes this batch ambiguous.
     fn collect_event(
         &self,
@@ -364,6 +387,7 @@ fn make_record(
     FileRecord {
         path: path.to_string_lossy().into_owned().into_boxed_str(),
         size: stat.st_size.max(0) as u64,
+        disk: (stat.st_blocks.max(0) as u64).saturating_mul(512),
         mtime: stat.st_mtime,
         mode: stat.st_mode,
         kind,

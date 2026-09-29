@@ -2226,8 +2226,8 @@ dependencies = [
  "libc",
  "memmap2",
  "rayon",
+ "regex",
  "serde",
- "thiserror 2.0.19",
  "zstd",
 ]
 
@@ -2258,6 +2258,7 @@ dependencies = [
  "serde_json",
  "windows-sys 0.61.2",
  "winresource",
+ "zstd",
 ]
 
 [[package]]
@@ -2326,10 +2327,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "neutra-watch"
+version = "0.1.24"
+dependencies = [
+ "neutra-core",
+]
+
+[[package]]
 name = "neutra-zfs"
 version = "0.1.24"
 dependencies = [
  "anyhow",
+ "libc",
  "neutra-core",
 ]
 

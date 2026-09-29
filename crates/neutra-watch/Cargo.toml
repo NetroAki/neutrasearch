@@ -1,0 +1,12 @@
+[package]
+name = "neutra-watch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neutrasearch-watch"
+path = "src/main.rs"
+
+[dependencies]
+neutra-core.workspace = true

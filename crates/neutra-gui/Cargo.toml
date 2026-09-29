@@ -15,6 +15,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex = "1"
+zstd.workspace = true
 arboard = { version = "3", default-features = false }
 eframe = { version = "0.34", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui = "0.34"

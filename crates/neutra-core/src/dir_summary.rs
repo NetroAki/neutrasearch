@@ -6,33 +6,47 @@
 //! complete records, while this projection lets file-manager views open a
 //! folder hierarchy without decoding every compact record.
 
-use crate::{CompactIndex, DeltaChange, DeltaIndex, FileKind, FileRecord};
+use crate::{FileKind, FileRecord};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufWriter, Read, Write};
+ use std::io::{self, Read, Write};
+ #[cfg(test)]
+ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"NEUDIR01";
-const VERSION: u32 = 1;
+pub(crate) const MAGIC: &[u8; 8] = b"NEUDIR01";
+ pub(crate) const VERSION: u32 = 2;
+ /// Oldest readable sidecar layout. Version 1 entries lack on-disk totals;
+ /// they decode through the frozen layout with physical bytes unset.
+ pub(crate) const MIN_READABLE_VERSION: u32 = 1;
 const PREFIX_BYTES: usize = 20;
 const TRAILER_BYTES: usize = 12;
-const MAX_SIDECAR_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+  /// Upper bound for the compressed sidecar file. A 100M-record host writes a
+  /// ~1 GiB sidecar, so the cap must admit real files; corrupt input stays
+  /// contained by the compressed-bytes checksum plus the stream bound below.
+  const MAX_SIDECAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+ /// Decompressed payload bound. A 100M-record host holds ~20 GiB of
+ /// directory entries. Decoding streams without upfront allocation, so the
+ /// bound only caps how much a corrupt stream may yield.
+ const MAX_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
-struct PathKey {
-    source: u32,
-    path: String,
+pub(crate) struct PathKey {
+    pub(crate) source: u32,
+    /// Precomputed canonical form; hashing/equality run per lookup, and
+    /// canonicalizing on the fly allocates per hash.
+    pub(crate) canonical: String,
 }
 
-type Key = PathKey;
+pub(crate) type Key = PathKey;
 
 impl PartialEq for PathKey {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source && canonical_path(&self.path) == canonical_path(&other.path)
+        self.source == other.source && self.canonical == other.canonical
     }
 }
 
@@ -41,7 +55,7 @@ impl Eq for PathKey {}
 impl Hash for PathKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.source.hash(state);
-        canonical_path(&self.path).hash(state);
+        self.canonical.hash(state);
     }
 }
 
@@ -53,6 +67,8 @@ pub struct DirectoryChild {
     /// For files this is the file's logical size; for directories it is the
     /// aggregate logical size of the directory subtree.
     pub logical_bytes: u64,
+    #[serde(default)]
+    pub physical_bytes: u64,
     pub file_count: u64,
     pub directory_count: u64,
 }
@@ -63,6 +79,8 @@ pub struct DirectorySummaryEntry {
     pub source: u32,
     pub path: Box<str>,
     pub logical_bytes: u64,
+    #[serde(default)]
+    pub physical_bytes: u64,
     pub file_count: u64,
     pub directory_count: u64,
     pub children: Vec<DirectoryChild>,
@@ -76,14 +94,17 @@ pub struct DirectorySummary {
 }
 
 impl DirectorySummary {
-    /// Build and atomically publish the sidecar next to `index_path`.
-    pub fn build(records: &[FileRecord], index_path: &Path, generation: u64) -> io::Result<Self> {
+     /// Build and atomically publish the sidecar next to `index_path`.
+     /// Test-only: production builds stream through the spill.
+     #[cfg(test)]
+     pub fn build(records: &[FileRecord], index_path: &Path, generation: u64) -> io::Result<Self> {
         let order = summary_order(records)?;
         write_sidecar_from_order(records, &order, index_path, generation)?;
         Self::open_for_compact(index_path, generation)
     }
 
-    pub(crate) fn build_sidecar_ordered(
+     #[cfg(test)]
+     pub(crate) fn build_sidecar_ordered(
         records: &[FileRecord],
         order: &[u32],
         index_path: &Path,
@@ -164,6 +185,7 @@ impl DirectorySummary {
             }
             if let Some(summary) = self.get(source, &child.path) {
                 child.logical_bytes = summary.logical_bytes;
+                child.physical_bytes = summary.physical_bytes;
                 child.file_count = summary.file_count;
                 child.directory_count = summary.directory_count;
             }
@@ -171,22 +193,17 @@ impl DirectorySummary {
         Some(children)
     }
 
-    #[cfg(test)]
-    fn from_records(records: &[FileRecord], generation: u64) -> io::Result<Self> {
-        let order = summary_order(records)?;
-        let mut entries = Vec::new();
-        emit_records(records, &order, |entry| {
-            entries.push(entry);
-            Ok(())
-        })?;
-        entries.sort_unstable_by(|left, right| {
-            compare_key(left.source, &left.path, right.source, &right.path)
-        });
-        Ok(Self {
-            generation,
-            entries,
-        })
-    }
+     #[cfg(test)]
+     fn from_records(records: &[FileRecord], generation: u64) -> io::Result<Self> {
+         let mut entries = aggregate_records(records)?;
+         entries.sort_unstable_by(|left, right| {
+             compare_key(left.source, &left.path, right.source, &right.path)
+         });
+         Ok(Self {
+             generation,
+             entries,
+         })
+     }
 }
 
 fn emit_records<F>(records: &[FileRecord], order: &[u32], mut emit: F) -> io::Result<()>
@@ -233,6 +250,7 @@ where
         for entry in &mut stack {
             if contributes_file {
                 entry.logical_bytes = entry.logical_bytes.saturating_add(record.size);
+                entry.physical_bytes = entry.physical_bytes.saturating_add(record.disk_bytes());
                 entry.file_count = entry.file_count.saturating_add(1);
             }
         }
@@ -241,6 +259,7 @@ where
                 path: normalized_path.clone().into_boxed_str(),
                 kind: record.kind,
                 logical_bytes: record.size,
+                physical_bytes: record.disk_bytes(),
                 file_count: u64::from(contributes_file),
                 directory_count: 0,
             });
@@ -249,13 +268,14 @@ where
     close_stack(&mut stack, 0, &mut emit)
 }
 
-struct OpenEntry {
-    source: u32,
-    path: String,
-    logical_bytes: u64,
-    file_count: u64,
-    directory_count: u64,
-    children: Vec<DirectoryChild>,
+pub(crate) struct OpenEntry {
+    pub(crate) source: u32,
+    pub(crate) path: String,
+    pub(crate) logical_bytes: u64,
+    pub(crate) physical_bytes: u64,
+    pub(crate) file_count: u64,
+    pub(crate) directory_count: u64,
+    pub(crate) children: Vec<DirectoryChild>,
 }
 
 impl OpenEntry {
@@ -268,6 +288,7 @@ impl OpenEntry {
             source: self.source,
             path: self.path.into_boxed_str(),
             logical_bytes: self.logical_bytes,
+            physical_bytes: self.physical_bytes,
             file_count: self.file_count,
             directory_count: self.directory_count,
             children: self.children,
@@ -275,12 +296,13 @@ impl OpenEntry {
     }
 }
 
-fn open_entry(stack: &mut Vec<OpenEntry>, source: u32, path: &str) {
+pub(crate) fn open_entry(stack: &mut Vec<OpenEntry>, source: u32, path: &str) {
     if let Some(parent) = stack.last_mut() {
         parent.children.push(DirectoryChild {
             path: path.to_owned().into_boxed_str(),
             kind: FileKind::Dir,
             logical_bytes: 0,
+            physical_bytes: 0,
             file_count: 0,
             directory_count: 0,
         });
@@ -289,13 +311,14 @@ fn open_entry(stack: &mut Vec<OpenEntry>, source: u32, path: &str) {
         source,
         path: path.to_owned(),
         logical_bytes: 0,
+        physical_bytes: 0,
         file_count: 0,
         directory_count: 0,
         children: Vec::new(),
     });
 }
 
-fn close_stack<F>(stack: &mut Vec<OpenEntry>, keep: usize, emit: &mut F) -> io::Result<()>
+pub(crate) fn close_stack<F>(stack: &mut Vec<OpenEntry>, keep: usize, emit: &mut F) -> io::Result<()>
 where
     F: FnMut(DirectorySummaryEntry) -> io::Result<()>,
 {
@@ -306,6 +329,7 @@ where
                 child.kind == FileKind::Dir && child.path.as_ref() == finished.path.as_ref()
             }) {
                 child.logical_bytes = finished.logical_bytes;
+                child.physical_bytes = finished.physical_bytes;
                 child.file_count = finished.file_count;
                 child.directory_count = finished.directory_count;
             }
@@ -321,7 +345,7 @@ pub(crate) fn summary_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
             u32::try_from(index).map_err(|_| invalid("too many records for summary order"))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    order.sort_by(|left, right| {
+    order.par_sort_by(|left, right| {
         records[*left as usize]
             .source
             .cmp(&records[*right as usize].source)
@@ -335,7 +359,8 @@ pub(crate) fn summary_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
     Ok(order)
 }
 
-fn write_sidecar_from_order(
+ #[cfg(test)]
+ fn write_sidecar_from_order(
     records: &[FileRecord],
     order: &[u32],
     index_path: &Path,
@@ -386,9 +411,9 @@ fn write_sidecar_from_order(
     sync_parent(&destination)
 }
 
-struct HashingWriter<W> {
-    inner: W,
-    hasher: crc32fast::Hasher,
+pub(crate) struct HashingWriter<W> {
+    pub(crate) inner: W,
+    pub(crate) hasher: crc32fast::Hasher,
 }
 
 impl<W: Write> Write for HashingWriter<W> {
@@ -403,237 +428,12 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct SummaryDelta {
-    logical_bytes: i128,
-    file_count: i128,
-    directory_count: i128,
-}
 
-/// An in-memory delta projection for live filesystem changes. It never writes
-/// the sidecar; compaction publishes a fresh generation-bound projection.
-pub struct DirectorySummaryOverlay {
-    base: DirectorySummary,
-    adjustments: HashMap<Key, SummaryDelta>,
-    child_changes: HashMap<Key, HashMap<String, Option<DirectoryChild>>>,
-}
 
-impl DirectorySummaryOverlay {
-    pub fn from_delta(
-        base: DirectorySummary,
-        compact: &CompactIndex,
-        delta: &DeltaIndex,
-    ) -> io::Result<Self> {
-        let mut overlay = Self {
-            base,
-            adjustments: HashMap::new(),
-            child_changes: HashMap::new(),
-        };
-        for record in delta.upserts() {
-            let previous = compact.records_by_path(record.path.as_ref())?;
-            overlay.apply_change(&DeltaChange::Upsert(record.clone()), &previous)?;
-        }
-        for path in delta.removed() {
-            let previous = compact.records_by_path(path)?;
-            if !previous.is_empty() {
-                overlay.apply_change(&DeltaChange::Remove(path.clone()), &previous)?;
-            }
-        }
-        Ok(overlay)
-    }
-
-    pub fn apply_change(
-        &mut self,
-        change: &DeltaChange,
-        previous: &[FileRecord],
-    ) -> io::Result<()> {
-        match change {
-            DeltaChange::Upsert(record) => {
-                for previous in previous {
-                    self.adjust_record(previous, -1)?;
-                    self.set_child(previous, None)?;
-                }
-                self.adjust_record(record, 1)?;
-                self.set_child(record, Some(child_for_record(record)))?;
-            }
-            DeltaChange::Remove(path) => {
-                if previous.is_empty() {
-                    return Err(invalid(format!(
-                        "directory summary removal requires the previous record for {}",
-                        path
-                    )));
-                }
-                let normalized = normalize_path(path)?;
-                for previous in previous {
-                    let previous_path = normalize_path(previous.path.as_ref())?;
-                    if canonical_path(&previous_path) != canonical_path(&normalized) {
-                        return Err(invalid(
-                            "directory summary removal path does not match record",
-                        ));
-                    }
-                    self.adjust_record(previous, -1)?;
-                    self.set_child(previous, None)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn get(&self, source: u32, path: &str) -> io::Result<Option<DirectorySummaryEntry>> {
-        let normalized = normalize_path(path)?;
-        let Some(mut entry) = self.aggregate_entry(source, &normalized) else {
-            return Ok(None);
-        };
-        entry.children = self.children(source, &normalized)?;
-        Ok(Some(entry))
-    }
-
-    fn aggregate_entry(&self, source: u32, normalized: &str) -> Option<DirectorySummaryEntry> {
-        let base = self.base.get(source, normalized).cloned();
-        let delta = self
-            .adjustments
-            .get(&entry_key(source, normalized))
-            .copied()
-            .unwrap_or_default();
-        if base.is_none()
-            && delta.logical_bytes == 0
-            && delta.file_count == 0
-            && delta.directory_count == 0
-        {
-            return None;
-        }
-        let mut entry = base.unwrap_or_else(|| DirectorySummaryEntry {
-            source,
-            path: normalized.to_owned().into_boxed_str(),
-            logical_bytes: 0,
-            file_count: 0,
-            directory_count: 0,
-            children: Vec::new(),
-        });
-        entry.logical_bytes = apply_unsigned_delta(entry.logical_bytes, delta.logical_bytes);
-        entry.file_count = apply_unsigned_delta(entry.file_count, delta.file_count);
-        entry.directory_count = apply_unsigned_delta(entry.directory_count, delta.directory_count);
-        Some(entry)
-    }
-
-    pub fn children(&self, source: u32, path: &str) -> io::Result<Vec<DirectoryChild>> {
-        let normalized = normalize_path(path)?;
-        let parent_key = entry_key(source, &normalized);
-        let mut children = self.base.children(source, &normalized).unwrap_or_default();
-        let mut positions = children
-            .iter()
-            .enumerate()
-            .map(|(index, child)| (canonical_path(&child.path), index))
-            .collect::<HashMap<_, _>>();
-        if let Some(changes) = self.child_changes.get(&parent_key) {
-            for (key, change) in changes {
-                match change {
-                    Some(child) => {
-                        if let Some(index) = positions.get(key).copied() {
-                            children[index] = child.clone();
-                        } else {
-                            positions.insert(key.clone(), children.len());
-                            children.push(child.clone());
-                        }
-                    }
-                    None => {
-                        if let Some(index) = positions.remove(key) {
-                            children.swap_remove(index);
-                            positions = children
-                                .iter()
-                                .enumerate()
-                                .map(|(index, child)| (canonical_path(&child.path), index))
-                                .collect();
-                        }
-                    }
-                }
-            }
-        }
-        for child in &mut children {
-            if child.kind == FileKind::Dir {
-                if let Some(entry) = self.aggregate_entry(source, &child.path) {
-                    child.logical_bytes = entry.logical_bytes;
-                    child.file_count = entry.file_count;
-                    child.directory_count = entry.directory_count;
-                }
-            }
-        }
-        children.sort_unstable_by(|left, right| {
-            compare_paths(&left.path, &right.path)
-                .then_with(|| left.kind_rank().cmp(&right.kind_rank()))
-        });
-        Ok(children)
-    }
-
-    fn adjust_record(&mut self, record: &FileRecord, sign: i128) -> io::Result<()> {
-        let normalized = normalize_path(record.path.as_ref())?;
-        let ancestors = ancestor_paths(&normalized);
-        let parent_ancestors = ancestors
-            .get(..ancestors.len().saturating_sub(1))
-            .unwrap_or_default();
-        let contributes_file = matches!(record.kind, FileKind::File | FileKind::Symlink);
-        for ancestor in parent_ancestors {
-            let delta = self
-                .adjustments
-                .entry(entry_key(record.source, ancestor))
-                .or_default();
-            if contributes_file {
-                delta.logical_bytes += sign * i128::from(record.size);
-                delta.file_count += sign;
-            }
-            if record.kind == FileKind::Dir {
-                delta.directory_count += sign;
-            }
-        }
-        if record.kind == FileKind::Dir {
-            self.adjustments
-                .entry(entry_key(record.source, &normalized))
-                .or_default();
-        }
-        Ok(())
-    }
-
-    fn set_child(&mut self, record: &FileRecord, child: Option<DirectoryChild>) -> io::Result<()> {
-        let normalized = normalize_path(record.path.as_ref())?;
-        let parent = parent_path(&normalized);
-        self.child_changes
-            .entry(entry_key(record.source, &parent))
-            .or_default()
-            .insert(canonical_path(&normalized), child);
-        Ok(())
-    }
-}
-
-fn child_for_record(record: &FileRecord) -> DirectoryChild {
-    DirectoryChild {
-        path: normalize_path(record.path.as_ref())
-            .unwrap_or_else(|_| record.path.to_string())
-            .into_boxed_str(),
-        kind: record.kind,
-        logical_bytes: if record.kind == FileKind::Dir {
-            0
-        } else {
-            record.size
-        },
-        file_count: u64::from(matches!(record.kind, FileKind::File | FileKind::Symlink)),
-        directory_count: 0,
-    }
-}
-
-fn apply_unsigned_delta(value: u64, delta: i128) -> u64 {
-    let max = i128::from(u64::MAX);
-    if delta >= 0 {
-        value.saturating_add(delta.min(max) as u64)
-    } else {
-        let amount = delta.checked_neg().unwrap_or(i128::MAX).min(max) as u64;
-        value.saturating_sub(amount)
-    }
-}
-
-fn entry_key(source: u32, path: &str) -> Key {
+pub(crate) fn entry_key(source: u32, path: &str) -> Key {
     PathKey {
         source,
-        path: path.to_owned(),
+        canonical: canonical_path(path),
     }
 }
 
@@ -643,7 +443,7 @@ fn compare_key(left_source: u32, left_path: &str, right_source: u32, right_path:
         .then_with(|| compare_paths(left_path, right_path))
 }
 
-fn compare_paths(left: &str, right: &str) -> Ordering {
+pub(crate) fn compare_paths(left: &str, right: &str) -> Ordering {
     let left = left.as_bytes();
     let right = right.as_bytes();
     let fold = |byte: u8| {
@@ -666,7 +466,7 @@ fn compare_paths(left: &str, right: &str) -> Ordering {
     left.len().cmp(&right.len())
 }
 
-fn canonical_path(path: &str) -> String {
+pub(crate) fn canonical_path(path: &str) -> String {
     let path = path.replace('\\', "/");
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
@@ -678,7 +478,7 @@ fn canonical_path(path: &str) -> String {
     }
 }
 
-fn normalize_path(path: &str) -> io::Result<String> {
+pub(crate) fn normalize_path(path: &str) -> io::Result<String> {
     let replaced = path.replace('\\', "/");
     let absolute = replaced.starts_with('/')
         || (replaced.len() >= 3
@@ -716,7 +516,7 @@ fn normalize_path(path: &str) -> io::Result<String> {
     Ok(normalized)
 }
 
-fn parent_path(path: &str) -> String {
+pub(crate) fn parent_path(path: &str) -> String {
     let normalized = normalize_path(path).unwrap_or_else(|_| path.to_owned());
     if normalized == "/" || is_volume_root(&normalized) {
         return "/".into();
@@ -735,7 +535,7 @@ fn parent_path(path: &str) -> String {
     )
 }
 
-fn ancestor_paths(path: &str) -> Vec<String> {
+pub(crate) fn ancestor_paths(path: &str) -> Vec<String> {
     let normalized = normalize_path(path).unwrap_or_else(|_| path.to_owned());
     let mut out = vec!["/".to_owned()];
     if is_drive_path(&normalized) {
@@ -791,7 +591,7 @@ fn is_volume_root(path: &str) -> bool {
     false
 }
 
-fn directory_summary_path(index_path: &Path) -> PathBuf {
+pub(crate) fn directory_summary_path(index_path: &Path) -> PathBuf {
     let mut value = index_path.as_os_str().to_os_string();
     value.push(".dirs");
     value.into()
@@ -821,7 +621,7 @@ fn sidecar_generation(bytes: &[u8]) -> io::Result<u64> {
         return Err(invalid("not a Neutrasearch directory summary"));
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if version != VERSION {
+    if version != VERSION && version != MIN_READABLE_VERSION {
         return Err(invalid("unsupported directory summary version"));
     }
     let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
@@ -837,50 +637,156 @@ fn sidecar_generation(bytes: &[u8]) -> io::Result<u64> {
     Ok(generation)
 }
 
-fn decode_sidecar(bytes: &[u8]) -> io::Result<(u64, Vec<DirectorySummaryEntry>)> {
-    if bytes.len() < PREFIX_BYTES + TRAILER_BYTES || &bytes[..8] != MAGIC {
-        return Err(invalid("not a Neutrasearch directory summary"));
+ /// Read one sidecar frame in the layout selected by the file version.
+ /// Version comes from the sidecar header, never from probing the frame:
+ /// old and new frames share a bincode prefix, so sniffing misdecodes.
+ fn decode_entry(version: u32, frame: &[u8]) -> bincode::Result<DirectorySummaryEntry> {
+     if version == VERSION {
+         bincode::deserialize(frame)
+     } else {
+         Ok(DirectorySummaryEntry::from(
+             bincode::deserialize::<OldSummaryEntry>(frame)?,
+         ))
+     }
+ }
+
+/// Frozen pre-physical entry layout, for sidecars written by older binaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OldSummaryEntry {
+    source: u32,
+    path: Box<str>,
+    logical_bytes: u64,
+    file_count: u64,
+    directory_count: u64,
+    children: Vec<OldSummaryChild>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OldSummaryChild {
+    path: Box<str>,
+    kind: FileKind,
+    logical_bytes: u64,
+    file_count: u64,
+    directory_count: u64,
+}
+
+impl From<OldSummaryEntry> for DirectorySummaryEntry {
+    fn from(old: OldSummaryEntry) -> Self {
+        Self {
+            source: old.source,
+            path: old.path,
+            logical_bytes: old.logical_bytes,
+            physical_bytes: 0,
+            file_count: old.file_count,
+            directory_count: old.directory_count,
+            children: old.children.into_iter().map(DirectoryChild::from).collect(),
+        }
     }
-    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if version != VERSION {
-        return Err(invalid("unsupported directory summary version"));
+}
+
+impl From<OldSummaryChild> for DirectoryChild {
+    fn from(old: OldSummaryChild) -> Self {
+        Self {
+            path: old.path,
+            kind: old.kind,
+            logical_bytes: old.logical_bytes,
+            physical_bytes: 0,
+            file_count: old.file_count,
+            directory_count: old.directory_count,
+        }
     }
-    let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
-    let trailer = bytes.len() - TRAILER_BYTES;
-    let uncompressed = u64::from_le_bytes(bytes[trailer..trailer + 8].try_into().unwrap());
-    if generation == 0 || uncompressed > MAX_UNCOMPRESSED_BYTES {
-        return Err(invalid("invalid directory summary header"));
-    }
-    let expected_crc = u32::from_le_bytes(bytes[trailer + 8..].try_into().unwrap());
-    let compressed = &bytes[PREFIX_BYTES..trailer];
-    if crc32fast::hash(compressed) != expected_crc {
-        return Err(invalid("directory summary checksum mismatch"));
-    }
-    let payload = zstd::bulk::decompress(compressed, uncompressed as usize).map_err(codec)?;
-    let mut cursor = 0usize;
-    let mut entries = Vec::new();
-    while cursor < payload.len() {
-        let length_end = cursor
-            .checked_add(4)
-            .ok_or_else(|| invalid("directory summary frame offset overflow"))?;
-        let length = u32::from_le_bytes(
-            payload
-                .get(cursor..length_end)
-                .ok_or_else(|| invalid("truncated directory summary frame length"))?
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        cursor = length_end;
-        let frame_end = cursor
-            .checked_add(length)
-            .ok_or_else(|| invalid("directory summary frame length overflow"))?;
-        let frame = payload
-            .get(cursor..frame_end)
-            .ok_or_else(|| invalid("truncated directory summary frame"))?;
-        entries.push(bincode::deserialize(frame).map_err(codec)?);
-        cursor = frame_end;
-    }
-    validate_entries(&entries)?;
+}
+
+ /// Aggregate records into summary entries in file order, unsorted. The tree
+ /// builds straight from these; callers needing binary search sort them.
+ pub fn aggregate_records(
+     records: &[FileRecord],
+ ) -> io::Result<Vec<DirectorySummaryEntry>> {
+     let order = summary_order(records)?;
+     let mut entries = Vec::new();
+     emit_records(records, &order, |entry| {
+         entries.push(entry);
+         Ok(())
+     })?;
+     Ok(entries)
+ }
+
+ /// Walk validated frames in file order, emitting each entry without
+ /// retaining the payload. Skips the entry sort and cross-entry validation
+ /// of decode_sidecar: consumers that need binary search or parent/child
+ /// consistency use decode_sidecar. Returns the file layout version and
+ /// base generation from the header.
+ fn walk_frames(
+     bytes: &[u8],
+     emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
+ ) -> io::Result<(u32, u64)> {
+     if bytes.len() < PREFIX_BYTES + TRAILER_BYTES || &bytes[..8] != MAGIC {
+         return Err(invalid("not a Neutrasearch directory summary"));
+     }
+     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+     if version != VERSION && version != MIN_READABLE_VERSION {
+         return Err(invalid("unsupported directory summary version"));
+     }
+     let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+     let trailer = bytes.len() - TRAILER_BYTES;
+     let uncompressed = u64::from_le_bytes(bytes[trailer..trailer + 8].try_into().unwrap());
+     if generation == 0 || uncompressed > MAX_UNCOMPRESSED_BYTES {
+         return Err(invalid("invalid directory summary header"));
+     }
+     let expected_crc = u32::from_le_bytes(bytes[trailer + 8..].try_into().unwrap());
+     let compressed = &bytes[PREFIX_BYTES..trailer];
+     if crc32fast::hash(compressed) != expected_crc {
+         return Err(invalid("directory summary checksum mismatch"));
+     }
+     // Parse length-prefixed frames incrementally: buffering the whole
+     // payload would pin ~20 GiB on a 100M-record host. Only complete
+     // frames plus one read chunk are retained.
+     let decoder = zstd::stream::Decoder::new(compressed).map_err(codec)?;
+     let mut decoder = decoder;
+     let mut buf = Vec::new();
+     let mut chunk = vec![0u8; 1024 * 1024];
+     loop {
+         let mut cursor = 0usize;
+         loop {
+             if buf.len() - cursor < 4 {
+                 break;
+             }
+             let length = u32::from_le_bytes(
+                 buf[cursor..cursor + 4].try_into().unwrap(),
+             ) as usize;
+             let frame_end = cursor
+                 .checked_add(4)
+                 .and_then(|start| start.checked_add(length))
+                 .ok_or_else(|| invalid("directory summary frame length overflow"))?;
+             if frame_end > buf.len() {
+                 break;
+             }
+             emit(decode_entry(version, &buf[cursor + 4..frame_end]).map_err(codec)?)?;
+             cursor = frame_end;
+         }
+         buf.drain(..cursor);
+         let read = decoder.read(&mut chunk).map_err(codec)?;
+         if read == 0 {
+             if !buf.is_empty() {
+                 return Err(invalid("truncated directory summary frame"));
+             }
+             break;
+         }
+         buf.extend_from_slice(&chunk[..read]);
+         if buf.len() as u64 > MAX_UNCOMPRESSED_BYTES + 1 {
+             return Err(invalid("directory summary payload exceeds safety cap"));
+         }
+     }
+     Ok((version, generation))
+ }
+
+ fn decode_sidecar(bytes: &[u8]) -> io::Result<(u64, Vec<DirectorySummaryEntry>)> {
+     let mut entries = Vec::new();
+     let (_, generation) = walk_frames(bytes, &mut |entry| {
+         entries.push(entry);
+         Ok(())
+     })?;
+     validate_entries(&entries)?;
     entries.sort_unstable_by(|left, right| {
         compare_key(left.source, &left.path, right.source, &right.path)
     });
@@ -914,7 +820,7 @@ fn validate_entries(entries: &[DirectorySummaryEntry]) -> io::Result<()> {
     Ok(())
 }
 
-fn open_private_file(path: &Path) -> io::Result<File> {
+pub(crate) fn open_private_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true).read(true);
     #[cfg(unix)]
@@ -946,7 +852,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     sync_parent(path)
 }
 
-fn temporary_path(path: &Path) -> PathBuf {
+pub(crate) fn temporary_path(path: &Path) -> PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1015,15 +921,15 @@ fn sync_parent(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn codec(error: impl std::fmt::Display) -> io::Error {
+pub(crate) fn codec(error: impl std::fmt::Display) -> io::Error {
     invalid(format!("directory summary codec: {error}"))
 }
 
-fn invalid(error: impl Into<String>) -> io::Error {
+pub(crate) fn invalid(error: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.into())
 }
 
-trait ChildKindRank {
+pub(crate) trait ChildKindRank {
     fn kind_rank(&self) -> u8;
 }
 
@@ -1036,6 +942,7 @@ impl ChildKindRank for DirectoryChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CompactIndex;
     use crate::FsKind;
 
     fn record(path: &str, size: u64, kind: FileKind) -> FileRecord {
@@ -1049,12 +956,40 @@ mod tests {
             native_id: size + 100,
             native_parent: 0,
             source: 0,
+            disk: 0,
         }
     }
 
     fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(directory_summary_path(path));
+    }
+
+    #[test]
+    fn entry_decode_follows_the_file_version() {
+        let current = DirectorySummaryEntry {
+            source: 0,
+            path: "/".into(),
+            logical_bytes: 10,
+            physical_bytes: 4,
+            file_count: 1,
+            directory_count: 0,
+            children: Vec::new(),
+        };
+        let frame = bincode::serialize(&current).unwrap();
+        assert_eq!(decode_entry(VERSION, &frame).unwrap().physical_bytes, 4);
+        let legacy = OldSummaryEntry {
+            source: 0,
+            path: "/".into(),
+            logical_bytes: 10,
+            file_count: 1,
+            directory_count: 0,
+            children: Vec::new(),
+        };
+        let frame = bincode::serialize(&legacy).unwrap();
+        let decoded = decode_entry(MIN_READABLE_VERSION, &frame).unwrap();
+        assert_eq!(decoded.logical_bytes, 10);
+        assert_eq!(decoded.physical_bytes, 0);
     }
 
     #[test]
@@ -1115,69 +1050,6 @@ mod tests {
     }
 
     #[test]
-    fn overlay_removes_all_sources_for_a_path_key() {
-        let path =
-            std::env::temp_dir().join(format!("neutra-dir-sources-{}.nsx", std::process::id()));
-        cleanup(&path);
-        let mut first = record("/shared.txt", 10, FileKind::File);
-        first.source = 1;
-        let mut second = record("/shared.txt", 20, FileKind::File);
-        second.source = 2;
-        let records = vec![first, second];
-        CompactIndex::build_with_summary(&records, &path).unwrap();
-        let compact = CompactIndex::open(&path).unwrap();
-        let summary = DirectorySummary::open_for_compact(&path, compact.generation()).unwrap();
-        let mut delta_path = path.clone();
-        delta_path.set_extension("delta");
-        let mut delta = DeltaIndex::open(&delta_path, compact.generation()).unwrap();
-        delta
-            .apply(DeltaChange::Remove("/shared.txt".into()))
-            .unwrap();
-        delta.sync().unwrap();
-        let overlay = DirectorySummaryOverlay::from_delta(summary, &compact, &delta).unwrap();
-        assert_eq!(overlay.get(1, "/").unwrap().unwrap().logical_bytes, 0);
-        assert_eq!(overlay.get(2, "/").unwrap().unwrap().logical_bytes, 0);
-        drop(delta);
-        drop(compact);
-        cleanup(&path);
-        let _ = std::fs::remove_file(&delta_path);
-        let mut lock = delta_path.as_os_str().to_os_string();
-        lock.push(".lock");
-        let _ = std::fs::remove_file(PathBuf::from(lock));
-    }
-
-    #[test]
-    fn overlay_removal_normalizes_separator_variants() {
-        let path =
-            std::env::temp_dir().join(format!("neutra-dir-separators-{}.nsx", std::process::id()));
-        cleanup(&path);
-        let records = vec![record(r"C:\Data\report.txt", 12, FileKind::File)];
-        CompactIndex::build_with_summary(&records, &path).unwrap();
-        let compact = CompactIndex::open(&path).unwrap();
-        assert!(compact
-            .record_by_path(0, "C:/Data/report.txt")
-            .unwrap()
-            .is_some());
-        let summary = DirectorySummary::open_for_compact(&path, compact.generation()).unwrap();
-        let mut delta_path = path.clone();
-        delta_path.set_extension("delta");
-        let mut delta = DeltaIndex::open(&delta_path, compact.generation()).unwrap();
-        delta
-            .apply(DeltaChange::Remove("C:/Data/report.txt".into()))
-            .unwrap();
-        delta.sync().unwrap();
-        let overlay = DirectorySummaryOverlay::from_delta(summary, &compact, &delta).unwrap();
-        assert_eq!(overlay.get(0, "/").unwrap().unwrap().logical_bytes, 0);
-        drop(delta);
-        drop(compact);
-        cleanup(&path);
-        let _ = std::fs::remove_file(&delta_path);
-        let mut lock = delta_path.as_os_str().to_os_string();
-        lock.push(".lock");
-        let _ = std::fs::remove_file(PathBuf::from(lock));
-    }
-
-    #[test]
     fn publish_moves_the_generation_bound_sidecar_with_the_base() {
         let base_path =
             std::env::temp_dir().join(format!("neutra-dir-publish-{}.nsx", std::process::id()));
@@ -1200,56 +1072,5 @@ mod tests {
         assert!(!DirectorySummary::path_for(&staged_path).exists());
         cleanup(&base_path);
         cleanup(&staged_path);
-    }
-
-    #[test]
-    fn overlay_updates_ancestor_totals_and_direct_children() {
-        let path =
-            std::env::temp_dir().join(format!("neutra-dir-overlay-{}.nsx", std::process::id()));
-        cleanup(&path);
-        let records = vec![
-            record("/docs", 0, FileKind::Dir),
-            record("/docs/a.txt", 10, FileKind::File),
-            record("/docs/sub", 0, FileKind::Dir),
-            record("/docs/sub/b.txt", 20, FileKind::File),
-        ];
-        CompactIndex::build_with_summary(&records, &path).unwrap();
-        let compact = CompactIndex::open(&path).unwrap();
-        let summary = DirectorySummary::open_for_compact(&path, compact.generation()).unwrap();
-        let mut delta_path = path.clone();
-        delta_path.set_extension("delta");
-        let mut delta = DeltaIndex::open(&delta_path, compact.generation()).unwrap();
-        delta
-            .apply(DeltaChange::Upsert(record(
-                "/docs/a.txt",
-                30,
-                FileKind::File,
-            )))
-            .unwrap();
-        delta
-            .apply(DeltaChange::Remove("/docs/sub/b.txt".into()))
-            .unwrap();
-        delta.sync().unwrap();
-        let overlay = DirectorySummaryOverlay::from_delta(summary, &compact, &delta).unwrap();
-        let docs = overlay.get(0, "/docs").unwrap().unwrap();
-        assert_eq!(docs.logical_bytes, 30);
-        let children = overlay.children(0, "/docs").unwrap();
-        let file = children
-            .iter()
-            .find(|child| child.path.as_ref() == "/docs/a.txt")
-            .unwrap();
-        assert_eq!(file.logical_bytes, 30);
-        let sub = children
-            .iter()
-            .find(|child| child.path.as_ref() == "/docs/sub")
-            .unwrap();
-        assert_eq!(sub.logical_bytes, 0);
-        drop(delta);
-        drop(compact);
-        cleanup(&path);
-        let _ = std::fs::remove_file(&delta_path);
-        let mut lock = delta_path.as_os_str().to_os_string();
-        lock.push(".lock");
-        let _ = std::fs::remove_file(PathBuf::from(lock));
     }
 }

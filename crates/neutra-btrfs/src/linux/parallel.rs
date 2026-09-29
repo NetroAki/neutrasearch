@@ -2,7 +2,6 @@ use super::*;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 struct Shard {
     nodes: Vec<Node>,
@@ -10,21 +9,36 @@ struct Shard {
     batches: u64,
 }
 
-pub(super) fn scan_metadata(mount: &Path, started: Instant) -> Result<(Vec<Node>, Vec<u8>, u64)> {
+pub(super) fn scan_metadata(
+    mount: &Path,
+) -> Result<(Vec<Node>, Vec<u8>, u64)> {
+    scan_metadata_in_tree(mount, 0)
+}
+
+/// tree_id 0 searches the tree of the opened mount, like the serial path.
+pub(super) fn scan_metadata_in_tree(
+    mount: &Path,
+    tree_id: u64,
+) -> Result<(Vec<Node>, Vec<u8>, u64)> {
     const WIDTH: u64 = 8_000_000;
-    const REGULAR_SHARDS: u64 = 16;
-    let mut handles = Vec::with_capacity(REGULAR_SHARDS as usize + 1);
-    for shard in 0..REGULAR_SHARDS {
+    // One shard per core, bounded so tiny machines do not open 17 descriptors
+    // and big machines do not oversubscribe memory with shard buffers.
+    let regular_shards = std::thread::available_parallelism()
+        .map(|count| count.get() as u64)
+        .unwrap_or(4)
+        .clamp(2, 16);
+    let mut handles = Vec::with_capacity(regular_shards as usize + 1);
+    for shard in 0..regular_shards {
         let path = mount.to_path_buf();
         let min = shard * WIDTH;
         let max = (shard + 1) * WIDTH - 1;
         handles.push(std::thread::spawn(move || {
-            scan_range(path, min, max, started)
+            scan_range(path, tree_id, min, max)
         }));
     }
     let path = mount.to_path_buf();
     handles.push(std::thread::spawn(move || {
-        scan_range(path, REGULAR_SHARDS * WIDTH, u64::MAX, started)
+        scan_range(path, tree_id, regular_shards * WIDTH, u64::MAX)
     }));
     let mut parts = Vec::with_capacity(handles.len());
     for handle in handles {
@@ -51,25 +65,22 @@ pub(super) fn scan_metadata(mount: &Path, started: Instant) -> Result<(Vec<Node>
         }
         names.append(&mut part.names);
         nodes.append(&mut part.nodes);
-        batches += part.batches;
-    }
-    nodes.sort_unstable_by_key(|n| n.ino);
-    if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") {
-        eprintln!(
-            "btrfs parallel metadata phase: nodes={} batches={} wall_ms={}",
-            nodes.len(),
-            batches,
-            started.elapsed().as_millis()
-        );
-    }
+         batches += part.batches;
+     }
+     nodes.sort_unstable_by_key(|n| n.ino);
     Ok((nodes, names, batches))
 }
 
-fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) -> Result<Shard> {
+ fn scan_range(
+     mount: PathBuf,
+     tree_id: u64,
+     range_min: u64,
+     range_max: u64,
+ ) -> Result<Shard> {
     let file =
         File::open(&mount).with_context(|| format!("open Btrfs mount {}", mount.display()))?;
-    let mut nodes = Vec::<Node>::with_capacity(1_000_000);
-    let mut names = Vec::<u8>::with_capacity(24 * 1024 * 1024);
+    let mut nodes = Vec::<Node>::with_capacity(256_000);
+    let mut names = Vec::<u8>::with_capacity(8 * 1024 * 1024);
     let mut current_ino = None;
     let mut current_meta = None;
     let mut current_link = None;
@@ -79,7 +90,7 @@ fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) 
     let args = unsafe { &mut *(storage.as_mut_ptr().cast::<SearchArgsV2>()) };
     loop {
         args.key = SearchKey {
-            tree_id: 0,
+            tree_id,
             min_objectid: cursor.0,
             max_objectid: range_max,
             min_offset: cursor.2,
@@ -146,6 +157,7 @@ fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) 
                 INODE_ITEM if data.len() >= 148 => {
                     current_meta = Some(Meta {
                         size: le64(&data[16..]),
+                        disk: le64(&data[24..]),
                         mode: le32(&data[52..]),
                         mtime: le64(&data[136..]) as i64,
                     })
@@ -170,14 +182,6 @@ fn scan_range(mount: PathBuf, range_min: u64, range_max: u64, started: Instant) 
     }
     if let Some(old) = current_ino {
         finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
-    }
-    if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") && !nodes.is_empty() {
-        eprintln!(
-            "btrfs shard={range_min}..={range_max} nodes={} batches={} wall_ms={}",
-            nodes.len(),
-            batches,
-            started.elapsed().as_millis()
-        );
     }
     Ok(Shard {
         nodes,

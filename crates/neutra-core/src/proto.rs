@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 /// Protocol version; helper and client refuse to talk across major versions.
-pub const PROTO_VERSION: u32 = 7;
+ /// Bumped for on-disk sizes in record frames: mixed-version peers fail the
+ /// Hello handshake instead of silently shifting record fields.
+ pub const PROTO_VERSION: u32 = 10;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
@@ -27,9 +29,14 @@ pub enum ClientMsg {
     Hello { proto: u32 },
     /// Scan the given mounts and stream only records inside the approved roots.
     /// Empty mounts or roots scan nothing; all-volume scans must enumerate both.
+    /// `allow_zfs_enumerate` is the deliberate opt-in for the ZFS single-pass
+    /// lane — a scan parameter, not environment, because elevated helpers run
+    /// under pkexec with a stripped environment.
     Scan {
         mounts: Vec<MountInfo>,
         roots: Vec<std::path::PathBuf>,
+        #[serde(default)]
+        allow_zfs_enumerate: bool,
     },
     /// Scan, filter to approved roots, and retain records for later searches.
     /// Empty mounts or roots scan nothing.
@@ -39,6 +46,8 @@ pub enum ClientMsg {
     },
     /// Query the helper's explicitly resident index.
     Search { query: Query },
+    /// Ask for one directory's live totals (base + delta overlay).
+    DirectorySummary { source: u32, path: String },
     /// Persist a batch into the generation-bound delta WAL before publishing it.
     ApplyDelta { changes: Vec<DeltaChange> },
     /// Ask the helper to stop scanning and exit cleanly.
@@ -78,6 +87,11 @@ pub enum HelperMsg {
     SearchResult {
         hits: Vec<FileRecord>,
         wall_us: u64,
+    },
+    /// Response to DirectorySummary: the entry with adjusted totals, or None
+    /// when the path is not indexed or the sidecar is absent.
+    DirectorySummary {
+        entry: Option<crate::dir_summary::DirectorySummaryEntry>,
     },
     DeltaApplied {
         changes: u32,
@@ -157,6 +171,45 @@ mod tests {
                 errors: 1
             }
         ));
+    }
+
+    #[test]
+    fn directory_summary_roundtrip() {
+        let mut bytes = Vec::new();
+        write_frame(
+            &mut bytes,
+            &ClientMsg::DirectorySummary {
+                source: 3,
+                path: "/data".into(),
+            },
+        )
+        .unwrap();
+        write_frame(
+            &mut bytes,
+            &HelperMsg::DirectorySummary {
+                entry: Some(crate::dir_summary::DirectorySummaryEntry {
+                    source: 3,
+                    path: "/data".into(),
+                    logical_bytes: 42,
+                    physical_bytes: 0,
+                    file_count: 2,
+                    directory_count: 1,
+                    children: Vec::new(),
+                }),
+            },
+        )
+        .unwrap();
+        let mut slice = &bytes[..];
+        let request: ClientMsg = read_frame(&mut slice).unwrap().unwrap();
+        assert!(matches!(
+            request,
+            ClientMsg::DirectorySummary { source: 3, .. }
+        ));
+        let response: HelperMsg = read_frame(&mut slice).unwrap().unwrap();
+        let HelperMsg::DirectorySummary { entry } = response else {
+            panic!("wrong variant");
+        };
+        assert_eq!(entry.unwrap().logical_bytes, 42);
     }
 
     #[test]

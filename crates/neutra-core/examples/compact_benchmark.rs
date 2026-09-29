@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             native_id: i as u64,
             native_parent: (i % 4096) as u64,
             source: 0,
+            disk: 0,
         });
     }
     let generated_ms = started.elapsed().as_millis();

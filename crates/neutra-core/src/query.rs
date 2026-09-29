@@ -10,6 +10,9 @@
 //!   "exact phrase"     quoted substring with spaces
 //!
 //! Sorting: relevance by default (name-prefix > name > path, then mtime desc).
+//! Callers may additionally set `regex` (full pattern per term semantics),
+//! `case_sensitive`, `whole_word`, `fold_accents`, and `match_fields` to
+//! control where and how terms match.
 
 use crate::mounts::FsKind;
 use crate::types::{FileKind, FileRecord};
@@ -19,14 +22,28 @@ use serde::{Deserialize, Serialize};
 pub enum SortKey {
     Relevance,
     NameAsc,
+    NameDesc,
     SizeDesc,
+    SizeAsc,
     MtimeDesc,
+    MtimeAsc,
     PathAsc,
+    PathDesc,
+}
+
+/// Which part of a record the text terms must match.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatchFields {
+    Name,
+    #[default]
+    NameAndPath,
+    Path,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
-    /// Lowercased substrings that must ALL match (name or path).
+    /// Substrings that must ALL match (location chosen by `match_fields`).
+    /// Stored verbatim; case handling is `case_sensitive`.
     pub terms: Vec<String>,
     pub exts: Vec<String>,
     pub kinds: Vec<FileKind>,
@@ -41,6 +58,28 @@ pub struct Query {
     /// Security-sensitive callers use host filesystem case semantics for scopes.
     #[serde(default)]
     pub scope_case_sensitive: bool,
+    /// When set, every term position is filled by one regular expression that
+    /// must match the selected fields. Stored as a pattern string so the
+    /// query stays wire-serializable; the engine compiles it once per search.
+    #[serde(default)]
+    pub regex: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub match_fields: MatchFields,
+    /// When true, each term must span whole words (bounded by string ends
+    /// or non-alphanumeric characters), not substrings.
+    #[serde(default)]
+    pub whole_word: bool,
+    /// When true, accents fold away before comparing (`cafe` finds `caf\u{e9}`).
+    /// Default false preserves exact-accent matching.
+    #[serde(default)]
+    pub fold_accents: bool,
+    /// When true, only programs pass: an executable mode bit or a program
+    /// extension (see `EXEC_EXTS`). Extension lists stay empty so `+x`
+    /// binaries without an extension still match.
+    #[serde(default)]
+    pub executable_only: bool,
     pub sort: SortKey,
     /// Hard cap on returned hits; 0 = unlimited.
     pub limit: usize,
@@ -58,10 +97,37 @@ impl Default for Query {
             under: None,
             scope_roots: Vec::new(),
             scope_case_sensitive: false,
+            regex: None,
+            case_sensitive: false,
+            whole_word: false,
+            fold_accents: false,
+            executable_only: false,
+            match_fields: MatchFields::default(),
             sort: SortKey::Relevance,
             limit: 1000,
         }
     }
+}
+
+/// Shared file-type extension groups for kind preset buttons. Kept here so
+/// the GUI, MCP, and query CLI map presets identically.
+pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "aif", "aiff", "flac", "ogg", "oga", "opus", "m4a", "aac", "wma", "mid", "midi", "amr", "alac", "ape", "wv", "mka", "rx2", "rex", "dsf", "dff"];
+pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff", "heic", "heif", "avif", "jxl", "psd", "xcf", "raw", "cr2", "nef", "arw", "dng", "orf", "rw2"];
+pub const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "3gp", "ts", "m2ts", "vob", "ogv"];
+pub const ARCHIVE_EXTS: &[&str] = &["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst", "lz4", "cab", "iso", "img", "dmg", "pkg", "deb", "rpm", "apk", "jar", "cbz", "cbr"];
+pub const DOC_EXTS: &[&str] = &["pdf", "doc", "docx", "odt", "rtf", "txt", "md", "markdown", "rst", "tex", "epub", "mobi", "azw", "fb2", "djvu", "xls", "xlsx", "ods", "csv", "tsv", "ppt", "pptx", "odp", "log", "org", "nfo"];
+/// Program extensions. Records with an executable mode bit also pass (see
+/// `is_executable`), so extensionless `+x` binaries are not excluded.
+pub const EXEC_EXTS: &[&str] = &["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "sh", "bash", "zsh", "fish", "run", "bin", "appimage", "deb", "rpm", "apk", "jar", "msix", "app", "gadget"];
+
+/// True for programs: executable mode bit set, or a program extension.
+/// NTFS records carry `mode == 0`, so they match by extension only.
+pub fn is_executable(r: &FileRecord) -> bool {
+    if r.mode & 0o111 != 0 {
+        return true;
+    }
+    let ext = r.extension();
+    EXEC_EXTS.iter().any(|want| ext.len() == want.len() && ext.eq_ignore_ascii_case(want))
 }
 
 impl Query {
@@ -97,10 +163,17 @@ impl Query {
             } else if let Some(rest) = tok.strip_prefix("under:") {
                 q.under = Some(rest.to_lowercase());
             } else if !tok.is_empty() {
-                q.terms.push(tok.to_lowercase());
+                q.terms.push(tok);
             }
         }
         q
+    }
+
+    /// Compile the text matcher once per search. Invalid regex patterns are
+    /// reported instead of silently matching nothing. The matcher owns a
+    /// copy of the query so callers (e.g. the GUI) may cache it.
+    pub fn matcher(&self) -> std::io::Result<crate::matcher::QueryMatcher> {
+        crate::matcher::QueryMatcher::new(self.clone())
     }
 
     /// Cheap filter phase (no term matching). Run before the term phase.
@@ -110,6 +183,9 @@ impl Query {
             return false;
         }
         if !self.kinds.is_empty() && !self.kinds.contains(&r.kind) {
+            return false;
+        }
+        if self.executable_only && !is_executable(r) {
             return false;
         }
         if !self.fss.is_empty() && !self.fss.contains(&r.fs) {
@@ -160,44 +236,17 @@ impl Query {
 
     /// Relevance score for term matching; `None` = no match.
     /// Higher is better. Empty terms match everything with score 0.
+    /// Compiles the matcher on every call; engines should use `matcher()`
+    /// once per search instead.
     pub fn score(&self, r: &FileRecord) -> Option<u32> {
-        if self.terms.is_empty() {
-            return Some(0);
-        }
-        let name = r.name();
-        let mut total: u64 = 0;
-        for term in &self.terms {
-            if let Some(pos) = find_ci(name, term) {
-                // Name match. Prefix matches and full-name matches score best.
-                let base: u64 = if pos == 0 { 1 << 20 } else { 1 << 12 };
-                let exact_bonus: u64 = if name.len() == term.len() { 1 << 24 } else { 0 };
-                total += base + exact_bonus + 256u64.saturating_sub(pos.min(255) as u64);
-                continue;
-            }
-            if find_ci(&r.path, term).is_some() {
-                total += 1 << 6;
-                continue;
-            }
-            return None;
-        }
-        Some(total.min(u32::MAX as u64) as u32)
+        self.matcher().ok()?.score(r)
     }
 }
 
+/// One canonical path-safety predicate for the crate: absolute (portable or
+/// Windows), no NUL, and no `.`/`..` components.
 #[inline]
-fn find_ci(haystack: &str, lower_needle: &str) -> Option<usize> {
-    if lower_needle.is_empty() {
-        return Some(0);
-    }
-    if haystack.is_ascii() && lower_needle.is_ascii() {
-        let h = haystack.as_bytes();
-        let n = lower_needle.as_bytes();
-        return h.windows(n.len()).position(|w| w.eq_ignore_ascii_case(n));
-    }
-    haystack.to_lowercase().find(lower_needle)
-}
-#[inline]
-fn safe_absolute_path(path: &str) -> bool {
+pub(crate) fn safe_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     let windows_absolute = bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
@@ -325,6 +374,7 @@ mod tests {
             native_id: 0,
             native_parent: 0,
             source: 0,
+            disk: 0,
         }
     }
 
@@ -405,5 +455,59 @@ mod tests {
         let q = Query::parse("\"my doc\" ext:txt");
         assert_eq!(q.terms, vec!["my doc"]);
         assert_eq!(q.exts, vec!["txt"]);
+    }
+
+    #[test]
+    fn regex_mode_matches_like_terms() {
+        let mut q = Query::parse("");
+        q.regex = Some(r"inv[o0]ice.*\.pdf$".into());
+        let hit = rec("/home/u/Invoice-2026.pdf", 1);
+        let miss = rec("/home/u/invoice.txt", 1);
+        let matcher = q.matcher().unwrap();
+        assert!(matcher.score(&hit).is_some());
+        assert!(matcher.score(&miss).is_none());
+
+        q.regex = Some("([".into());
+        assert!(q.matcher().is_err());
+    }
+
+    #[test]
+    fn case_sensitive_terms_reject_other_case() {
+        let mut q = Query::parse("Report");
+        let upper = rec("/home/u/Report.docx", 1);
+        let lower = rec("/home/u/report.docx", 1);
+        assert!(q.score(&upper).is_some());
+        assert!(q.score(&lower).is_some());
+        q.case_sensitive = true;
+        assert!(q.score(&upper).is_some());
+        assert!(q.score(&lower).is_none());
+    }
+
+    #[test]
+    fn match_fields_restrict_where_terms_match() {
+        let mut q = Query::parse("projects");
+        let name_hit = rec("/home/u/Projects", 1);
+        let path_hit = rec("/home/u/projects/readme.md", 1);
+        assert!(q.score(&name_hit).is_some());
+        assert!(q.score(&path_hit).is_some());
+        q.match_fields = MatchFields::Name;
+        assert!(q.score(&name_hit).is_some());
+        assert!(q.score(&path_hit).is_none());
+        q.match_fields = MatchFields::Path;
+        assert!(q.score(&path_hit).is_some());
+    }
+
+    #[test]
+    fn executable_and_whole_word_options_narrow_matches() {
+        let mut q = Query::parse("call");
+        q.whole_word = true;
+        // Name-only default in the GUI aside, the engine honors the flag:
+        // "calling" is not a whole-word hit for "call".
+        assert!(q.matcher().unwrap().score(&rec("/m/the calling.wav", 1)).is_none());
+        assert!(q.matcher().unwrap().score(&rec("/m/the call.wav", 1)).is_some());
+        let mut exe = Query::parse("");
+        exe.executable_only = true;
+        assert!(exe.passes_filters(&rec("/usr/bin/tool", 1)) == false);
+        assert!(exe.passes_filters(&rec("/opt/app/setup.exe", 1)));
     }
 }

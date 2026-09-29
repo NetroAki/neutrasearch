@@ -1,5 +1,5 @@
 use neutra_core::proto::HelperMsg;
-use neutra_core::{CompactIndex, Index};
+use neutra_core::{CompactIndex, SpillAccumulator};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -50,8 +50,15 @@ pub fn action() -> Action {
 }
 
 fn search(args: Vec<std::ffi::OsString>) -> i32 {
+    let no_build = args.iter().any(|arg| arg == "--no-build");
+    let args = args
+        .into_iter()
+        .filter(|arg| arg != "--no-build")
+        .collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]");
+        println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths] [--no-build]");
+        println!("Filters: ext:rs,toml  kind:file|dir|link  fs:btrfs|ext4|ntfs|zfs  size:>100M  size:1M..2M  under:/dir");
+        println!("\"quoted phrase\" groups words; without --no-build a missing index is built first (may need administrator access).");
         return 0;
     }
     if args.is_empty() {
@@ -62,7 +69,11 @@ fn search(args: Vec<std::ffi::OsString>) -> i32 {
         Err(message) => return error(&message),
     };
     let path = neutra_core::paths::resolve_index_path(explicit);
-    if let Err(message) = ensure_index(&path) {
+    if no_build {
+        if let Err(message) = ensure_index_without_build(&path) {
+            return error(&message);
+        }
+    } else if let Err(message) = ensure_index(&path) {
         return error(&message);
     }
     run_companion("NEUTRASEARCH_QUERY", "neutrasearch-query", args, None)
@@ -70,24 +81,33 @@ fn search(args: Vec<std::ffi::OsString>) -> i32 {
 
 fn index(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch index [--output INDEX.nsx]");
+        println!("Usage: neutrasearch index [--output INDEX.nsx] [--zfs-enumerate]");
+        println!("--zfs-enumerate: index ZFS datasets with a one-time single-pass enumeration");
         return 0;
     }
+    let allow_zfs_enumerate = args.iter().any(|arg| arg == "--zfs-enumerate");
+    let args = args
+        .into_iter()
+        .filter(|arg| arg != "--zfs-enumerate")
+        .collect::<Vec<_>>();
     let output = match parse_index(args) {
         Ok(path) => neutra_core::paths::resolve_index_path(path),
         Err(message) => return error(&message),
     };
-    match build_machine_index_on_large_stack(output) {
+    match build_machine_index_on_large_stack(output, allow_zfs_enumerate) {
         Ok(()) => 0,
         Err(message) => error(&message),
     }
 }
 
-fn build_machine_index_on_large_stack(output: PathBuf) -> Result<(), String> {
+fn build_machine_index_on_large_stack(
+    output: PathBuf,
+    allow_zfs_enumerate: bool,
+) -> Result<(), String> {
     let worker = std::thread::Builder::new()
         .name("neutrasearch-index".into())
         .stack_size(16 * 1024 * 1024)
-        .spawn(move || build_machine_index(&output))
+        .spawn(move || build_machine_index(&output, allow_zfs_enumerate))
         .map_err(|error| format!("cannot start index builder: {error}"))?;
     worker
         .join()
@@ -135,8 +155,21 @@ fn index_override(args: &[std::ffi::OsString]) -> Result<Option<PathBuf>, String
     Ok(index)
 }
 
+fn ensure_index_without_build(path: &Path) -> Result<(), String> {
+    if let Ok((index, _delta)) = CompactIndex::open_with_delta_snapshot_fast(path) {
+        drop(index);
+        neutra_core::paths::remember_index_path(path)
+            .map_err(|error| format!("cannot remember {}: {error}", path.display()))?;
+        return Ok(());
+    }
+    Err(format!(
+        "no usable index at {}; build one first with `neutrasearch index`",
+        path.display()
+    ))
+}
+
 fn ensure_index(path: &Path) -> Result<(), String> {
-    match CompactIndex::open_with_delta_snapshot(path) {
+    match CompactIndex::open_with_delta_snapshot_fast(path) {
         Ok((index, _delta)) => {
             drop(index);
             neutra_core::paths::remember_index_path(path)
@@ -156,29 +189,31 @@ fn ensure_index(path: &Path) -> Result<(), String> {
             );
         }
     }
-    build_machine_index(path)
+    build_machine_index(path, false)
 }
 
-fn build_machine_index(output: &Path) -> Result<(), String> {
+fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> Result<(), String> {
     let roots = super::default_system_roots();
     let mounts = super::selected_scan_mounts(&roots);
     if mounts.is_empty() {
         return Err("no supported local native filesystems were discovered".into());
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    super::spawn_local_helper(tx, cfg!(target_os = "linux"), mounts, roots.clone());
-    let mut staging = Index::new();
+    super::spawn_local_helper(
+        tx,
+        cfg!(target_os = "linux"),
+        mounts,
+        roots.clone(),
+        allow_zfs_enumerate,
+    );
+    let mut spill = SpillAccumulator::begin(output).map_err(|error| format!("cannot spill scan batches: {error}"))?;
     let (completed_mounts, errors) = loop {
         match rx.recv() {
             Ok(super::Event::Message(HelperMsg::ScanBegin { mount })) => {
                 eprintln!("neutrasearch: indexing {}", mount.mountpoint.display());
             }
             Ok(super::Event::Message(HelperMsg::Records(records))) => {
-                staging.extend(
-                    records
-                        .into_iter()
-                        .filter(|record| super::record_in_roots(record.path.as_ref(), &roots)),
-                );
+                spill.push_batch(records.into_iter().filter(|record| super::record_in_roots(record.path.as_ref(), &roots)).collect()).map_err(|error| format!("cannot spill scan batches: {error}"))?;
             }
             Ok(super::Event::Message(HelperMsg::ScanDone { mount, stats })) => {
                 eprintln!(
@@ -208,10 +243,10 @@ fn build_machine_index(output: &Path) -> Result<(), String> {
             "no native filesystem completed successfully ({errors} error(s))"
         ));
     }
-    if staging.is_empty() {
+    if spill.is_empty() {
         return Err("native scanners returned no files; the previous index was kept".into());
     }
-    let built = CompactIndex::rebuild(staging.records(), output)
+    let built = CompactIndex::rebuild_streamed(spill.finish().map_err(|error| format!("cannot publish {}: {error}", output.display()))?, output)
         .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
     let remembered = neutra_core::paths::remember_index_path(output)
         .map_err(|error| format!("cannot remember {}: {error}", output.display()))?;

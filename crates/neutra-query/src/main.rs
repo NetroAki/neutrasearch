@@ -1,38 +1,10 @@
 //! Scriptable Neutrasearch client. Opens the compact mmap index read-only and
 //! never scans a filesystem. `--stdio` keeps one process alive for NDJSON RPC.
-use anyhow::{bail, Context, Result};
-use neutra_core::{CompactIndex, DeltaIndex, Query, SearchHit, SearchStats};
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
-use std::path::PathBuf;
+mod service;
 
-#[derive(Deserialize)]
-struct Request {
-    query: String,
-    limit: Option<usize>,
-    metadata: Option<bool>,
-    #[serde(default)]
-    scope_roots: Vec<String>,
-    #[serde(default)]
-    scope_case_sensitive: Option<bool>,
-}
-#[derive(Serialize)]
-struct Response {
-    paths: Vec<String>,
-    matched: u64,
-    returned: usize,
-    search_us: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    records: Option<Vec<Record>>,
-}
-#[derive(Serialize)]
-struct Record {
-    path: String,
-    kind: String,
-    size: u64,
-    mtime: i64,
-    fs: String,
-}
+use anyhow::{bail, Context, Result};
+use service::{open_pair, run, serve};
+use std::path::PathBuf;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -86,7 +58,9 @@ fn main() -> Result<()> {
                 args.remove(i);
             }
             "--help" | "-h" => {
-                println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]\nInternal persistent mode: neutrasearch-query --index INDEX.nsx --stdio");
+                println!("Usage: neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]");
+                println!("Filters: ext:rs,toml  kind:file|dir|link  fs:btrfs|ext4|ntfs|zfs  size:>100M  size:1M..2M  under:/dir");
+                println!("Internal persistent mode: neutrasearch-query --index INDEX.nsx --stdio");
                 return Ok(());
             }
             x if x.starts_with('-') => bail!("unknown option {x}"),
@@ -107,7 +81,7 @@ fn main() -> Result<()> {
     if args.is_empty() {
         bail!("query is required (or use --stdio)");
     }
-    let request = Request {
+    let request = service::Request {
         query: args.join(" "),
         limit: Some(limit),
         metadata: Some(json),
@@ -125,100 +99,17 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
-fn serve(
-    path: &std::path::Path,
-    mut index: CompactIndex,
-    mut delta: Option<DeltaIndex>,
-    input: impl BufRead,
-    mut output: impl Write,
-) -> Result<()> {
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Request = serde_json::from_str(&line)?;
-        let response = (|| {
-            let base_replaced = CompactIndex::generation_on_disk(path)? != index.generation();
-            let reopen = base_replaced
-                || match &mut delta {
-                    Some(delta) => delta.refresh().is_err(),
-                    None => delta_path(path).is_file(),
-                };
-            if reopen {
-                (index, delta) =
-                    open_pair(path).context("reopen compact index after replacement")?;
-            }
-            run(&index, delta.as_ref(), request)
-        })();
-        match response {
-            Ok(response) => serde_json::to_writer(&mut output, &response)?,
-            Err(error) => {
-                serde_json::to_writer(&mut output, &serde_json::json!({"error":error.to_string()}))?
-            }
-        };
-        output.write_all(b"\n")?;
-        output.flush()?;
-    }
-    Ok(())
-}
-fn run(index: &CompactIndex, delta: Option<&DeltaIndex>, request: Request) -> Result<Response> {
-    if request
-        .scope_roots
-        .iter()
-        .any(|root| !std::path::Path::new(root).is_absolute())
-    {
-        bail!("scope_roots must contain only absolute paths");
-    }
-    let mut query = Query::parse(&request.query);
-    query.limit = request.limit.unwrap_or(50).clamp(1, 1000);
-    query.scope_roots = request.scope_roots;
-    query.scope_case_sensitive = request
-        .scope_case_sensitive
-        .unwrap_or(cfg!(not(any(target_os = "windows", target_os = "macos"))));
-    let (hits, stats) = match delta {
-        Some(delta) => index.search_with_delta(&query, delta)?,
-        None => index.search(&query)?,
-    };
-    Ok(response(hits, stats, request.metadata.unwrap_or(false)))
-}
-fn response(hits: Vec<SearchHit>, stats: SearchStats, metadata: bool) -> Response {
-    let returned = hits.len();
-    let paths = hits.iter().map(|h| h.record.path.to_string()).collect();
-    let records = metadata.then(|| {
-        hits.into_iter()
-            .map(|h| Record {
-                path: h.record.path.into(),
-                kind: format!("{:?}", h.record.kind).to_ascii_lowercase(),
-                size: h.record.size,
-                mtime: h.record.mtime,
-                fs: h.record.fs.label(),
-            })
-            .collect()
-    });
-    Response {
-        paths,
-        matched: stats.matched,
-        returned,
-        search_us: stats.wall_us,
-        records,
-    }
-}
-fn open_pair(path: &std::path::Path) -> Result<(CompactIndex, Option<DeltaIndex>)> {
-    CompactIndex::open_with_delta_snapshot(path)
-        .with_context(|| format!("open compact index pair {}", path.display()))
-}
-
-fn delta_path(base: &std::path::Path) -> PathBuf {
-    let mut path = base.to_path_buf();
-    path.set_extension("delta");
-    path
-}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use neutra_core::{FileKind, FileRecord, FsKind};
+ mod tests {
+     use super::*;
+     use neutra_core::{CompactIndex, FileKind, FileRecord, FsKind};
+
+     fn build_test_base(records: &[FileRecord], path: &std::path::Path) {
+         let mut spill = neutra_core::SpillAccumulator::begin(path).unwrap();
+         spill.push_batch(records.to_vec()).unwrap();
+         CompactIndex::rebuild_streamed(spill.finish().unwrap(), path).unwrap();
+     }
     #[test]
     fn ndjson_api() {
         let path =
@@ -239,6 +130,7 @@ mod tests {
                 native_id: 1,
                 native_parent: 2,
                 source: 0,
+                disk: 0,
             },
             FileRecord {
                 path: private_file.into(),
@@ -250,10 +142,11 @@ mod tests {
                 native_id: 2,
                 native_parent: 3,
                 source: 0,
+                disk: 0,
             },
         ];
-        CompactIndex::build(&records, &path).unwrap();
-        let index = CompactIndex::open(&path).unwrap();
+         build_test_base(&records, &path);
+         let index = CompactIndex::open(&path).unwrap();
         let mut output = Vec::new();
         let request = format!(
             "{{\"query\":\"needle\",\"limit\":5,\"scope_roots\":[{allowed_root:?}],\"scope_case_sensitive\":true}}\n"
@@ -266,7 +159,7 @@ mod tests {
         let error = match run(
             &index,
             None,
-            Request {
+            service::Request {
                 query: "needle".into(),
                 limit: Some(5),
                 metadata: Some(false),

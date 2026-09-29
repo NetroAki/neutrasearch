@@ -9,7 +9,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"NEUTDLT1";
+ const MAGIC: &[u8; 8] = b"NEUTDLT2";
+ /// Magic written by binaries predating on-disk sizes. Logs under this magic
+ /// carry the frozen frame layout; replay selects the decoder from the file
+ /// magic, never by probing frames.
+ const MAGIC_V1: &[u8; 8] = b"NEUTDLT1";
 pub const DELTA_HEADER_BYTES: u64 = 16;
 const HEADER: u64 = DELTA_HEADER_BYTES;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -21,16 +25,63 @@ pub enum DeltaChange {
     Remove(Box<str>),
 }
 
-pub struct DeltaIndex {
-    path: PathBuf,
-    generation: u64,
-    writer: Option<BufWriter<File>>,
-    lock_file: Option<File>,
-    upserts: HashMap<Box<str>, FileRecord>,
-    removed: HashSet<Box<str>>,
-    wal_bytes: u64,
-    compact_at: u64,
+/// Frozen pre-disk WAL frame, for logs written by older binaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum OldDeltaChange {
+    Upsert(OldDeltaRecord),
+    Remove(Box<str>),
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OldDeltaRecord {
+    path: Box<str>,
+    size: u64,
+    mtime: i64,
+    mode: u32,
+    kind: crate::FileKind,
+    fs: crate::mounts::FsKind,
+    #[serde(default)]
+    native_id: u64,
+    #[serde(default)]
+    native_parent: u64,
+    source: u32,
+}
+ /// Decode one WAL frame in the layout selected by the log magic. Version
+ /// comes from the file header, never from probing the frame.
+ fn decode_change(v1: bool, payload: &[u8]) -> Result<DeltaChange, bincode::Error> {
+     if !v1 {
+         return bincode::deserialize(payload);
+     }
+     match bincode::deserialize::<OldDeltaChange>(payload)? {
+         OldDeltaChange::Remove(path) => Ok(DeltaChange::Remove(path)),
+         OldDeltaChange::Upsert(old) => Ok(DeltaChange::Upsert(FileRecord {
+             path: old.path,
+             size: old.size,
+             disk: 0,
+             mtime: old.mtime,
+             mode: old.mode,
+             kind: old.kind,
+             fs: old.fs,
+             native_id: old.native_id,
+             native_parent: old.native_parent,
+             source: old.source,
+         })),
+     }
+ }
+
+ pub struct DeltaIndex {
+     path: PathBuf,
+     generation: u64,
+     writer: Option<BufWriter<File>>,
+     lock_file: Option<File>,
+     upserts: HashMap<Box<str>, FileRecord>,
+     removed: HashSet<Box<str>>,
+     wal_bytes: u64,
+     compact_at: u64,
+     /// True when the on-disk frames use the legacy layout (selected from
+     /// the file magic at open). Writers migrate legacy logs on open, so a
+     /// live writer implies false.
+     wal_v1: bool,
+ }
 
 impl Drop for DeltaIndex {
     fn drop(&mut self) {
@@ -80,16 +131,17 @@ impl DeltaIndex {
             )
         })?;
         let writer = open_reset_writer(path, generation)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            generation,
-            writer: Some(writer),
-            lock_file: Some(lock_file),
-            upserts: HashMap::new(),
-            removed: HashSet::new(),
-            wal_bytes: HEADER,
-            compact_at: compact_at.max(HEADER + 1),
-        })
+         Ok(Self {
+             path: path.to_path_buf(),
+             generation,
+             writer: Some(writer),
+             lock_file: Some(lock_file),
+             upserts: HashMap::new(),
+             removed: HashSet::new(),
+             wal_bytes: HEADER,
+             compact_at: compact_at.max(HEADER + 1),
+             wal_v1: false,
+         })
     }
     fn open_mode(
         path: &Path,
@@ -125,29 +177,47 @@ impl DeltaIndex {
         let mut upserts = HashMap::new();
         let mut removed = HashSet::new();
         let mut wal_bytes = file_bytes;
+        let mut wal_v1 = false;
         if file_bytes > 0 {
             let mut reader = BufReader::new(File::open(path)?.take(file_bytes));
-            read_header(&mut reader, generation)?;
+            wal_v1 = read_header(&mut reader, generation)?;
             let mut verified_bytes = HEADER;
-            replay_frames(&mut reader, &mut verified_bytes, &mut upserts, &mut removed)?;
+            replay_frames(
+                &mut reader,
+                &mut verified_bytes,
+                &mut upserts,
+                &mut removed,
+                wal_v1,
+            )?;
             wal_bytes = verified_bytes;
         }
+        // A writer never appends to a v1 log. Migrating on open keeps one
+        // frame layout per file; the replayed maps already hold the resolved
+        // state, so re-appending them is order-safe.
+        let migrated = writable && wal_v1;
         let writer = if writable {
-            if file_bytes > wal_bytes {
-                truncate_private(path, wal_bytes)?;
+             if migrated {
+                 let file = open_reset_writer(path, generation)?;
+                 wal_bytes = HEADER;
+                 wal_v1 = false;
+                 Some(file)
+            } else {
+                if file_bytes > wal_bytes {
+                    truncate_private(path, wal_bytes)?;
+                }
+                let mut file = open_append_private(path)?;
+                if wal_bytes == 0 {
+                    file.write_all(MAGIC)?;
+                    file.write_all(&generation.to_le_bytes())?;
+                    file.sync_data()?;
+                    wal_bytes = HEADER;
+                }
+                Some(BufWriter::with_capacity(64 * 1024, file))
             }
-            let mut file = open_append_private(path)?;
-            if wal_bytes == 0 {
-                file.write_all(MAGIC)?;
-                file.write_all(&generation.to_le_bytes())?;
-                file.sync_data()?;
-                wal_bytes = HEADER;
-            }
-            Some(BufWriter::with_capacity(64 * 1024, file))
         } else {
             None
         };
-        Ok(Self {
+        let mut this = Self {
             path: path.to_path_buf(),
             generation,
             writer,
@@ -156,23 +226,53 @@ impl DeltaIndex {
             removed,
             wal_bytes,
             compact_at: compact_at.max(HEADER + 1),
-        })
+            wal_v1,
+        };
+        if migrated {
+            let changes: Vec<DeltaChange> = this
+                .removed
+                .iter()
+                .map(|path| DeltaChange::Remove(path.clone()))
+                .chain(
+                    this.upserts
+                        .values()
+                        .map(|record| DeltaChange::Upsert(record.clone())),
+                )
+                .collect();
+            this.apply_batch(changes)?;
+        }
+        Ok(this)
     }
     pub fn apply(&mut self, change: DeltaChange) -> io::Result<()> {
-        let payload = bincode::serialize(&change).map_err(codec)?;
-        if payload.len() > MAX_FRAME {
-            return Err(invalid("delta change exceeds safety cap"));
-        }
+        self.apply_batch(std::iter::once(change))?;
+        Ok(())
+    }
+
+    /// Append a batch of changes with one writer flush at the end. Event
+    /// watchers deliver bursts; flushing per frame would cost one write
+    /// syscall per change.
+    pub fn apply_batch<I: IntoIterator<Item = DeltaChange>>(
+        &mut self,
+        changes: I,
+    ) -> io::Result<u32> {
         let writer = self.writer.as_mut().ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, "read-only delta snapshot")
         })?;
-        writer.write_all(&(payload.len() as u32).to_le_bytes())?;
-        writer.write_all(&crc32fast::hash(&payload).to_le_bytes())?;
-        writer.write_all(&payload)?;
+        let mut count = 0u32;
+        for change in changes {
+            let payload = bincode::serialize(&change).map_err(codec)?;
+            if payload.len() > MAX_FRAME {
+                return Err(invalid("delta change exceeds safety cap"));
+            }
+            writer.write_all(&(payload.len() as u32).to_le_bytes())?;
+            writer.write_all(&crc32fast::hash(&payload).to_le_bytes())?;
+            writer.write_all(&payload)?;
+            self.wal_bytes = self.wal_bytes.saturating_add(payload.len() as u64 + 8);
+            count = count.saturating_add(1);
+            apply_memory(&mut self.upserts, &mut self.removed, change);
+        }
         writer.flush()?;
-        self.wal_bytes = self.wal_bytes.saturating_add(payload.len() as u64 + 8);
-        apply_memory(&mut self.upserts, &mut self.removed, change);
-        Ok(())
+        Ok(count)
     }
     pub fn sync(&mut self) -> io::Result<()> {
         let writer = self.writer.as_mut().ok_or_else(|| {
@@ -216,7 +316,10 @@ impl DeltaIndex {
         // A compaction reset can keep an empty WAL at the same byte length.
         // Validate the generation before the length fast path so persistent
         // readers never continue serving the old mmap base silently.
-        read_header(&mut file, self.generation)?;
+        let wal_v1 = read_header(&mut file, self.generation)?;
+        if wal_v1 != self.wal_v1 {
+            return Err(invalid("delta log magic changed; reopen the index"));
+        }
         if file_bytes < self.wal_bytes {
             return Err(invalid("delta log was replaced or truncated"));
         }
@@ -231,6 +334,7 @@ impl DeltaIndex {
             &mut self.wal_bytes,
             &mut self.upserts,
             &mut self.removed,
+            self.wal_v1,
         )?;
         Ok(self.wal_bytes - old_bytes)
     }
@@ -262,26 +366,34 @@ impl DeltaIndex {
         &self.path
     }
 }
-fn read_header(reader: &mut impl Read, generation: u64) -> io::Result<()> {
-    let mut magic = [0u8; 8];
-    reader.read_exact(&mut magic)?;
-    if &magic != MAGIC {
-        return Err(invalid("not a Neutrasearch delta log"));
-    }
-    let mut stored_generation = [0u8; 8];
-    reader.read_exact(&mut stored_generation)?;
-    if u64::from_le_bytes(stored_generation) != generation {
-        return Err(invalid("delta log belongs to a different base generation"));
-    }
-    Ok(())
-}
+ /// Validate the log header against the expected base generation and report
+ /// whether frames use the legacy layout. Frame decoders are selected from
+ /// this file magic, never by probing frame bytes.
+ fn read_header(reader: &mut impl Read, generation: u64) -> io::Result<bool> {
+     let mut magic = [0u8; 8];
+     reader.read_exact(&mut magic)?;
+     let wal_v1 = if &magic == MAGIC {
+         false
+     } else if &magic == MAGIC_V1 {
+         true
+     } else {
+         return Err(invalid("not a Neutrasearch delta log"));
+     };
+     let mut stored_generation = [0u8; 8];
+     reader.read_exact(&mut stored_generation)?;
+     if u64::from_le_bytes(stored_generation) != generation {
+         return Err(invalid("delta log belongs to a different base generation"));
+     }
+     Ok(wal_v1)
+ }
 
-fn replay_frames(
-    reader: &mut impl Read,
-    verified_bytes: &mut u64,
-    upserts: &mut HashMap<Box<str>, FileRecord>,
-    removed: &mut HashSet<Box<str>>,
-) -> io::Result<()> {
+ fn replay_frames(
+     reader: &mut impl Read,
+     verified_bytes: &mut u64,
+     upserts: &mut HashMap<Box<str>, FileRecord>,
+     removed: &mut HashSet<Box<str>>,
+     wal_v1: bool,
+ ) -> io::Result<()> {
     loop {
         let mut len = [0u8; 4];
         match reader.read_exact(&mut len) {
@@ -309,7 +421,7 @@ fn replay_frames(
         if crc32fast::hash(&payload) != u32::from_le_bytes(expected_crc) {
             return Err(invalid("delta frame checksum mismatch"));
         }
-        let change: DeltaChange = bincode::deserialize(&payload).map_err(codec)?;
+        let change: DeltaChange = decode_change(wal_v1, &payload).map_err(codec)?;
         apply_memory(upserts, removed, change);
         *verified_bytes = frame_end;
     }
@@ -437,11 +549,58 @@ mod tests {
             native_id: 0,
             native_parent: 0,
             source: 0,
+            disk: 0,
         }
     }
     fn remove_log(path: &Path) {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(lock_path(path));
+    }
+
+    #[test]
+    fn legacy_wal_replays_and_migrates_on_writer_open() {
+        let path = std::env::temp_dir().join(format!(
+            "neutra-delta-v1-{}.wal",
+            std::process::id()
+        ));
+        remove_log(&path);
+        let old = OldDeltaRecord {
+            path: "/old".into(),
+            size: 7,
+            mtime: 0,
+            mode: 0,
+            kind: FileKind::File,
+            fs: FsKind::Btrfs,
+            native_id: 0,
+            native_parent: 0,
+            source: 0,
+        };
+        let payload = bincode::serialize(&OldDeltaChange::Upsert(old)).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_V1);
+        bytes.extend_from_slice(&10u64.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        let mut file = crate::dir_summary::open_private_file(&path).unwrap();
+        use std::io::Write as _;
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let snapshot = DeltaIndex::open_snapshot(&path, 10).unwrap();
+        assert!(snapshot.wal_v1);
+        assert_eq!(snapshot.upserts().count(), 1);
+        assert_eq!(snapshot.upserts().next().unwrap().disk_bytes(), 7);
+        drop(snapshot);
+        let writer = DeltaIndex::open(&path, 10).unwrap();
+        assert!(!writer.wal_v1);
+        drop(writer);
+        let migrated = std::fs::read(&path).unwrap();
+        assert_eq!(&migrated[..8], MAGIC);
+        let snapshot = DeltaIndex::open_snapshot(&path, 10).unwrap();
+        assert_eq!(snapshot.upserts().count(), 1);
+        assert_eq!(snapshot.upserts().next().unwrap().disk_bytes(), 7);
+        remove_log(&path);
     }
 
     #[test]

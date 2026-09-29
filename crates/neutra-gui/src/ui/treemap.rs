@@ -1,147 +1,7 @@
 use super::*;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
+use super::hierarchy::{Hierarchy, TreeFile};
 
-#[derive(Clone)]
-struct TreeFile {
-    path: String,
-    name: String,
-    size: u64,
-    extension: String,
-}
-
-#[derive(Clone, Default)]
-struct FolderSummary {
-    size: u64,
-    count: u64,
-    children: BTreeSet<String>,
-    direct_files: Vec<TreeFile>,
-}
-
-pub(crate) struct Hierarchy {
-    folders: BTreeMap<String, FolderSummary>,
-}
-
-impl Hierarchy {
-    /// Build the file-manager hierarchy from the persisted projection. This
-    /// avoids decoding every compact search record when the disk map opens.
-    pub(crate) fn from_summary(summary: &DirectorySummary) -> Self {
-        let mut folders = BTreeMap::<String, FolderSummary>::new();
-        for entry in summary.entries() {
-            let path = entry.path.to_string();
-            let children = entry
-                .children
-                .iter()
-                .filter(|child| child.kind == FileKind::Dir)
-                .map(|child| child.path.to_string())
-                .collect::<Vec<_>>();
-            let direct_files = entry
-                .children
-                .iter()
-                .filter(|child| child.kind != FileKind::Dir)
-                .map(|child| {
-                    let path = child.path.to_string();
-                    let name = path_name(&path);
-                    let extension = name
-                        .rsplit_once('.')
-                        .map_or("", |(_, extension)| extension)
-                        .to_ascii_lowercase();
-                    TreeFile {
-                        path,
-                        name,
-                        size: child.logical_bytes,
-                        extension,
-                    }
-                })
-                .collect::<Vec<_>>();
-            folders.insert(
-                path,
-                FolderSummary {
-                    size: entry.logical_bytes,
-                    count: entry.file_count,
-                    children: children.into_iter().collect(),
-                    direct_files,
-                },
-            );
-        }
-        folders.entry("/".into()).or_default();
-        Self { folders }
-    }
-
-    pub(crate) fn from_records(records: &[FileRecord]) -> Self {
-        let mut folders = BTreeMap::<String, FolderSummary>::new();
-        let mut connected_parents = HashSet::<String>::new();
-        folders.entry("/".into()).or_default();
-        for record in records {
-            let normalized = normalize_path(&record.path);
-            let parent = parent_path(&normalized);
-            if connected_parents.insert(parent.clone()) {
-                let mut ancestors = ancestor_paths(&parent);
-                if ancestors.is_empty() {
-                    ancestors.push("/".into());
-                }
-                for pair in ancestors.windows(2) {
-                    folders
-                        .entry(pair[0].clone())
-                        .or_default()
-                        .children
-                        .insert(pair[1].clone());
-                    folders.entry(pair[1].clone()).or_default();
-                }
-            }
-            if record.kind == FileKind::Dir {
-                folders.entry(normalized.clone()).or_default();
-                if normalized != parent {
-                    folders
-                        .entry(parent)
-                        .or_default()
-                        .children
-                        .insert(normalized);
-                }
-            } else {
-                let name = path_name(&normalized);
-                let extension = name
-                    .rsplit_once('.')
-                    .map_or("", |(_, extension)| extension)
-                    .to_ascii_lowercase();
-                let summary = folders.entry(parent).or_default();
-                if matches!(record.kind, FileKind::File | FileKind::Symlink) {
-                    summary.size = summary.size.saturating_add(record.size);
-                    summary.count += 1;
-                }
-                summary.direct_files.push(TreeFile {
-                    path: record.path.to_string(),
-                    name,
-                    size: record.size,
-                    extension,
-                });
-            }
-        }
-
-        // Each file updates only its direct parent above. Aggregate every folder
-        // into its parent once instead of revisiting every ancestor per record.
-        let mut paths = folders.keys().cloned().collect::<Vec<_>>();
-        paths.sort_unstable_by_key(|path| std::cmp::Reverse(ancestor_paths(path).len()));
-        for path in paths {
-            if path == "/" {
-                continue;
-            }
-            let parent = parent_path(&path);
-            let Some(child) = folders.get(&path) else {
-                continue;
-            };
-            let (size, count) = (child.size, child.count);
-            let summary = folders.entry(parent).or_default();
-            summary.size = summary.size.saturating_add(size);
-            summary.count = summary.count.saturating_add(count);
-        }
-        for folder in folders.values_mut() {
-            folder
-                .direct_files
-                .sort_unstable_by_key(|file| std::cmp::Reverse(file.size));
-        }
-        Self { folders }
-    }
-}
 
 #[derive(Clone)]
 struct MapBlock {
@@ -170,8 +30,10 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
         });
         return;
     }
-    if app.tree_model.is_none() {
-        app.request_tree_model();
+     // Fetch-on-navigate: requests complete instantly when every visible
+     // folder is cached, otherwise the missing branches render as they land.
+     app.request_tree_model();
+     if app.tree_model.is_none() {
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
                 ui.spinner();
@@ -295,7 +157,7 @@ fn treemap_legend(ui: &mut Ui) {
     ui.painter().text(
         rect.right_center() - Vec2::new(8.0, 0.0),
         Align2::RIGHT_CENTER,
-        "Area represents indexed size",
+        "Area represents on-disk size",
         sans(9.0),
         SUBTLE,
     );
@@ -318,7 +180,7 @@ fn tree_panel(
     let root = hierarchy.folders.get("/").cloned().unwrap_or_default();
     fixed_strip(ui, 31.0, SURFACE, |ui| {
         ui.add_space(8.0);
-        ui.label(RichText::new("Local disk").font(sans(11.0)).strong());
+        ui.label(RichText::new("Indexed space").font(sans(11.0)).strong());
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(7.0);
             ui.label(
@@ -328,60 +190,51 @@ fn tree_panel(
             );
         });
     });
+    // Flatten the expanded subtree and index the current folder files, so
+    // only visible rows paint each frame.
+    let mut folder_rows: Vec<(&str, usize)> = Vec::new();
+    let mut stack = vec![("/", 0)];
+    while let Some((path, depth)) = stack.pop() {
+        folder_rows.push((path, depth));
+        if expanded.contains(path) {
+             if let Some(folder) = hierarchy.folders.get(path) {
+                 for child in folder.children.iter().rev() {
+                     stack.push((child.path.as_str(), depth + 1));
+                 }
+             }
+        }
+    }
+    let file_depth = ancestor_paths(current_path).len();
+    let files = hierarchy.folders.get(current_path).map_or(&[] as &[TreeFile], |folder| &folder.direct_files);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            tree_row(ui, hierarchy, "/", 0, current_path, expanded, action);
-            render_folder_children(ui, hierarchy, "/", 1, current_path, expanded, action);
-            if let Some(folder) = hierarchy.folders.get(current_path) {
-                let depth = ancestor_paths(current_path).len();
-                for file in &folder.direct_files {
-                    let (rect, response) = tree_line(ui, depth, &file.path, false, false);
-                    let name_clip = Rect::from_min_max(
-                        rect.min + Vec2::new(5.0, 0.0),
-                        egui::pos2((rect.right() - 68.0).max(rect.left()), rect.bottom()),
-                    );
-                    ui.painter().with_clip_rect(name_clip).text(
-                        rect.left_center() + Vec2::new(22.0 + depth as f32 * 13.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        &file.name,
-                        sans(9.5),
-                        MUTED,
-                    );
-                    ui.painter().text(
-                        rect.right_center() - Vec2::new(6.0, 0.0),
-                        Align2::RIGHT_CENTER,
-                        format_size(file.size),
-                        mono(8.0),
-                        SUBTLE,
-                    );
-                    if response.double_clicked() {
-                        *action.borrow_mut() = Some(TreeAction::Open(file.path.clone()));
-                    } else if response.clicked() {
-                        *action.borrow_mut() = Some(TreeAction::Select(file.path.clone()));
-                    }
+        .show_rows(ui, 24.0, folder_rows.len() + files.len(), |ui, range| {
+            for row in range {
+                if row < folder_rows.len() {
+                    let (path, depth) = folder_rows[row];
+                    tree_row(ui, hierarchy, path, depth, current_path, expanded, action);
+                } else if let Some(file) = files.get(row - folder_rows.len()) {
+                    file_row(ui, file, file_depth, action);
                 }
             }
         });
 }
 
-fn render_folder_children(
-    ui: &mut Ui,
-    hierarchy: &Hierarchy,
-    parent: &str,
-    depth: usize,
-    current: &str,
-    expanded: &mut BTreeSet<String>,
-    action: &std::cell::RefCell<Option<TreeAction>>,
-) {
-    let Some(folder) = hierarchy.folders.get(parent) else {
-        return;
-    };
-    for child in &folder.children {
-        tree_row(ui, hierarchy, child, depth, current, expanded, action);
-        if expanded.contains(child) {
-            render_folder_children(ui, hierarchy, child, depth + 1, current, expanded, action);
-        }
+fn file_row(ui: &mut Ui, file: &TreeFile, depth: usize, action: &std::cell::RefCell<Option<TreeAction>>) {
+    let (rect, response) = tree_line(ui, depth, &file.path, false, false);
+    let clip = Rect::from_min_max(rect.min + Vec2::new(5.0, 0.0), egui::pos2((rect.right() - 68.0).max(rect.left()), rect.bottom()));
+    ui.painter().with_clip_rect(clip).text(
+        rect.left_center() + Vec2::new(22.0 + depth as f32 * 13.0, 0.0),
+        Align2::LEFT_CENTER,
+        path_name(&file.path),
+        sans(9.5),
+        MUTED,
+    );
+    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), Align2::RIGHT_CENTER, format_size(file.size), mono(8.0), SUBTLE);
+    if response.double_clicked() {
+        *action.borrow_mut() = Some(TreeAction::Open(file.path.clone()));
+    } else if response.clicked() {
+        *action.borrow_mut() = Some(TreeAction::Select(file.path.clone()));
     }
 }
 
@@ -396,7 +249,7 @@ fn tree_row(
 ) {
     let selected = path == current;
     let name = if path == "/" {
-        "Local disk /".into()
+        "Indexed space".into()
     } else {
         path_name(path)
     };
@@ -584,7 +437,7 @@ fn breadcrumb(
     let crumbs = ancestor_paths(current_path);
     for (index, path) in crumbs.iter().enumerate() {
         let label = if path == "/" {
-            "Local disk".to_owned()
+            "Indexed space".to_owned()
         } else {
             path_name(path)
         };
@@ -616,47 +469,54 @@ fn breadcrumb(
             x += 12.0;
         }
     }
-    if let Some(folder) = hierarchy.folders.get(current_path) {
-        ui.painter().text(
-            rect.right_center() - Vec2::new(8.0, 0.0),
-            Align2::RIGHT_CENTER,
-            format!("{} indexed", format_size(folder.size)),
-            mono(8.5),
-            SUBTLE,
-        );
-    }
+     if let Some(folder) = hierarchy.folders.get(current_path) {
+         let label = if folder.files_truncated {
+             format!(
+                 "{} indexed · top {} files",
+                 format_size(folder.size),
+                 folder.direct_files.len()
+             )
+         } else {
+             format!("{} indexed", format_size(folder.size))
+         };
+         ui.painter().text(
+             rect.right_center() - Vec2::new(8.0, 0.0),
+             Align2::RIGHT_CENTER,
+             label,
+             mono(8.5),
+             SUBTLE,
+         );
+     }
 }
 
 fn map_blocks(hierarchy: &Hierarchy, current: &str) -> Vec<MapBlock> {
-    let Some(folder) = hierarchy.folders.get(current) else {
-        return Vec::new();
-    };
-    let mut blocks = Vec::new();
-    for child in &folder.children {
-        if let Some(summary) = hierarchy.folders.get(child) {
-            blocks.push(MapBlock {
-                path: child.clone(),
-                name: path_name(child),
-                bytes: summary.size.max(1),
-                count: summary.count,
-                folder: true,
-                extension: String::new(),
-            });
+    enum Child { Dir(usize), File(usize) }
+     let Some(folder) = hierarchy.folders.get(current) else { return Vec::new(); };
+     // Subdirectory totals ride along in the parent listing, so tiles never
+     // force-fetch child directories.
+     let mut candidates: Vec<(u64, Child)> = Vec::new();
+     for (index, child) in folder.children.iter().enumerate() {
+         candidates.push((child.size.max(1), Child::Dir(index)));
+     }
+     for (index, file) in folder.direct_files.iter().enumerate() {
+         candidates.push((file.size.max(1), Child::File(index)));
+     }
+    if candidates.len() > 256 {
+        candidates.select_nth_unstable_by_key(255, |(bytes, _)| std::cmp::Reverse(*bytes));
+        candidates.truncate(256);
+    }
+    candidates.sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.0));
+    candidates.into_iter().map(|(_, child)| match child {
+         Child::Dir(index) => {
+             let child = &folder.children[index];
+             MapBlock { path: child.path.clone(), name: path_name(&child.path), bytes: child.size.max(1), count: child.count, folder: true, extension: String::new() }
+         }
+        Child::File(index) => {
+            let file = &folder.direct_files[index];
+            let name = path_name(&file.path);
+            MapBlock { path: file.path.clone(), name: name.clone(), bytes: file.size.max(1), count: 1, folder: false, extension: name.rsplit_once('.').map_or(String::new(), |(_, extension)| extension.to_ascii_lowercase()) }
         }
-    }
-    for file in &folder.direct_files {
-        blocks.push(MapBlock {
-            path: file.path.clone(),
-            name: file.name.clone(),
-            bytes: file.size.max(1),
-            count: 1,
-            folder: false,
-            extension: file.extension.clone(),
-        });
-    }
-    blocks.sort_unstable_by_key(|block| std::cmp::Reverse(block.bytes));
-    blocks.truncate(256);
-    blocks
+    }).collect()
 }
 
 fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
@@ -668,16 +528,7 @@ fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
             app.treemap_path = path;
         }
         TreeAction::Select(path) => {
-            if let Some(raw) = path
-                .strip_prefix("file:")
-                .and_then(|value| value.parse::<usize>().ok())
-            {
-                if let Some(hit) = app.hits.get(raw) {
-                    app.selected = Some(hit.record.path.to_string());
-                }
-            } else {
-                app.selected = Some(path);
-            }
+            app.selected = Some(path);
         }
         TreeAction::Open(path) => perform_file_action(app, FileAction::Open(PathBuf::from(path))),
     }
@@ -717,94 +568,4 @@ fn layout_map<'a>(items: &'a [MapBlock], rect: Rect, out: &mut Vec<(&'a MapBlock
     };
     layout_map(&items[..split], first, out);
     layout_map(&items[split..], second, out);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn file(path: &str) -> FileRecord {
-        FileRecord {
-            path: path.into(),
-            size: 42,
-            mtime: 0,
-            mode: 0,
-            kind: FileKind::File,
-            fs: neutra_core::FsKind::Ntfs,
-            native_id: 1,
-            native_parent: 0,
-            source: 0,
-        }
-    }
-
-    #[test]
-    fn hierarchy_reads_folder_totals_and_files_from_summary_sidecar() {
-        let path =
-            std::env::temp_dir().join(format!("neutra-gui-summary-{}.nsx", std::process::id()));
-        let records = vec![
-            FileRecord {
-                path: "/docs/readme.md".into(),
-                size: 12,
-                mtime: 0,
-                mode: 0,
-                kind: FileKind::File,
-                fs: neutra_core::FsKind::Btrfs,
-                native_id: 1,
-                native_parent: 0,
-                source: 0,
-            },
-            FileRecord {
-                path: "/docs/archive".into(),
-                size: 0,
-                mtime: 0,
-                mode: 0,
-                kind: FileKind::Dir,
-                fs: neutra_core::FsKind::Btrfs,
-                native_id: 2,
-                native_parent: 0,
-                source: 0,
-            },
-        ];
-        DirectorySummary::build(&records, &path, 1).unwrap();
-        let summary = DirectorySummary::open_for_compact(&path, 1).unwrap();
-        let hierarchy = Hierarchy::from_summary(&summary);
-        assert_eq!(hierarchy.folders["/"].size, 12);
-        assert_eq!(hierarchy.folders["/docs"].size, 12);
-        assert_eq!(hierarchy.folders["/docs"].direct_files[0].name, "readme.md");
-        assert!(hierarchy.folders["/docs"]
-            .children
-            .contains("/docs/archive"));
-        let _ = std::fs::remove_file(path);
-        let sidecar = DirectorySummary::path_for(
-            &std::env::temp_dir().join(format!("neutra-gui-summary-{}.nsx", std::process::id())),
-        );
-        let _ = std::fs::remove_file(sidecar);
-    }
-
-    #[test]
-    fn hierarchy_connects_windows_drives_and_unc_shares_to_computer_root() {
-        let hierarchy = Hierarchy::from_records(&[
-            file(r"C:\\Users\\Alex\\report.txt"),
-            file(r"\\\\server\\share\\team\\plan.txt"),
-        ]);
-        let root = hierarchy.folders.get("/").unwrap();
-        assert!(root.children.contains("C:/"));
-        assert!(root.children.contains("//server/share"));
-        assert_eq!((root.count, root.size), (2, 84));
-        assert_eq!(
-            (
-                hierarchy.folders["C:/"].count,
-                hierarchy.folders["C:/"].size
-            ),
-            (1, 42)
-        );
-        assert_eq!(
-            hierarchy.folders["C:/Users/Alex"].direct_files[0].name,
-            "report.txt"
-        );
-        assert_eq!(
-            hierarchy.folders["//server/share/team"].direct_files[0].name,
-            "plan.txt"
-        );
-    }
 }

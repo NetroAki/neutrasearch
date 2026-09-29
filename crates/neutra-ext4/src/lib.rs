@@ -103,6 +103,7 @@ mod linux {
     struct Meta {
         mode: u16,
         size: u64,
+        disk: u64,
         mtime: i64,
     }
     struct Fs(Ext2Filsys);
@@ -175,6 +176,7 @@ mod linux {
                 continue;
             }
             let kind = kind(inode.mode);
+            let disk = (inode.blocks as u64).saturating_mul(512);
             let size = if kind == FileKind::File {
                 inode.size as u64 | ((inode.size_high as u64) << 32)
             } else {
@@ -185,6 +187,7 @@ mod linux {
                 Meta {
                     mode: inode.mode,
                     size,
+                    disk,
                     mtime: inode.mtime as i64,
                 },
             );
@@ -237,6 +240,7 @@ mod linux {
                 sink(FileRecord {
                     path: path.into_boxed_str(),
                     size: meta.size,
+                    disk: meta.disk,
                     mtime: meta.mtime,
                     mode: meta.mode as u32,
                     kind: fk,

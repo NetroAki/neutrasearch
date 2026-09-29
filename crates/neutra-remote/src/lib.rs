@@ -35,9 +35,7 @@ pub struct Provisioner {
 
 impl Provisioner {
     pub fn from_env() -> Self {
-        let artifacts = std::env::var_os("NEUTRASEARCH_HELPER_ARTIFACTS")
-            .or_else(|| std::env::var_os("NEUTRA_HELPER_ARTIFACTS"))
-            .map(PathBuf::from)
+         let artifacts = std::env::var_os("NEUTRASEARCH_HELPER_ARTIFACTS").map(PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::current_exe()
                     .ok()
