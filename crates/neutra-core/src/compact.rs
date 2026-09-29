@@ -667,26 +667,21 @@ type IndexBytes = Vec<u8>;
             compare_records(q.sort, &(a.0, &a.1), &(b.0, &b.1))
         };
         let prune_at = q.limit.saturating_mul(2).max(q.limit.saturating_add(32));
-        // Candidate blocks decode in parallel and merge through a reduce
-        // tree, so only in-flight chunks plus O(limit)-sized partials are
-        // ever resident. Collecting every chunk's top-N first materialized
-        // tens of gigabytes on a full-base (empty-query) search.
-        let merge = |left: io::Result<(u64, Vec<(u32, FileRecord)>)>,
-                     right: io::Result<(u64, Vec<(u32, FileRecord)>)>| {
-            let (left_count, mut left_ranked) = left?;
-            let (right_count, mut right_ranked) = right?;
-            left_ranked.append(&mut right_ranked);
-            if q.limit > 0 && left_ranked.len() >= prune_at {
-                retain_best(&mut left_ranked, q.limit, &cmp);
-            }
-            Ok((left_count + right_count, left_ranked))
-        };
-        let (mut matched, mut ranked) = candidates
-            .par_chunks(64)
-            .map(|chunk| {
+        // Split the candidate blocks into a fixed number of contiguous
+        // groups (not thousands of tiny chunks): each group streams its
+        // blocks keeping only a pruned top-N, so peak memory is groups ×
+        // limit plus one in-flight block per thread. Per-chunk collect and
+        // reduce trees both re-moved every record through O(depth) merges
+        // and burned minutes on full-base searches.
+        const GROUPS: usize = 64;
+        let group_len = candidates.len().div_ceil(GROUPS).max(1);
+        let mut decoded: Vec<io::Result<(u64, Vec<(u32, FileRecord)>)>> = Vec::new();
+        candidates
+            .par_chunks(group_len)
+            .map(|group| {
                 let mut matched = 0u64;
                 let mut ranked = Vec::<(u32, FileRecord)>::new();
-                for &block in chunk {
+                for &block in group {
                     for record in self.read_block(block)? {
                         if delta.is_some_and(|overlay| overlay.shadows(record.path.as_ref())) {
                             continue;
@@ -698,13 +693,26 @@ type IndexBytes = Vec<u8>;
                             }
                         }
                     }
+                    if q.limit > 0 && ranked.len() >= prune_at {
+                        retain_best(&mut ranked, q.limit, &cmp);
+                    }
                 }
-                if q.limit > 0 && ranked.len() >= prune_at {
+                if q.limit > 0 && ranked.len() > q.limit {
                     retain_best(&mut ranked, q.limit, &cmp);
                 }
                 Ok((matched, ranked))
             })
-            .reduce(|| Ok((0, Vec::new())), merge)?;
+            .collect_into_vec(&mut decoded);
+        let mut ranked = Vec::<(u32, FileRecord)>::new();
+        let mut matched = 0u64;
+        for part in decoded {
+            let (count, mut top) = part?;
+            matched += count;
+            ranked.append(&mut top);
+            if q.limit > 0 && ranked.len() >= prune_at {
+                retain_best(&mut ranked, q.limit, &cmp);
+            }
+        }
         if let Some(overlay) = delta {
             for record in overlay.upserts() {
                 if q.passes_filters(record) {
@@ -726,6 +734,15 @@ type IndexBytes = Vec<u8>;
             .into_iter()
             .map(|(score, record)| SearchHit { score, record })
             .collect();
+        // Full-base searches transiently allocate gigabytes of decoded
+        // records; hand fully-free pages back so a long-lived GUI does not
+        // pin them in allocator arenas forever. No-op when small.
+        #[cfg(unix)]
+        if self.record_count > 1_000_000 {
+            unsafe {
+                libc::malloc_trim(0);
+            }
+        }
         Ok((
             hits,
             SearchStats {
