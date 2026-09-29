@@ -9,26 +9,29 @@ use crate::NeutraApp;
 use egui::{Align, Layout, RichText};
 
 pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
-    ui.label(RichText::new("Search Locations").font(sans(12.0)).strong());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Search Locations").font(sans(12.0)).strong());
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui
+                .add_enabled(
+                    !app.scanning && !app.building_cache && !app.cancelling,
+                    egui::Button::new("+ Add location").small(),
+                )
+                .clicked()
+            {
+                if let Some(folder) =
+                    rfd::FileDialog::new().set_title("Add search folder").pick_folder()
+                {
+                    app.add_root(folder);
+                }
+            }
+        });
+    });
     ui.label(
         RichText::new("Folders to include in the index.")
             .font(sans(10.0))
             .color(MUTED),
     );
-    ui.add_space(4.0);
-    if ui
-        .add_enabled(
-            !app.scanning && !app.building_cache && !app.cancelling,
-            egui::Button::new("+ Add location").small(),
-        )
-        .clicked()
-    {
-        if let Some(folder) =
-            rfd::FileDialog::new().set_title("Add search folder").pick_folder()
-        {
-            app.add_root(folder);
-        }
-    }
     ui.add_space(6.0);
     location_rows(app, ui);
 }
