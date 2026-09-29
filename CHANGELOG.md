@@ -50,10 +50,12 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Fixed
 
-- Startup no longer decodes the whole base into RAM before showing a
-  window: the compact search merges per-chunk top-N through a reduce tree
-  (empty-query launch on a 51M-record index held ~15 GB anonymous before,
-  ~300 MB after, with the rest reclaimable file pages).
+- Startup no longer burns minutes and gigabytes before showing a window:
+  the compact search splits candidates into a fixed set of groups that
+  stream with pruned top-N lists (a 51M-record empty query runs ~2 s wall),
+  and fully-free pages are handed back after big searches. Residential
+  anonymous memory on that index went ~15 GB to ~300 MB, the rest being
+  reclaimable mapped file pages.
 - Diagnostics rows truncate earlier so long lane statuses cannot force the
   dialog wider than its default size; the About window is resizable.
 - The NTFS lane never walks: an unreadable raw volume hard-fails instead of
