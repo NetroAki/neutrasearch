@@ -4,25 +4,25 @@
 
 use super::*;
 
-pub(super) const BLACK: Color32 = Color32::from_rgb(18, 19, 26);
-pub(crate) const CANVAS: Color32 = Color32::from_rgb(23, 24, 33);
-pub(super) const SURFACE: Color32 = Color32::from_rgb(30, 31, 43);
-pub(super) const RAISED: Color32 = Color32::from_rgb(38, 40, 54);
-pub(super) const HOVER: Color32 = Color32::from_rgb(47, 49, 66);
-pub(super) const ACTIVE: Color32 = Color32::from_rgb(54, 56, 78);
-pub(super) const TEXT: Color32 = Color32::from_rgb(232, 233, 239);
-pub(super) const MUTED: Color32 = Color32::from_rgb(170, 172, 187);
-pub(super) const SUBTLE: Color32 = Color32::from_rgb(121, 124, 143);
-pub(super) const LINE: Color32 = Color32::from_rgb(47, 49, 63);
-pub(super) const LINE_STRONG: Color32 = Color32::from_rgb(67, 70, 89);
-pub(super) const ACID: Color32 = Color32::from_rgb(157, 162, 222);
-pub(super) const ACID_STRONG: Color32 = Color32::from_rgb(126, 132, 205);
-pub(super) const BLUE: Color32 = Color32::from_rgb(111, 145, 194);
-pub(super) const BLUE_DIM: Color32 = Color32::from_rgb(36, 46, 66);
+pub(super) const BLACK: Color32 = Color32::from_rgb(10, 13, 19);
+pub(crate) const CANVAS: Color32 = Color32::from_rgb(13, 17, 24);
+pub(super) const SURFACE: Color32 = Color32::from_rgb(21, 27, 38);
+pub(super) const RAISED: Color32 = Color32::from_rgb(28, 35, 48);
+pub(super) const HOVER: Color32 = Color32::from_rgb(36, 44, 60);
+pub(super) const ACTIVE: Color32 = Color32::from_rgb(44, 54, 74);
+pub(super) const TEXT: Color32 = Color32::from_rgb(230, 233, 239);
+pub(super) const MUTED: Color32 = Color32::from_rgb(139, 147, 163);
+pub(super) const SUBTLE: Color32 = Color32::from_rgb(103, 111, 128);
+pub(super) const LINE: Color32 = Color32::from_rgb(32, 39, 53);
+pub(super) const LINE_STRONG: Color32 = Color32::from_rgb(52, 62, 82);
+pub(super) const ACID: Color32 = Color32::from_rgb(96, 150, 250);
+pub(super) const ACID_STRONG: Color32 = Color32::from_rgb(47, 124, 246);
+pub(super) const BLUE: Color32 = Color32::from_rgb(96, 150, 250);
+pub(super) const BLUE_DIM: Color32 = Color32::from_rgb(24, 38, 62);
 pub(super) const WARN: Color32 = Color32::from_rgb(224, 178, 74);
 pub(super) const WARN_DIM: Color32 = Color32::from_rgb(67, 53, 28);
-pub(super) const ERROR: Color32 = Color32::from_rgb(224, 101, 90);
-pub(super) const ERROR_DIM: Color32 = Color32::from_rgb(70, 35, 33);
+pub(super) const ERROR: Color32 = Color32::from_rgb(229, 83, 75);
+pub(super) const ERROR_DIM: Color32 = Color32::from_rgb(66, 28, 30);
 
 
 pub(crate) fn configure(ctx: &egui::Context) {

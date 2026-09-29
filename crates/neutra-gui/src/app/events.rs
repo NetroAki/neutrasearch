@@ -35,8 +35,17 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
     match event {
         Event::Message(msg) => handle_helper_message(app, msg),
         Event::Fatal(error) => {
-            end_scan(app);
-            note(app, "helper", "HELPER", error, true);
+            // A kill after Cancel surfaces as the helper stopping early;
+            // report it as a deliberate cancel, not a crash.
+            if app.cancelling && error.contains("stopped before completing") {
+                end_scan(app);
+                app.cancelling = false;
+                note(app, "scan", "NATIVE SCAN", "Indexing cancelled — previous index kept", false);
+                app.requery();
+            } else {
+                end_scan(app);
+                note(app, "helper", "HELPER", error, true);
+            }
         }
         Event::Remote { key, status, error } => {
             let lane_key = format!("remote:{key}");
@@ -100,14 +109,18 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
         }
         HelperMsg::ScanDone { mount, stats } => {
             app.active_scans = app.active_scans.saturating_sub(1);
-            let key = mount.mountpoint.display().to_string();
-            let label = mount.fs.label().to_uppercase();
-            let records = stats.records;
-            let ms = stats.wall_ms;
-            note(app, &key, label, stats.detail, false);
-            if let Some(lane) = app.lanes.get_mut(&key) {
-                lane.records = records;
-                lane.ms = ms;
+            // Post-cancel stragglers must not repaint finished lanes; the
+            // completion path below reports the cancel exactly once.
+            if !app.cancelling {
+                let key = mount.mountpoint.display().to_string();
+                let label = mount.fs.label().to_uppercase();
+                let records = stats.records;
+                let ms = stats.wall_ms;
+                note(app, &key, label, stats.detail, false);
+                if let Some(lane) = app.lanes.get_mut(&key) {
+                    lane.records = records;
+                    lane.ms = ms;
+                }
             }
         }
         HelperMsg::ScanError { mount, error } => {
@@ -146,6 +159,10 @@ pub(super) fn note(
     status: impl Into<String>,
     error: bool,
 ) {
+    // A fresh error re-arms a dismissed banner.
+    if error {
+        app.banner_hidden = false;
+    }
     app.lanes.insert(
         key.into(),
         LaneState {
