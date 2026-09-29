@@ -141,9 +141,9 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - A missing helper binary now suggests installing it beside the executable or setting `NEUTRASEARCH_HELPER`.
 - Diagnostics shows when the index was last updated (from the index file's publish time).
 - Treemap views say "Indexed space" instead of "Local disk" so indexed network shares are not mislabeled.
-- The Locations & Index panel is docked on the right on every launch (closable,
-  reopened from File > Locations and index); the old modal dialog survives only
-  for first-run setup.
+- The Locations & Index panel stays hidden until asked for (File > Locations and
+  index, the Index details button, or the access-banner Review link); the old
+  modal dialog survives only for first-run setup.
 - Result paths show the tail with a leading ellipsis and fit their column;
   inactive sort headers no longer show arrows.
 - The results canvas moved to the reference blue-slate tone and the kind tabs
