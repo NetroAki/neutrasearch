@@ -19,7 +19,7 @@ pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     if ui
         .add_enabled(
             !app.scanning && !app.building_cache && !app.cancelling,
-            egui::Button::new("+ Add folder").small(),
+            egui::Button::new("+ Add location").small(),
         )
         .clicked()
     {
@@ -82,6 +82,14 @@ fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
         {
             app.begin_scan();
         }
+        #[cfg(not(target_os = "windows"))]
+        if app.scanning {
+            if app.cancelling {
+                ui.add_enabled(false, egui::Button::new("Cancelling\u{2026}").small());
+            } else if secondary_button(ui, "Cancel running scan", super::super::widgets::ERROR).clicked() {
+                app.cancel_scan();
+            }
+        }
         #[cfg(target_os = "linux")]
         if !rebuilding
             && secondary_button(ui, "Rebuild as administrator", ACID_STRONG).clicked()
@@ -119,37 +127,90 @@ pub(crate) fn location_rows(app: &mut NeutraApp, ui: &mut egui::Ui) {
     }
     let mut remove = None;
     for (index, root) in app.selected_roots.iter().enumerate() {
-        location_row(app, ui, index, root, &mut remove);
+        let root_text = root.display().to_string();
+        let (status, color) = root_status(app, &root_text);
+        ui.horizontal(|ui| {
+            location_icon(ui, &root_text);
+            ui.label(RichText::new(shorten(&root_text, 34)).font(mono(9.0)).color(TEXT));
+            row_tail(app, ui, index, &root_text, status, color, &mut remove);
+        });
     }
     if let Some(index) = remove {
         app.remove_root(index);
     }
 }
 
-fn location_row(
+fn location_icon(ui: &mut egui::Ui, root: &str) {
+    if root == "/home" || root.starts_with("/home/") {
+        super::super::icons::paint_home_icon(ui, MUTED);
+    } else {
+        super::super::icons::paint_drive_icon(ui, MUTED);
+    }
+}
+
+fn row_tail(
     app: &NeutraApp,
     ui: &mut egui::Ui,
     index: usize,
-    root: &std::path::PathBuf,
+    root_text: &str,
+    status: &'static str,
+    color: egui::Color32,
     remove: &mut Option<usize>,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(shorten(&root.display().to_string(), 56))
-                .font(mono(9.0))
-                .color(TEXT),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let overflow = ui.add_enabled(
-                !app.scanning && !app.building_cache && !app.cancelling,
-                egui::Button::new("\u{22ef}").small(),
-            );
-            overflow.context_menu(|menu| {
-                if menu.button("Remove folder").clicked() {
-                    *remove = Some(index);
-                    menu.close();
-                }
-            });
-        });
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        row_menu(app, ui, index, root_text, remove);
+        ui.label(RichText::new(status).font(sans(10.0)).color(color));
+        let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(), 3.0, color);
     });
+}
+
+fn row_menu(app: &NeutraApp, ui: &mut egui::Ui, index: usize, root_text: &str, remove: &mut Option<usize>) {
+    let overflow = ui.add_enabled(
+        !app.scanning && !app.building_cache && !app.cancelling,
+        egui::Button::new("\u{22ef}").small(),
+    );
+    overflow.context_menu(|menu| {
+        if menu.button("Copy path").clicked() {
+            super::super::widgets::copy_to_clipboard(ui, root_text);
+            menu.close();
+        }
+        if menu.button("Remove folder").clicked() {
+            *remove = Some(index);
+            menu.close();
+        }
+    });
+}
+
+/// Aggregate lane state for one selected root: any failed lane reads
+/// Unavailable, an unfinished scan reads Indexing, finished lanes Ready.
+fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
+    use super::super::icons::GREEN;
+    use super::super::widgets::{BLUE, ERROR, MUTED};
+    let failed = app.lanes.iter().any(|(key, lane)| lane.error && covers(key, root));
+    if failed {
+        return ("Unavailable", ERROR);
+    }
+    let known: Vec<&crate::LaneState> = app
+        .lanes
+        .iter()
+        .filter(|(key, _)| covers(key, root))
+        .map(|(_, lane)| lane)
+        .collect();
+    if known.is_empty() || !app.scanning {
+        if app.index_is_empty() {
+            return ("\u{2014}", MUTED);
+        }
+        return ("Ready", GREEN);
+    }
+    if known.iter().all(|lane| lane.records > 0) {
+        ("Ready", GREEN)
+    } else {
+        ("Indexing\u{2026}", BLUE)
+    }
+}
+
+/// A lane covers a root when its mountpoint is the root or an ancestor.
+fn covers(key: &str, root: &str) -> bool {
+    key.starts_with('/') && (key == "/" || key == root || root.starts_with(&format!("{key}/")))
 }

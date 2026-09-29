@@ -19,7 +19,7 @@ mod sidebar;
  mod treemap;
  pub(super) mod widgets;
 
-use icons::preset_pill;
+use icons::filter_tab;
 pub(crate) use sidebar::SidebarTab;
 use widgets::{
     ancestor_paths,
@@ -36,7 +36,7 @@ use results::{details_view, grid_view, list_view, perform_file_action, surrender
 use treemap::treemap_view;
  pub(super) use hierarchy::Hierarchy;
 
-const MENU_H: f32 = 40.0;
+const MENU_H: f32 = 30.0;
 const QUERY_H: f32 = 44.0;
 const FILTER_H: f32 = 34.0;
 const TOOLBAR_H: f32 = 38.0;
@@ -99,7 +99,7 @@ impl KindFilter {
             Self::Images => "Images",
             Self::Video => "Video",
             Self::Programs => "Programs",
-            Self::Compressed => "Compressed",
+            Self::Compressed => "Archives",
             Self::Documents => "Documents",
             Self::Folders => "Folders",
             Self::Files => "Files",
@@ -206,8 +206,7 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
         if matches!(
             state,
             RuntimeState::IndexingBackground | RuntimeState::Permission | RuntimeState::Stale
-        ) && !app.banner_hidden
-        {
+        ) {
             fixed_strip(ui, BANNER_H, banner_color(state), |ui| {
                 runtime_banner(app, ui, state)
             });
@@ -312,14 +311,7 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
     ui.add_space(8.0);
     ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(20.0)));
     ui.add_space(6.0);
-    ui.vertical(|ui| {
-        ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
-        ui.label(
-            RichText::new("Find what matters.")
-                .font(sans(8.5))
-                .color(SUBTLE),
-        );
-    });
+    ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
     ui.add_space(12.0);
 
     if runtime_state(app) == RuntimeState::FirstRun {
@@ -536,12 +528,13 @@ fn kind_strip(app: &mut NeutraApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 for preset in KindFilter::ALL {
-                    if preset_pill(ui, preset, app.kind_filter == preset).clicked()
+                    if filter_tab(ui, preset.label(), app.kind_filter == preset).clicked()
                     {
                         app.kind_filter = preset;
                         app.save_settings();
                         app.requery();
                     }
+                    ui.add_space(6.0);
                 }
             });
         });
@@ -870,7 +863,7 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
         .circle_filled(dot.center(), 3.0, icons::GREEN);
     ui.label(
         RichText::new(format!(
-            "Search completed in {:.2} seconds",
+            "Completed in {:.2}s",
             app.search_stats.wall_us as f64 / 1_000_000.0
         ))
         .font(sans(10.0))

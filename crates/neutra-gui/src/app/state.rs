@@ -57,14 +57,16 @@ pub(crate) struct NeutraApp {
     pub(crate) scope_root: Option<String>,
     pub(crate) diagnostics_open: bool,
     pub(crate) sidebar_tab: ui::SidebarTab,
-    /// Dismissed banner stays hidden until a new error lane or scan starts.
-    pub(crate) banner_hidden: bool,
     /// A cancel request is in flight; scan starters stay disabled until the
     /// helper child dies and `ScanCancelled` arrives.
     pub(crate) cancelling: bool,
     /// Wall-clock start of the running scan, for matching the helper child
     /// by process birth time on cancel.
     pub(crate) scan_started: std::time::SystemTime,
+    /// Staged record counts per mount for the running scan (progress %).
+    pub(crate) staged_by_mount: std::collections::HashMap<String, u64>,
+    /// Last completed per-mount totals, loaded from settings.
+    pub(crate) mount_totals: std::collections::BTreeMap<String, u64>,
     pub(crate) about_open: bool,
     pub(crate) search_focus_requested: bool,
     pub(crate) tree_fraction: f32,
@@ -143,9 +145,10 @@ impl NeutraApp {
             scope_root: None,
             diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS"),
             sidebar_tab: ui::SidebarTab::default(),
-            banner_hidden: false,
             cancelling: false,
             scan_started: std::time::SystemTime::now(),
+            staged_by_mount: std::collections::HashMap::new(),
+            mount_totals: settings.last_mount_totals,
             about_open: false,
             search_focus_requested: false,
             tree_fraction: 0.23,

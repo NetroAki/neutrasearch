@@ -49,6 +49,11 @@ pub(crate) struct GuiSettings {
     pub(crate) case_sensitive: bool,
     #[serde(default)]
     pub(crate) regex_mode: bool,
+    /// Per-mount record totals from the last completed scan: the honest
+    /// denominator for progress percentages (native lanes never know the
+    /// total upfront).
+    #[serde(default)]
+    pub(crate) last_mount_totals: std::collections::BTreeMap<String, u64>,
     /// Match whole words only (`call` skips `calling`).
     #[serde(default)]
     pub(crate) whole_word: bool,
@@ -69,6 +74,7 @@ impl GuiSettings {
             search_mode: app.search_mode,
             case_sensitive: app.case_sensitive,
             regex_mode: app.regex_mode,
+            last_mount_totals: app.mount_totals.clone(),
             whole_word: app.whole_word,
             ignore_accents: app.ignore_accents,
         }

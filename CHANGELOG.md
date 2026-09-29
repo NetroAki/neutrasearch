@@ -24,6 +24,10 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Search
 
+- The shell follows the second mock: text filter tabs, amber access banner
+  with Review/elevated actions, tabbed sidebar (Locations, Index, Network,
+  Maintenance) with per-location status dots, real progress percentages
+  from previous per-mount totals, and a status bar with index state.
 - The Locations-and-index dialog is a docked sidebar with tabs (Search
   Locations, Index Status, Scanner Details, Index Maintenance, Network
   Folders); the filter row uses icon pills and the toolbar shows search
