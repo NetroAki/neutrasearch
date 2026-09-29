@@ -14,10 +14,8 @@ use neutra_core::{FileRecord, MountInfo, ScanStats};
 mod linux {
     use super::*;
     mod parallel;
-    use std::collections::{HashMap, HashSet};
-    use std::fs::File;
-    use std::os::fd::AsRawFd;
-    use std::time::Instant;
+     use std::collections::{HashMap, HashSet};
+     use std::time::Instant;
 
     const INODE_ITEM: u32 = 1;
     const INODE_REF: u32 = 12;
@@ -62,6 +60,7 @@ mod linux {
     #[derive(Clone, Copy, Debug)]
     struct Meta {
         size: u64,
+        disk: u64,
         mode: u32,
         mtime: i64,
     }
@@ -122,177 +121,11 @@ mod linux {
         | (0x94 << IOC_TYPESHIFT)
         | (17 << IOC_NRSHIFT)) as libc::c_ulong;
 
-    fn env_present(current: &str, legacy: &str) -> bool {
-        std::env::var_os(current).is_some() || std::env::var_os(legacy).is_some()
-    }
-    fn env_value(current: &str, legacy: &str) -> Option<String> {
-        std::env::var(current)
-            .ok()
-            .or_else(|| std::env::var(legacy).ok())
-    }
+
 
     pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
         let started = Instant::now();
-        let force_serial = env_present("NEUTRASEARCH_BTRFS_SERIAL", "NEUTRA_BTRFS_SERIAL")
-            || env_present(
-                "NEUTRASEARCH_BTRFS_MIN_OBJECTID",
-                "NEUTRA_BTRFS_MIN_OBJECTID",
-            );
-        let (nodes, names, batches) = if force_serial {
-            let file = File::open(&mount.mountpoint).with_context(|| {
-                format!(
-                    "open Btrfs mount {} (run 'neutrasearch index' with the required privileges)",
-                    mount.mountpoint.display()
-                )
-            })?;
-            let mut nodes = Vec::<Node>::with_capacity(13_000_000);
-            let mut names = Vec::<u8>::with_capacity(256 * 1024 * 1024);
-            let mut current_ino: Option<u64> = None;
-            let mut current_meta: Option<Meta> = None;
-            let mut current_link: Option<Link> = None;
-            let range_min = env_value(
-                "NEUTRASEARCH_BTRFS_MIN_OBJECTID",
-                "NEUTRA_BTRFS_MIN_OBJECTID",
-            )
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0u64);
-            let range_max = env_value(
-                "NEUTRASEARCH_BTRFS_MAX_OBJECTID",
-                "NEUTRA_BTRFS_MAX_OBJECTID",
-            )
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(u64::MAX);
-            let mut cursor = (range_min, INODE_ITEM, 0u64);
-            let mut batches = 0u64;
-            // Allocate/zero the large userspace result area once. Reallocating it
-            // per ioctl dominated multi-million-entry scans.
-            let mut search_storage = vec![0u64; SEARCH_V2_HEADER / 8 + SEARCH_BUF_U64S];
-            // SAFETY: Vec<u64> is 8-byte aligned and large enough for the fixed
-            // header followed immediately by buf_size bytes.
-            let args = unsafe { &mut *(search_storage.as_mut_ptr().cast::<SearchArgsV2>()) };
-
-            loop {
-                args.key = SearchKey {
-                    tree_id: 0,
-                    min_objectid: cursor.0,
-                    max_objectid: range_max,
-                    min_offset: cursor.2,
-                    max_offset: u64::MAX,
-                    min_transid: 0,
-                    max_transid: u64::MAX,
-                    min_type: cursor.1,
-                    max_type: INODE_EXTREF,
-                    nr_items: 65_535,
-                    ..SearchKey::default()
-                };
-                args.buf_size = (SEARCH_BUF_U64S * 8) as u64;
-                // SAFETY: the fixed prefix mirrors btrfs_ioctl_search_args_v2;
-                // the aligned trailing array is exactly buf_size bytes.
-                let rc = unsafe {
-                    libc::ioctl(file.as_raw_fd(), TREE_SEARCH_V2, args as *mut SearchArgsV2)
-                };
-                if rc < 0 {
-                    let e = std::io::Error::last_os_error();
-                    if e.raw_os_error() == Some(libc::EPERM)
-                        || e.raw_os_error() == Some(libc::EACCES)
-                    {
-                        bail!(
-                            "BTRFS_IOC_TREE_SEARCH denied; run 'neutrasearch index' as root/CAP_SYS_ADMIN"
-                        );
-                    }
-                    return Err(e).context("BTRFS_IOC_TREE_SEARCH");
-                }
-                let count = args.key.nr_items as usize;
-                if count == 0 {
-                    break;
-                }
-                batches += 1;
-                if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS")
-                    && batches.is_multiple_of(25)
-                {
-                    eprintln!(
-                        "btrfs batch={batches} count={count} cursor={:?} nodes={} wall_ms={}",
-                        cursor,
-                        nodes.len(),
-                        started.elapsed().as_millis()
-                    );
-                }
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        (args as *const SearchArgsV2)
-                            .cast::<u8>()
-                            .add(SEARCH_V2_HEADER),
-                        SEARCH_BUF_U64S * 8,
-                    )
-                };
-                let mut pos = 0usize;
-                let mut last = None;
-                for _ in 0..count {
-                    if pos + 32 > bytes.len() {
-                        bail!("kernel returned truncated Btrfs search header");
-                    }
-                    let h = Header {
-                        objectid: le64(&bytes[pos + 8..]),
-                        offset: le64(&bytes[pos + 16..]),
-                        item_type: le32(&bytes[pos + 24..]),
-                        len: le32(&bytes[pos + 28..]),
-                    };
-                    pos += 32;
-                    let end = pos
-                        .checked_add(h.len as usize)
-                        .context("Btrfs item length overflow")?;
-                    if end > bytes.len() {
-                        bail!("kernel returned truncated Btrfs search item");
-                    }
-                    let data = &bytes[pos..end];
-                    if current_ino != Some(h.objectid) {
-                        if let Some(old) = current_ino {
-                            finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
-                        }
-                        current_ino = Some(h.objectid);
-                    }
-                    match h.item_type {
-                        INODE_ITEM if data.len() >= 148 => {
-                            current_meta = Some(Meta {
-                                size: le64(&data[16..]),
-                                mode: le32(&data[52..]),
-                                mtime: le64(&data[136..]) as i64,
-                            })
-                        }
-                        INODE_REF if current_link.is_none() => {
-                            current_link = parse_inode_ref(h.offset, data, &mut names)
-                        }
-                        INODE_EXTREF if current_link.is_none() => {
-                            current_link = parse_inode_extref(data, &mut names)
-                        }
-                        _ => {}
-                    }
-                    pos = end;
-                    last = Some((h.objectid, h.item_type, h.offset));
-                }
-                let Some(last) = last else { break };
-                let Some(next) = next_key(last) else { break };
-                if next <= cursor {
-                    bail!("Btrfs search cursor did not advance");
-                }
-                cursor = next;
-            }
-
-            if let Some(old) = current_ino {
-                finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
-            }
-            if env_present("NEUTRASEARCH_PROGRESS", "NEUTRA_PROGRESS") {
-                eprintln!(
-                    "btrfs metadata phase: nodes={} batches={} wall_ms={}",
-                    nodes.len(),
-                    batches,
-                    started.elapsed().as_millis()
-                );
-            }
-            (nodes, names, batches)
-        } else {
-            parallel::scan_metadata(&mount.mountpoint, started)?
-        };
+         let (nodes, names, batches) = parallel::scan_metadata(&mount.mountpoint)?;
         let mut stats = ScanStats::default();
         let prefix = mount
             .mountpoint
@@ -343,6 +176,7 @@ mod linux {
             sink(FileRecord {
                 path: path.into_boxed_str(),
                 size: meta.size,
+                disk: meta.disk,
                 mtime: meta.mtime,
                 mode: meta.mode,
                 kind,
@@ -517,6 +351,7 @@ mod linux {
         fn paths_resolve_and_cycles_stop() {
             let meta = Meta {
                 size: 0,
+                disk: 0,
                 mode: libc::S_IFDIR,
                 mtime: 0,
             };

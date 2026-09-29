@@ -19,7 +19,7 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 | EXT2/3/4 | libext2fs |
 | Windows NTFS | MFT metadata |
 | macOS | Spotlight or `getattrlistbulk` |
-| ZFS | Experimental |
+| ZFS | Snapshot diff plus opt-in single-pass enumeration (`NEUTRASEARCH_ZFS_ALLOW_WALK`); native ZAP lane requires an OpenZFS build tree |
 
 A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings. Compact indexes also write a generation-bound `.dirs` sidecar containing logical folder totals and direct children, so hierarchy views do not need to decode every search record.
 

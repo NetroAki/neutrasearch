@@ -1,7 +1,49 @@
-//! Shared resolution for the durable machine index.
+//! Shared resolution for the durable machine index, plus the portable
+//! path-containment predicates shared by the helper and GUI scan paths.
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+/// Normalize a scan root into a portable ('/'-separated) prefix without a
+/// trailing separator; Windows drive roots keep theirs.
+pub fn portable_root_prefix(root: &str) -> String {
+    let mut value = root.replace('\\', "/");
+    while value.len() > 1 && value.ends_with('/') && !is_windows_drive_root(&value) {
+        value.pop();
+    }
+    value
+}
+
+/// Component-boundary containment for two already-portable paths.
+pub fn path_in_portable_root(path: &str, root: &str) -> bool {
+    if path == root {
+        return true;
+    }
+    if root.ends_with('/') {
+        return path.starts_with(root);
+    }
+    path.len() > root.len() && path.starts_with(root) && path.as_bytes()[root.len()] == b'/'
+}
+
+fn is_windows_drive_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn portable_prefixes_match_component_boundaries() {
+        let root = portable_root_prefix(r"C:\Users\alex\");
+        assert_eq!(root, "C:/Users/alex");
+        assert!(path_in_portable_root("C:/Users/alex/report.pdf", &root));
+        assert!(!path_in_portable_root("C:/Users/alexander/x", &root));
+        assert!(path_in_portable_root("C:/Users/alex", &root));
+        assert!(path_in_portable_root("/home/a/b", &portable_root_prefix("/")));
+    }
+}
 
 /// Resolve an explicit override, configured environment path, most recently
 /// built index, or the platform default—in that order.
@@ -23,12 +65,11 @@ fn resolve_index_path_from(
     explicit.or(configured).or(remembered).unwrap_or(default)
 }
 
-pub fn configured_index_path() -> Option<PathBuf> {
-    std::env::var_os("NEUTRASEARCH_INDEX")
-        .or_else(|| std::env::var_os("NEUTRA_INDEX"))
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-}
+ pub fn configured_index_path() -> Option<PathBuf> {
+     std::env::var_os("NEUTRASEARCH_INDEX")
+         .filter(|path| !path.is_empty())
+         .map(PathBuf::from)
+ }
 
 pub fn last_index_path() -> Option<PathBuf> {
     read_pointer(&index_pointer_path()).ok()

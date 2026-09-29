@@ -10,4 +10,5 @@ zfs-libzpool = []
 
 [dependencies]
 neutra-core.workspace = true
+libc.workspace = true
 anyhow.workspace = true

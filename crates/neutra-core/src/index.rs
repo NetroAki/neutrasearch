@@ -5,11 +5,17 @@
 //! A million-record substring scan is single-digit milliseconds on a modern
 //! CPU, which is why Everything-style tools keep it this simple.
 
-use crate::query::{Query, SortKey};
+use crate::matcher::compare_records;
+use crate::query::Query;
 use crate::types::FileRecord;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+ use std::io;
+ use std::time::Instant;
+
+ /// Envelope magic for versioned snapshots. Payloads without it predate the
+ /// envelope and the disk field, so restore decodes them as the old layout.
+ const LEGACY_MAGIC: &[u8; 8] = b"NEUTLG01";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct SearchStats {
@@ -80,27 +86,15 @@ impl Index {
     }
 
     /// Parallel filter + score, then top-N by the query's sort key.
-    pub fn search(&self, q: &Query) -> (Vec<SearchHit>, SearchStats) {
+    pub fn search(&self, q: &Query) -> io::Result<(Vec<SearchHit>, SearchStats)> {
         let started = Instant::now();
+        let matcher = q.matcher()?;
         // Keep only each worker's top-N candidates. The matched count remains
         // exact, but an empty query over millions of records no longer builds
         // a millions-element temporary vector before truncation.
-        let cmp = |a: &(u32, &FileRecord), b: &(u32, &FileRecord)| match q.sort {
-            SortKey::Relevance => {
-                b.0.cmp(&a.0)
-                    .then(b.1.mtime.cmp(&a.1.mtime))
-                    .then(a.1.path.cmp(&b.1.path))
-            }
-            SortKey::NameAsc => {
-                a.1.name()
-                    .to_ascii_lowercase()
-                    .cmp(&b.1.name().to_ascii_lowercase())
-                    .then(a.1.path.cmp(&b.1.path))
-            }
-            SortKey::PathAsc => a.1.path.cmp(&b.1.path),
-            SortKey::SizeDesc => b.1.size.cmp(&a.1.size).then(a.1.path.cmp(&b.1.path)),
-            SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime).then(a.1.path.cmp(&b.1.path)),
-        };
+        let sort = q.sort;
+        let cmp =
+            |a: &(u32, &FileRecord), b: &(u32, &FileRecord)| compare_records(sort, a, b);
         let prune = |ranked: &mut Vec<(u32, &FileRecord)>| {
             if q.limit > 0 && ranked.len() > q.limit {
                 ranked.select_nth_unstable_by(q.limit, &cmp);
@@ -115,7 +109,7 @@ impl Index {
                     let mut ranked = Vec::with_capacity(q.limit.min(chunk.len()));
                     for record in chunk {
                         if q.passes_filters(record) {
-                            if let Some(score) = q.score(record) {
+                            if let Some(score) = matcher.score(record) {
                                 matched += 1;
                                 ranked.push((score, record));
                             }
@@ -140,7 +134,7 @@ impl Index {
                     if !q.passes_filters(record) {
                         return None;
                     }
-                    q.score(record).map(|score| (score, record))
+                    matcher.score(record).map(|score| (score, record))
                 })
                 .collect::<Vec<_>>();
             (ranked.len() as u64, ranked)
@@ -153,23 +147,28 @@ impl Index {
                 record: record.clone(),
             })
             .collect();
-        (
+        Ok((
             hits,
             SearchStats {
                 scanned: self.records.len() as u64,
                 matched,
                 wall_us: started.elapsed().as_micros() as u64,
             },
-        )
+        ))
     }
 
     /// Serialize the whole index (instant-restart cache on disk).
     pub fn snapshot(&self) -> bincode::Result<Vec<u8>> {
-        bincode::serialize(&self.records)
+        let mut out = LEGACY_MAGIC.to_vec();
+        out.extend_from_slice(&bincode::serialize(&self.records)?);
+        Ok(out)
     }
 
     pub fn restore(bytes: &[u8]) -> bincode::Result<Index> {
-        let records: Vec<FileRecord> = bincode::deserialize(bytes)?;
+        let records: Vec<FileRecord> = match bytes.strip_prefix(LEGACY_MAGIC) {
+            Some(body) => FileRecord::decode(body)?,
+            None => FileRecord::decode_old(bytes)?,
+        };
         Ok(Index {
             records,
             generation: 1,
@@ -181,6 +180,7 @@ impl Index {
 mod tests {
     use super::*;
     use crate::mounts::FsKind;
+    use crate::query::SortKey;
     use crate::types::FileKind;
 
     fn rec(path: &str, size: u64, mtime: i64) -> FileRecord {
@@ -194,6 +194,7 @@ mod tests {
             native_id: 0,
             native_parent: 0,
             source: 0,
+            disk: 0,
         }
     }
 
@@ -206,7 +207,7 @@ mod tests {
             rec("/opt/main/lib.rs", 100, 1),
         ]);
         let q = Query::parse("main");
-        let (hits, stats) = idx.search(&q);
+        let (hits, stats) = idx.search(&q).unwrap();
         assert_eq!(stats.scanned, 3);
         assert_eq!(stats.matched, 3);
         assert_eq!(hits[0].record.path.as_ref(), "/home/u/doc/main-notes.txt");
@@ -224,7 +225,7 @@ mod tests {
         let mut query = Query::parse("");
         query.sort = SortKey::MtimeDesc;
         query.limit = 2;
-        let (hits, stats) = index.search(&query);
+        let (hits, stats) = index.search(&query).unwrap();
         assert_eq!(stats.matched, 3);
         assert_eq!(
             hits.iter()
