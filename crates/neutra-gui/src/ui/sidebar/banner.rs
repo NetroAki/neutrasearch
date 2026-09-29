@@ -2,7 +2,7 @@
 //! or scan re-arms it.
 
 use super::super::widgets::{
-    BLUE, BLUE_DIM, ERROR, ERROR_DIM, MUTED, WARN, WARN_DIM, primary_button, sans,
+    ACID, BLUE, BLUE_DIM, MUTED, WARN, WARN_DIM, sans,
     secondary_button,
 };
 use super::SidebarTab;
@@ -19,11 +19,12 @@ pub(crate) fn runtime_banner(app: &mut NeutraApp, ui: &mut egui::Ui, state: supe
     };
     paint_marker(ui, &marker, color);
     ui.add_space(6.0);
-    ui.vertical(|ui| {
+    ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(sans(12.0)).strong());
+        ui.label(RichText::new("\u{b7}").font(sans(12.0)).color(MUTED));
         ui.label(RichText::new(detail).font(sans(10.5)).color(MUTED));
     });
-    banner_actions(app, ui, state, primary, secondary, color);
+    banner_actions(app, ui, state, primary, secondary);
 }
 
 fn banner_copy(app: &NeutraApp, state: super::super::RuntimeState) -> Option<BannerCopy> {
@@ -36,11 +37,11 @@ fn banner_copy(app: &NeutraApp, state: super::super::RuntimeState) -> Option<Ban
             BLUE,
         )),
         super::super::RuntimeState::Permission => Some((
-            "A native location is unavailable",
+            "Some folders couldn't be accessed",
             permission_detail(app),
             primary_label(state),
-            "Review folders and access",
-            ERROR,
+            "Review",
+            WARN,
         )),
         super::super::RuntimeState::Stale => Some((
             "Results may be out of date",
@@ -57,20 +58,14 @@ fn permission_detail(app: &NeutraApp) -> String {
     if app.index_is_empty() {
         "Review scanner access before building the first index.".to_owned()
     } else {
-        "The last complete index remains searchable. Some locations could not be accessed.".to_owned()
+        "Previous index remains searchable.".to_owned()
     }
 }
 
 fn primary_label(state: super::super::RuntimeState) -> Option<&'static str> {
     match state {
         super::super::RuntimeState::Stale => Some("Rebuild now"),
-        super::super::RuntimeState::Permission if cfg!(target_os = "windows") => {
-            Some("Restart as Administrator")
-        }
-        super::super::RuntimeState::Permission if cfg!(target_os = "linux") => {
-            Some("Retry as administrator")
-        }
-        super::super::RuntimeState::Permission => Some("Review access"),
+        super::super::RuntimeState::Permission => Some("Try with elevated access"),
         _ => None,
     }
 }
@@ -78,7 +73,7 @@ fn primary_label(state: super::super::RuntimeState) -> Option<&'static str> {
 pub(crate) fn banner_color(state: super::super::RuntimeState) -> Color32 {
     match state {
         super::super::RuntimeState::IndexingBackground => BLUE_DIM,
-        super::super::RuntimeState::Permission => ERROR_DIM,
+        super::super::RuntimeState::Permission => WARN_DIM,
         super::super::RuntimeState::Stale => WARN_DIM,
         _ => super::super::widgets::SURFACE,
     }
@@ -100,39 +95,30 @@ fn banner_actions(
     state: super::super::RuntimeState,
     primary: Option<&str>,
     secondary: &str,
-    color: Color32,
 ) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.add_space(8.0);
-        dismiss_button(app, ui);
         if let Some(label) = primary {
-            primary_action(app, ui, state, label, color);
+            if secondary_button(ui, label, MUTED).clicked() {
+                banner_primary(app, ui, state);
+            }
         }
-        if secondary_button(ui, secondary, MUTED).clicked() {
+        ui.label(RichText::new("|").font(sans(10.0)).color(MUTED));
+        if ui
+            .add(egui::Button::new(RichText::new(secondary).font(sans(10.5)).color(ACID)).frame(false))
+            .clicked()
+        {
             app.diagnostics_open = true;
             app.sidebar_tab = tab_for(state);
         }
     });
 }
 
-fn dismiss_button(app: &mut NeutraApp, ui: &mut egui::Ui) {
-    if ui.small_button("\u{d7}").clicked() {
-        app.banner_hidden = true;
-    }
-}
-
-fn primary_action(app: &mut NeutraApp, ui: &mut egui::Ui, state: super::super::RuntimeState, label: &str, color: Color32) {
-    if !primary_button(ui, label, color).clicked() {
-        return;
-    }
-    banner_primary(app, ui, state);
-}
-
 fn tab_for(state: super::super::RuntimeState) -> SidebarTab {
     if state == super::super::RuntimeState::Permission {
         SidebarTab::Locations
     } else {
-        SidebarTab::Scanner
+        SidebarTab::Index
     }
 }
 

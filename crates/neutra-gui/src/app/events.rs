@@ -96,11 +96,12 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
         }
         HelperMsg::Records(records) => {
             let roots = app.scan_roots.clone();
+            let batch = records
+                .into_iter()
+                .filter(|record| crate::record_in_roots(record.path.as_ref(), &roots))
+                .collect::<Vec<_>>();
+            count_staged(app, &batch);
             if let Some(spill) = &mut app.scan_index {
-                let batch = records
-                    .into_iter()
-                    .filter(|record| crate::record_in_roots(record.path.as_ref(), &roots))
-                    .collect::<Vec<_>>();
                 if let Err(error) = spill.push_batch(batch) {
                     end_scan(app);
                     note(app, "scan", "NATIVE SCAN", error.to_string(), true);
@@ -120,6 +121,10 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
                 if let Some(lane) = app.lanes.get_mut(&key) {
                     lane.records = records;
                     lane.ms = ms;
+                }
+                // Feeds progress percentages on later scans.
+                if records > 0 {
+                    app.mount_totals.insert(key, records);
                 }
             }
         }
@@ -159,10 +164,6 @@ pub(super) fn note(
     status: impl Into<String>,
     error: bool,
 ) {
-    // A fresh error re-arms a dismissed banner.
-    if error {
-        app.banner_hidden = false;
-    }
     app.lanes.insert(
         key.into(),
         LaneState {
@@ -172,6 +173,35 @@ pub(super) fn note(
             ..LaneState::default()
         },
     );
+}
+
+/// Attribute a filtered batch to mounts by longest mountpoint prefix, for
+/// live per-drive progress. Runs in the event pump, amortized per batch.
+fn count_staged(app: &mut NeutraApp, batch: &[neutra_core::FileRecord]) {
+    if batch.is_empty() {
+        return;
+    }
+    let mounts: Vec<String> = app
+        .lanes
+        .keys()
+        .filter(|key| key.starts_with('/'))
+        .cloned()
+        .collect();
+    for record in batch {
+        if let Some(mount) = longest_mount(&mounts, record.path.as_ref()) {
+            *app.staged_by_mount.entry(mount).or_default() += 1;
+        }
+    }
+}
+
+fn longest_mount(mounts: &[String], path: &str) -> Option<String> {
+    mounts
+        .iter()
+        .filter(|mount| {
+            mount.as_str() == "/" || path == mount.as_str() || path.starts_with(&format!("{mount}/"))
+        })
+        .max_by_key(|mount| mount.len())
+        .cloned()
 }
 
 fn end_scan(app: &mut NeutraApp) {

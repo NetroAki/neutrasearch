@@ -13,7 +13,6 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
     if app.scanning || app.building_cache || app.cancelling {
         return;
     }
-    app.banner_hidden = false;
     if app.selected_roots.is_empty() {
         app.compact = None;
         app.index = neutra_core::Index::default();
@@ -55,6 +54,7 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
     app.active_scans = 0;
     app.cancelling = false;
     app.scan_started = std::time::SystemTime::now();
+    app.staged_by_mount.clear();
     app.cache_dirty = false;
     app.lanes.clear();
     let mounts = selected_scan_mounts(&app.selected_roots);

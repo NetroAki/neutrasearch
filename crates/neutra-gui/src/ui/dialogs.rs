@@ -63,7 +63,7 @@ pub(super) fn locations_editor(app: &mut NeutraApp, ui: &mut Ui) {
             if ui
                 .add_enabled(
                     !app.scanning && !app.building_cache,
-                    egui::Button::new("+ Add folder").small(),
+                    egui::Button::new("+ Add location").small(),
                 )
                 .clicked()
             {

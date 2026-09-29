@@ -41,6 +41,8 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
             true,
         );
     }
+    // Persist per-mount totals gathered during ScanDone for progress %.
+    app.save_settings();
 }
 
 fn adopt_staging(

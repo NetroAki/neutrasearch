@@ -55,16 +55,6 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
                     app.selected = Some(path.clone());
                     surrender_widget_focus(ui);
                 }
-                let more_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.right() - 25.0, rect.top() + 3.0),
-                    egui::Vec2::new(22.0, row_h - 6.0),
-                );
-                let more = ui.put(
-                    more_rect,
-                    egui::Button::new(egui::RichText::new("\u{22ef}").font(mono(10.0)).color(MUTED))
-                        .frame(false),
-                );
-                more.context_menu(|menu| file_menu(menu, ui, &path, &mut open_path));
                 if response.double_clicked() {
                     open_path = Some(path.clone());
                 }
@@ -84,7 +74,7 @@ fn details_header(app: &mut NeutraApp, ui: &mut Ui) {
         rect.bottom(),
         Stroke::new(1.0_f32, LINE_STRONG),
     );
-    let columns = detail_columns(rect, false);
+    let columns = detail_columns(rect);
     for x in [
         columns.name.max.x,
         columns.path.max.x,
@@ -170,12 +160,11 @@ struct DetailColumns {
     size: Rect,
 }
 
-fn detail_columns(rect: Rect, actions: bool) -> DetailColumns {
+fn detail_columns(rect: Rect) -> DetailColumns {
     let name_w = rect.width() * 0.32;
     let path_w = rect.width() * 0.39;
     let modified_w = rect.width() * 0.17;
-    let reserved = if actions { 28.0 } else { 0.0 };
-    let size_w = rect.width() - name_w - path_w - modified_w - reserved;
+    let size_w = rect.width() - name_w - path_w - modified_w;
     let mut x = rect.left();
     let name = Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(name_w, rect.height()));
     x += name_w;
@@ -287,7 +276,7 @@ fn paint_details_row(
         rect.bottom(),
         Stroke::new(1.0_f32, Color32::from_rgb(39, 41, 54)),
     );
-    let columns = detail_columns(rect, true);
+    let columns = detail_columns(rect);
     let badge = Rect::from_center_size(
         columns.name.left_center() + Vec2::new(21.0, 0.0),
         Vec2::new(22.0, 19.0),
