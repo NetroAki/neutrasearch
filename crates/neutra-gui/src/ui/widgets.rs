@@ -5,7 +5,7 @@
 use super::*;
 
 pub(super) const BLACK: Color32 = Color32::from_rgb(10, 13, 19);
-pub(crate) const CANVAS: Color32 = Color32::from_rgb(13, 17, 24);
+pub(crate) const CANVAS: Color32 = Color32::from_rgb(22, 27, 37);
 pub(super) const SURFACE: Color32 = Color32::from_rgb(21, 27, 38);
 pub(super) const RAISED: Color32 = Color32::from_rgb(28, 35, 48);
 pub(super) const HOVER: Color32 = Color32::from_rgb(36, 44, 60);

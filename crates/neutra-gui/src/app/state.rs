@@ -56,6 +56,7 @@ pub(crate) struct NeutraApp {
     pub(crate) ignore_accents: bool,
     pub(crate) scope_root: Option<String>,
     pub(crate) diagnostics_open: bool,
+    pub(crate) sidebar_open: bool,
     pub(crate) sidebar_tab: ui::SidebarTab,
     /// A cancel request is in flight; scan starters stay disabled until the
     /// helper child dies and `ScanCancelled` arrives.
@@ -144,6 +145,7 @@ impl NeutraApp {
             ignore_accents: settings.ignore_accents,
             scope_root: None,
             diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS"),
+            sidebar_open: true,
             sidebar_tab: ui::SidebarTab::default(),
             cancelling: false,
             scan_started: std::time::SystemTime::now(),

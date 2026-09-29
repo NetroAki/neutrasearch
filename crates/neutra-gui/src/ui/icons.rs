@@ -10,7 +10,7 @@ pub(super) const GREEN: Color32 = Color32::from_rgb(63, 185, 80);
 pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let color = if active { ACID } else { MUTED };
     let response = ui.add(
-        egui::Button::new(RichText::new(label).font(sans(10.5)).color(color))
+        egui::Button::new(RichText::new(label).font(sans(11.5)).color(color))
             .frame(false)
             .min_size(Vec2::new(0.0, 24.0)),
     );

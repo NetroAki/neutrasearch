@@ -122,7 +122,7 @@ fn sort_header(
             SortMode::Relevance => "",
         }
     } else {
-        "  \u{2195}"
+        ""
     };
     let (anchor, alignment) = if align_right {
         (hit_rect.right_center(), Align2::RIGHT_CENTER)
@@ -321,7 +321,7 @@ fn paint_details_row(
         .text(
             columns.path.left_center() + Vec2::new(7.0, 0.0),
             Align2::LEFT_CENTER,
-            parent_path(&record.path),
+            shorten(&parent_path(&record.path), ((columns.path.width() / 6.0) as usize).max(16)),
             mono(9.5),
             metadata,
         );
