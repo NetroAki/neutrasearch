@@ -108,7 +108,7 @@ fn banner_actions(
             .add(egui::Button::new(RichText::new(secondary).font(sans(10.5)).color(ACID)).frame(false))
             .clicked()
         {
-            app.sidebar_open = true;
+            app.diagnostics_open = true;
             app.sidebar_tab = tab_for(state);
         }
     });
@@ -131,7 +131,7 @@ fn banner_primary(app: &mut NeutraApp, ui: &mut egui::Ui, state: super::super::R
         super::super::RuntimeState::Permission if cfg!(target_os = "linux") => {
             app.begin_scan_with_elevation(true)
         }
-        super::super::RuntimeState::Permission => app.sidebar_open = true,
+        super::super::RuntimeState::Permission => app.diagnostics_open = true,
         _ => {}
     }
 }
@@ -147,7 +147,7 @@ fn windows_elevation(app: &mut NeutraApp, ui: &mut egui::Ui) {
                 ..Default::default()
             },
         );
-        app.sidebar_open = true;
+        app.diagnostics_open = true;
         return;
     }
     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

@@ -75,7 +75,7 @@ fn card_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.small_button("\u{d7}").clicked() {
-                app.sidebar_open = false;
+                app.diagnostics_open = false;
             }
         });
     });

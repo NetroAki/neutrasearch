@@ -320,7 +320,7 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
 
     ui.menu_button("File", |ui| {
         if ui.button("Locations and index").clicked() {
-            app.sidebar_open = true;
+            app.diagnostics_open = true;
             app.sidebar_tab = SidebarTab::Locations;
             ui.close();
         }
@@ -664,7 +664,7 @@ fn first_run_view(app: &mut NeutraApp, ui: &mut Ui) {
                     app.complete_onboarding_and_scan();
                 }
                 if has_error && ui.small_button("Review scan details").clicked() {
-                    app.sidebar_open = true;
+                    app.diagnostics_open = true;
                 }
             },
         );
@@ -765,7 +765,7 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
         });
     ui.add_space(18.0);
     if secondary_button(ui, "Index details", MUTED).clicked() {
-        app.sidebar_open = true;
+        app.diagnostics_open = true;
     }
 }
 
@@ -781,7 +781,7 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
         Vec2::new(ui.available_width(), content_h),
         Layout::left_to_right(Align::Center),
         |ui| {
-            let main_w = if app.sidebar_open {
+            let main_w = if app.diagnostics_open {
                 (ui.available_width() - 472.0).max(200.0)
             } else {
                 ui.available_width()
@@ -798,7 +798,7 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
                     });
                 },
             );
-            if app.sidebar_open {
+            if app.diagnostics_open {
                 ui.allocate_ui_with_layout(
                     Vec2::new(460.0, content_h.max(0.0)),
                     Layout::top_down(Align::LEFT),
