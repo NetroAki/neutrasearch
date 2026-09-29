@@ -56,6 +56,15 @@ pub(crate) struct NeutraApp {
     pub(crate) ignore_accents: bool,
     pub(crate) scope_root: Option<String>,
     pub(crate) diagnostics_open: bool,
+    pub(crate) sidebar_tab: ui::SidebarTab,
+    /// Dismissed banner stays hidden until a new error lane or scan starts.
+    pub(crate) banner_hidden: bool,
+    /// A cancel request is in flight; scan starters stay disabled until the
+    /// helper child dies and `ScanCancelled` arrives.
+    pub(crate) cancelling: bool,
+    /// Wall-clock start of the running scan, for matching the helper child
+    /// by process birth time on cancel.
+    pub(crate) scan_started: std::time::SystemTime,
     pub(crate) about_open: bool,
     pub(crate) search_focus_requested: bool,
     pub(crate) tree_fraction: f32,
@@ -132,7 +141,11 @@ impl NeutraApp {
             whole_word: settings.whole_word,
             ignore_accents: settings.ignore_accents,
             scope_root: None,
-             diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS"),
+            diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS"),
+            sidebar_tab: ui::SidebarTab::default(),
+            banner_hidden: false,
+            cancelling: false,
+            scan_started: std::time::SystemTime::now(),
             about_open: false,
             search_focus_requested: false,
             tree_fraction: 0.23,

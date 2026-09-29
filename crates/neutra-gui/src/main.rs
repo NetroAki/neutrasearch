@@ -5,7 +5,7 @@ mod ui;
 
 pub(crate) use app::{Event, GuiSettings, LaneState, NeutraApp};
 pub(crate) use transport::{
-    launch_file_action, scan_has_reachable_lane, spawn_local_helper, spawn_network_watcher,
+    launch_file_action, scan_has_reachable_lane, spawn_local_helper,
     FileAction,
 };
 #[cfg(test)]

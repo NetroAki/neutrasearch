@@ -7,6 +7,16 @@ use super::state::NeutraApp;
 pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32) {
     app.scanning = false;
     app.active_scans = 0;
+    // A completion that arrives after Cancel (helper finished between click
+    // and kill) adopts nothing: staging was dropped at click time.
+    if app.cancelling {
+        app.cancelling = false;
+        app.scan_index = None;
+        app.scan_roots.clear();
+        end_scan_setup(app);
+        note(app, "scan", "NATIVE SCAN", "Indexing cancelled — previous index kept", false);
+        return;
+    }
     let staging = app.scan_index.take();
     app.scan_roots.clear();
     if mounts == 0 {

@@ -2250,6 +2250,7 @@ dependencies = [
  "egui",
  "egui_expressive",
  "image 0.25.10",
+ "libc",
  "neutra-core",
  "neutra-remote",
  "regex",

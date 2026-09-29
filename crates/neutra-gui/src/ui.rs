@@ -11,12 +11,16 @@ use std::sync::Arc;
 use neutra_core::{FileKind, FileRecord};
 use std::time::Duration;
 
- mod dialogs;
- mod hierarchy;
- mod results;
+mod dialogs;
+mod hierarchy;
+mod icons;
+mod results;
+mod sidebar;
  mod treemap;
  pub(super) mod widgets;
 
+use icons::preset_pill;
+pub(crate) use sidebar::SidebarTab;
 use widgets::{
     ancestor_paths,
      extension_color, fixed_strip, fmt_count, format_mtime, format_size, mono,
@@ -25,13 +29,14 @@ use widgets::{
     LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT,
 };
 use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
-use dialogs::{about_dialog, banner_color, diagnostics_dialog, runtime_banner};
+use dialogs::{about_dialog, diagnostics_dialog};
+use sidebar::banner::{banner_color, runtime_banner};
 
 use results::{details_view, grid_view, list_view, perform_file_action, surrender_widget_focus};
 use treemap::treemap_view;
  pub(super) use hierarchy::Hierarchy;
 
-const MENU_H: f32 = 30.0;
+const MENU_H: f32 = 40.0;
 const QUERY_H: f32 = 44.0;
 const FILTER_H: f32 = 34.0;
 const TOOLBAR_H: f32 = 38.0;
@@ -201,7 +206,8 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
         if matches!(
             state,
             RuntimeState::IndexingBackground | RuntimeState::Permission | RuntimeState::Stale
-        ) {
+        ) && !app.banner_hidden
+        {
             fixed_strip(ui, BANNER_H, banner_color(state), |ui| {
                 runtime_banner(app, ui, state)
             });
@@ -220,7 +226,11 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
             },
         );
     });
-    diagnostics_dialog(app, ui.ctx());
+    // The modal survives only for first-run setup; everywhere else the
+    // sidebar panel covers diagnostics.
+    if state == RuntimeState::FirstRun {
+        diagnostics_dialog(app, ui.ctx());
+    }
     about_dialog(app, ui.ctx());
 }
 
@@ -302,7 +312,14 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
     ui.add_space(8.0);
     ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(20.0)));
     ui.add_space(6.0);
-    ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
+    ui.vertical(|ui| {
+        ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
+        ui.label(
+            RichText::new("Find what matters.")
+                .font(sans(8.5))
+                .color(SUBTLE),
+        );
+    });
     ui.add_space(12.0);
 
     if runtime_state(app) == RuntimeState::FirstRun {
@@ -312,6 +329,7 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
     ui.menu_button("File", |ui| {
         if ui.button("Locations and index").clicked() {
             app.diagnostics_open = true;
+            app.sidebar_tab = SidebarTab::Locations;
             ui.close();
         }
         if ui.button("Rebuild index").clicked() {
@@ -458,7 +476,14 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
                         .hint("Search everything by file name...")
                         .width((field_width - 44.0).max(160.0)),
                 );
-                ui.label(RichText::new("Ctrl K").font(mono(8.0)).color(SUBTLE));
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0_f32, LINE_STRONG))
+                    .corner_radius(3)
+                    .inner_margin(Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Ctrl + K").font(mono(8.0)).color(MUTED));
+                    });
                 response
             })
             .inner
@@ -511,7 +536,7 @@ fn kind_strip(app: &mut NeutraApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 for preset in KindFilter::ALL {
-                    if segment_button(ui, preset.label(), app.kind_filter == preset).clicked()
+                    if preset_pill(ui, preset, app.kind_filter == preset).clicked()
                     {
                         app.kind_filter = preset;
                         app.save_settings();
@@ -757,14 +782,43 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
         return;
     }
     fixed_strip(ui, TOOLBAR_H, SURFACE, |ui| results_toolbar(app, ui));
-    egui::Frame::new()
-        .fill(CANVAS)
-        .show(ui, |ui| match app.view_mode {
-            ResultView::Details => details_view(app, ui),
-            ResultView::List => list_view(app, ui),
-            ResultView::Grid => grid_view(app, ui),
-            ResultView::Treemap => treemap_view(app, ui),
-        });
+    let status_h = 26.0;
+    let content_h = (ui.available_height() - status_h).max(0.0);
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), content_h),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            let main_w = if app.diagnostics_open {
+                (ui.available_width() - 372.0).max(200.0)
+            } else {
+                ui.available_width()
+            };
+            ui.allocate_ui_with_layout(
+                Vec2::new(main_w, content_h),
+                Layout::top_down(Align::LEFT),
+                |ui| {
+                    egui::Frame::new().fill(CANVAS).show(ui, |ui| match app.view_mode {
+                        ResultView::Details => details_view(app, ui),
+                        ResultView::List => list_view(app, ui),
+                        ResultView::Grid => grid_view(app, ui),
+                        ResultView::Treemap => treemap_view(app, ui),
+                    });
+                },
+            );
+            if app.diagnostics_open {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(360.0, content_h.max(0.0)),
+                    Layout::top_down(Align::LEFT),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| sidebar::side_panel(app, ui));
+                    },
+                );
+            }
+        },
+    );
+    fixed_strip(ui, status_h, SURFACE, |ui| sidebar::status_bar(app, ui));
 }
 
 fn no_locations_view(app: &mut NeutraApp, ui: &mut Ui) {
@@ -811,6 +865,17 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
         format!("{} results", fmt_count(total as u64))
     };
     ui.label(RichText::new(label).font(sans(12.0)).strong());
+    let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+    ui.painter()
+        .circle_filled(dot.center(), 3.0, icons::GREEN);
+    ui.label(
+        RichText::new(format!(
+            "Search completed in {:.2} seconds",
+            app.search_stats.wall_us as f64 / 1_000_000.0
+        ))
+        .font(sans(10.0))
+        .color(MUTED),
+    );
     if app.regex_mode && segment_button(ui, "Regex ×", true).clicked() {
         app.regex_mode = false;
         app.save_settings();
@@ -850,12 +915,20 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
                     .selectable_label(app.view_mode == view, view.label())
                     .clicked()
                 {
-                    app.view_mode = view;
-                    app.save_settings();
-                    ui.close();
-                }
+                app.view_mode = view;
+                app.save_settings();
+                ui.close();
             }
-        });
+        }
+    });
+        if icons::view_button(ui, false, app.view_mode == ResultView::Grid).clicked() {
+            app.view_mode = ResultView::Grid;
+            app.save_settings();
+        }
+        if icons::view_button(ui, true, app.view_mode == ResultView::List).clicked() {
+            app.view_mode = ResultView::List;
+            app.save_settings();
+        }
         if let Some(path) = app.selected.clone() {
             ui.menu_button("Selected  ▾", |ui| {
                 if ui.button("Open").clicked() {

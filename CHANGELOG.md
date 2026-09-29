@@ -24,6 +24,10 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Search
 
+- The Locations-and-index dialog is a docked sidebar with tabs (Search
+  Locations, Index Status, Scanner Details, Index Maintenance, Network
+  Folders); the filter row uses icon pills and the toolbar shows search
+  time, list/grid shortcuts, and per-row menus.
 - The file-type filter always resets to All on launch, and is no longer
   persisted: a leftover Audio or Images preset silently hid most results.
 - The first-index view names every drive with its live state (indexing path
@@ -50,6 +54,9 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Fixed
 
+- Scan progress names every drive with its live state, and scans can be
+  cancelled mid-run (Unix): staged batches are discarded and the previous
+  index stays searchable.
 - Startup no longer burns minutes and gigabytes before showing a window:
   the compact search splits candidates into a fixed set of groups that
   stream with pruned top-N lists (a 51M-record empty query runs ~2 s wall),
