@@ -141,7 +141,7 @@ pub(super) fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
     if !app.about_open {
         return;
     }
-    let mut open = app.about_open;
+    let mut open = app.about_open && !ctx.input(|input| input.key_pressed(egui::Key::Escape));
     egui::Window::new("About Neutrasearch")
         .open(&mut open)
         .collapsible(false)

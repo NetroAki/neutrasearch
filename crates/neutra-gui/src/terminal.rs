@@ -405,7 +405,7 @@ fn error(message: &str) -> i32 {
 
 fn print_help() {
     println!(
-        "Neutrasearch — fast indexed filename search\n\n\
+        "Neutrasearch: fast indexed filename search\n\n\
 Usage:\n  \
   neutrasearch [gui]\n  \
   neutrasearch search QUERY [--index INDEX.nsx] [--scope ROOT] [--limit N] [--json|--json-paths]\n  \

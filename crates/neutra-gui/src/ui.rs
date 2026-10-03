@@ -484,6 +484,12 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
         response.request_focus();
         app.search_focus_requested = false;
     }
+    // egui's text edit gives up focus on Esc, so has_focus() is already false
+    // by now; losing focus on the Esc frame is the signal to clear.
+    if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        // The changed-query check below issues the single requery.
+        app.query.clear();
+    }
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
@@ -492,16 +498,11 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
             StrokeKind::Outside,
         );
         // Everything-style flow: Enter/Down leave the search box into the
-        // results, Esc clears. egui's text edit consumes the arrow keys while
-        // focused, so this must happen on the search response itself.
-        let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        // results. egui's text edit consumes the arrow keys while focused, so
+        // this must happen on the search response itself.
         let move_down = ui.input(|input| input.key_pressed(egui::Key::ArrowDown));
         let commit = ui.input(|input| input.key_pressed(egui::Key::Enter));
-        if escape && !app.query.is_empty() {
-            // Clearing here lets the changed-query check below issue the
-            // single requery.
-            app.query.clear();
-        } else if move_down || commit {
+        if move_down || commit {
             if move_down {
                 move_result_selection(app, true);
             }
@@ -780,6 +781,7 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
         Vec2::new(ui.available_width(), content_h),
         Layout::left_to_right(Align::Center),
         |ui| {
+            ui.set_min_height(content_h);
             let main_w = if app.diagnostics_open {
                 (ui.available_width() - 472.0).max(200.0)
             } else {

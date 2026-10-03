@@ -40,7 +40,7 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
             if app.cancelling && error.contains("stopped before completing") {
                 end_scan(app);
                 app.cancelling = false;
-                note(app, "scan", "NATIVE SCAN", "Indexing cancelled — previous index kept", false);
+                note(app, "scan", "NATIVE SCAN", "Indexing cancelled, previous index kept", false);
                 app.requery();
             } else {
                 end_scan(app);
