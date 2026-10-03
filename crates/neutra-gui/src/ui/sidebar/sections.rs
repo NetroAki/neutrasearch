@@ -174,19 +174,17 @@ fn row_tail(
 }
 
 fn row_menu(app: &NeutraApp, ui: &mut egui::Ui, index: usize, root_text: &str, remove: &mut Option<usize>) {
-    let overflow = ui.add_enabled(
-        !app.scanning && !app.building_cache && !app.cancelling,
-        egui::Button::new("\u{22ef}").small(),
-    );
-    overflow.context_menu(|menu| {
-        if menu.button("Copy path").clicked() {
-            super::super::widgets::copy_to_clipboard(ui, root_text);
-            menu.close();
-        }
-        if menu.button("Remove folder").clicked() {
-            *remove = Some(index);
-            menu.close();
-        }
+    ui.add_enabled_ui(!app.scanning && !app.building_cache && !app.cancelling, |ui| {
+        ui.menu_button("\u{22ef}", |menu| {
+            if menu.button("Copy path").clicked() {
+                super::super::widgets::copy_to_clipboard(menu, root_text);
+                menu.close();
+            }
+            if menu.button("Remove folder").clicked() {
+                *remove = Some(index);
+                menu.close();
+            }
+        });
     });
 }
 
@@ -207,7 +205,7 @@ fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
         .collect();
     if known.is_empty() || !app.scanning {
         if app.index_is_empty() {
-            return ("\u{2014}", MUTED);
+            return ("-", MUTED);
         }
         return ("Ready", GREEN);
     }

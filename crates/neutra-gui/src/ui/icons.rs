@@ -14,13 +14,24 @@ pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::
     } else {
         (MUTED, Color32::TRANSPARENT, LINE_STRONG)
     };
-    ui.add(
+    let response = ui.add(
         egui::Button::new(RichText::new(tracked(label)).font(sans(MICRO)).strong().color(text))
             .fill(fill)
             .stroke(Stroke::new(1.0_f32, outline))
             .corner_radius(12)
             .min_size(Vec2::new(0.0, 24.0)),
-    )
+    );
+    // The explicit fill and stroke hide egui's default keyboard-focus look, so
+    // draw the 2px accent-glow focus ring here.
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(2.0),
+            14.0,
+            Stroke::new(2.0_f32, GLOW.gamma_multiply(0.7)),
+            StrokeKind::Outside,
+        );
+    }
+    response
 }
 
 /// House glyph for the home location row.

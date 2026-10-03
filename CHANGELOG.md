@@ -155,6 +155,11 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Text that used the low-contrast muted grey now uses surface-400, accent text
   uses a lighter red so it clears 4.5:1 on every surface, and violet appears only
   as outlines and dots.
+- Escape clears the search box again (the text edit gave up focus before the
+  handler ran), the empty-results view fills the window instead of pulling the
+  status bar up, filter chips show a keyboard focus ring, the per-location
+  "..." button opens its menu on click, and Escape closes the About window.
+- Status text, empty-value placeholders, and CLI help no longer use em dashes.
 - Result paths show the tail with a leading ellipsis and fit their column;
   inactive sort headers no longer show arrows.
 - The results canvas moved to the reference blue-slate tone and the kind tabs

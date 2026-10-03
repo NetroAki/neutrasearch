@@ -162,13 +162,13 @@ fn drive_state(app: &NeutraApp, path: &str, lane: &LaneState) -> (&'static str, 
 
 fn drive_right(app: &NeutraApp, path: &str, lane: &LaneState) -> String {
     if lane.error {
-        return "\u{2014}".to_owned();
+        return "-".to_owned();
     }
     if lane.records > 0 {
         return format!("{} objects \u{b7} {}", fmt_count(lane.records), fmt_ms(lane.ms));
     }
     match app.staged_by_mount.get(path).copied().unwrap_or(0) {
-        0 => "\u{2014}".to_owned(),
+        0 => "-".to_owned(),
         staged => format!("{} objects staged", fmt_count(staged)),
     }
 }
