@@ -4,13 +4,13 @@
 use super::widgets::{ACID, MUTED, sans};
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
-pub(super) const GREEN: Color32 = Color32::from_rgb(63, 185, 80);
+pub(super) use super::widgets::GREEN;
 
 /// Text filter tab with an underline indicator for the active preset.
 pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let color = if active { ACID } else { MUTED };
     let response = ui.add(
-        egui::Button::new(RichText::new(label).font(sans(11.5)).color(color))
+        egui::Button::new(RichText::new(label).font(sans(12.0)).color(color))
             .frame(false)
             .min_size(Vec2::new(0.0, 24.0)),
     );
@@ -68,7 +68,8 @@ pub(super) fn paint_db_icon(ui: &mut egui::Ui, color: Color32) {
 pub(super) fn view_button(ui: &mut egui::Ui, list: bool, active: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(30.0, 25.0), Sense::click());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, if active { super::widgets::ACTIVE } else { super::widgets::SURFACE });
+    p.rect_filled(rect, 4.0, if active { super::widgets::SELECTED } else { super::widgets::RAISED });
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, super::widgets::LINE_STRONG), StrokeKind::Inside);
     let color = if active { super::widgets::ACID } else { MUTED };
     let stroke = Stroke::new(1.4_f32, color);
     if list {

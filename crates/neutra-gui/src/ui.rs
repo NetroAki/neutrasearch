@@ -16,6 +16,7 @@ mod hierarchy;
 mod icons;
 mod results;
 mod sidebar;
+mod theme;
  mod treemap;
  pub(super) mod widgets;
 
@@ -26,7 +27,7 @@ use widgets::{
      extension_color, fixed_strip, fmt_count, format_mtime, format_size, mono,
     parent_path, path_name, primary_button, sans, secondary_button, segment_button, shorten,
     type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK, BLUE, CANVAS, ERROR, HOVER,
-    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT,
+    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, TEAL, BODY, CAPTION, SMALL,
 };
 use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
 use dialogs::{about_dialog, diagnostics_dialog};
@@ -446,35 +447,33 @@ fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
 
 fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
     ui.add_space(8.0);
-    paint_search_icon(ui, MUTED);
-    ui.add_space(5.0);
 
-    let field_width = (ui.available_width() - 26.0).max(220.0);
     let before = app.query.clone();
     let can_search = !matches!(
         runtime_state(app),
         RuntimeState::FirstRun | RuntimeState::IndexingInitial
     );
     let response = egui::Frame::new()
-        .fill(BLACK)
+        .fill(RAISED)
         .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(3)
-        .inner_margin(Margin::symmetric(6, 1))
+        .corner_radius(4)
+        .inner_margin(Margin::symmetric(8, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                paint_search_icon(ui, MUTED);
                 let response = ui.add_enabled(
                     can_search,
                     SearchField::new(&mut app.query)
                         .hint("Search everything by file name...")
-                        .width((field_width - 44.0).max(160.0)),
+                        .width((ui.available_width() - 81.0).max(160.0)),
                 );
                 egui::Frame::new()
-                    .fill(SURFACE)
+                    .fill(BLACK)
                     .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-                    .corner_radius(3)
+                    .corner_radius(4)
                     .inner_margin(Margin::symmetric(6, 2))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Ctrl + K").font(mono(8.0)).color(MUTED));
+                        ui.label(RichText::new("Ctrl + K").font(mono(CAPTION)).color(MUTED));
                     });
                 response
             })
@@ -488,8 +487,8 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
-            3.0,
-            Stroke::new(1.0_f32, ACID_STRONG),
+            6.0,
+            Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(0x3B, 0x82, 0xF6, 179)),
             StrokeKind::Outside,
         );
         // Everything-style flow: Enter/Down leave the search box into the

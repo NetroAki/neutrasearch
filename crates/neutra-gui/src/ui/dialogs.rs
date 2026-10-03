@@ -18,7 +18,7 @@ pub(super) fn diagnostics_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
         .min_width(420.0)
         .frame(
             egui::Frame::window(&ctx.global_style())
-                .corner_radius(3)
+                .corner_radius(12)
                 .stroke(Stroke::new(1.0_f32, LINE_STRONG))
                 .fill(SURFACE),
         )
@@ -55,8 +55,8 @@ pub(super) fn locations_editor(app: &mut NeutraApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("SEARCH LOCATIONS")
-                .font(sans(10.0))
-                .color(SUBTLE)
+                .font(sans(11.0))
+                .color(MUTED)
                 .strong(),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -90,10 +90,10 @@ pub(super) fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
     // the two-column layout instead of clipping the value.
     if width < 300.0 {
         ui.vertical(|ui| {
-            ui.label(RichText::new(key).font(sans(9.0)).color(if error { ERROR } else { MUTED }));
+            ui.label(RichText::new(key).font(sans(11.0)).color(if error { ERROR } else { MUTED }));
             ui.label(
                 RichText::new(shorten(value, 64))
-                    .font(mono(8.5))
+                    .font(mono(11.0))
                     .color(if error { ERROR } else { TEXT }),
             );
         });
@@ -110,7 +110,7 @@ pub(super) fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
         |ui| {
             ui.add_space(3.0);
             ui.add(
-                egui::Label::new(RichText::new(key).font(sans(10.0)).color(if error {
+                egui::Label::new(RichText::new(key).font(sans(11.0)).color(if error {
                     ERROR
                 } else {
                     MUTED
@@ -122,7 +122,7 @@ pub(super) fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
                 ui.add(
                     egui::Label::new(
                         RichText::new(shorten(value, 48))
-                            .font(mono(8.5))
+                            .font(mono(11.0))
                             .color(if error { ERROR } else { TEXT }),
                     )
                     .selectable(true),
@@ -149,7 +149,7 @@ pub(super) fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
         .default_width(430.0)
         .frame(
             egui::Frame::window(&ctx.global_style())
-                .corner_radius(3)
+                .corner_radius(12)
                 .stroke(Stroke::new(1.0_f32, LINE_STRONG))
                 .fill(SURFACE),
         )
@@ -160,7 +160,7 @@ pub(super) fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
                     ui.label(RichText::new("Neutrasearch").font(sans(18.0)).strong());
                     ui.label(
                         RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                            .font(mono(9.0))
+                            .font(mono(11.0))
                             .color(MUTED),
                     );
                 });
@@ -172,7 +172,7 @@ pub(super) fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
             );
             ui.label(
                 RichText::new("Created by NetroAki. Released under the MIT License.")
-                    .font(sans(10.0))
+                    .font(sans(11.0))
                     .color(MUTED),
             );
             ui.add_space(10.0);
@@ -182,7 +182,7 @@ pub(super) fn about_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
             );
             ui.horizontal(|ui| {
                 ui.hyperlink_to("Ko-fi", "https://ko-fi.com/netroaki");
-                ui.label(RichText::new("·").color(SUBTLE));
+                ui.label(RichText::new("·").color(MUTED));
                 ui.hyperlink_to("Patreon", "https://www.patreon.com/NetroAki");
             });
         });

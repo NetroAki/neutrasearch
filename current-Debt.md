@@ -35,6 +35,7 @@ Still oversized — split at the next feature that touches them, don't split spe
 
 ## Accepted micro-costs
 
+- **Phosphor icons are not bundled.** DESIGN.md (from the Neutraudio spec) names Phosphor Icons as SVG assets; the GUI still draws its small glyphs (home, drive, database, view toggles, search) as vector shapes in `ui/icons.rs` and `ui/widgets.rs`. Taken 2026-10-03 to keep the binary and dependency set unchanged during the token rework. Repay by bundling the needed Phosphor SVGs and rendering them through egui's SVG image loader.
 - Accent folding covers Latin diacritics only (`strip_accent` in `neutra-core/src/matcher.rs`); other scripts still compare exactly. Repay with NFKD folding if non-Latin accent-insensitive search is requested.
 - `find_ci` Unicode path is O(n·m) per start position (no allocation; correct for multi-char case maps). Revisit only if non-ASCII search shows up in profiles; full case-folding (ß↔ss) would need a folding crate and is a semantic change.
 - `Query::score()` compiles the matcher per call; engines use `matcher()` once per search. Kept for test/external convenience.

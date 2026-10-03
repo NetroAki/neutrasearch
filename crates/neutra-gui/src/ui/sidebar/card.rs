@@ -4,7 +4,7 @@
 
 use super::super::icons::{paint_db_icon, paint_drive_icon};
 use super::super::widgets::{
-    BLUE, ERROR, HOVER, LINE_STRONG, MUTED, TEXT, fmt_count, mono, sans,
+    ACID_STRONG, BLUE, ERROR, HOVER, LINE_STRONG, MUTED, TEXT, fmt_count, mono, sans,
     secondary_button, shorten,
 };
 use super::super::icons::GREEN;
@@ -38,16 +38,16 @@ pub(crate) fn indexing_card(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui.label(
         RichText::new("Reachable locations are published together; unavailable locations are skipped.")
-            .font(sans(10.0))
+            .font(sans(11.0))
             .color(MUTED),
     );
     ui.add_space(8.0);
-    ui.label(RichText::new("Per-location details").font(sans(12.0)).strong());
+    super::overline(ui, "Per-location details");
     ui.add_space(4.0);
     egui::Frame::new()
         .fill(super::super::widgets::RAISED)
         .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(3)
+        .corner_radius(8)
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             for (path, lane) in mount_lanes(app) {
@@ -69,7 +69,7 @@ fn card_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
                 RichText::new(
                     "Reachable locations are published together; unavailable locations are skipped.",
                 )
-                .font(sans(10.0))
+                .font(sans(11.0))
                 .color(MUTED),
             );
         });
@@ -109,11 +109,11 @@ fn drive_fraction(app: &NeutraApp, path: &str) -> Option<f32> {
 
 fn progress_bar(ui: &mut egui::Ui, overall: Option<f32>) {
     let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), egui::Sense::hover());
-    ui.painter().rect_filled(bar, 0.0, HOVER);
+    ui.painter().rect_filled(bar, 3.0, HOVER);
     match overall {
         Some(fraction) => {
             let fill = egui::Rect::from_min_size(bar.left_top(), Vec2::new(bar.width() * fraction, bar.height()));
-            ui.painter().rect_filled(fill, 0.0, BLUE);
+            ui.painter().rect_filled(fill, 3.0, ACID_STRONG);
         }
         None => {
             let pulse = ((ui.ctx().input(|input| input.time) * 0.42).fract() as f32).clamp(0.0, 1.0);
@@ -121,7 +121,7 @@ fn progress_bar(ui: &mut egui::Ui, overall: Option<f32>) {
                 bar.left_top() + Vec2::new(bar.width() * pulse * 0.72, 0.0),
                 Vec2::new(bar.width() * 0.28, bar.height()),
             );
-            ui.painter().rect_filled(segment.intersect(bar), 0.0, BLUE);
+            ui.painter().rect_filled(segment.intersect(bar), 3.0, ACID_STRONG);
         }
     }
 }
@@ -140,8 +140,8 @@ fn detail_row(app: &NeutraApp, ui: &mut egui::Ui, path: &str, lane: &LaneState) 
         paint_drive_icon(ui, MUTED);
         ui.label(RichText::new(shorten(path, 34)).font(mono(10.0)).color(TEXT));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(right).font(sans(10.0)).color(MUTED));
-            ui.label(RichText::new(status).font(sans(10.0)).color(color));
+            ui.label(RichText::new(right).font(sans(11.0)).color(MUTED));
+            ui.label(RichText::new(status).font(sans(11.0)).color(color));
         });
     });
 }

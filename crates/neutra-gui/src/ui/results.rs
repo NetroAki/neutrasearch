@@ -50,7 +50,7 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
                 let selected = app.selected.as_deref() == Some(record.path.as_ref());
-                paint_details_row(ui, rect, record, visible_row, selected, &ranges);
+                paint_details_row(ui, rect, record, selected, &ranges);
                 if response.clicked() {
                     app.selected = Some(path.clone());
                     surrender_widget_focus(ui);
@@ -133,7 +133,7 @@ fn sort_header(
         anchor,
         alignment,
         format!("{label}{arrow}"),
-        sans(10.0),
+        sans(CAPTION),
         if active || response.hovered() {
             ACID
         } else {
@@ -256,36 +256,33 @@ fn paint_details_row(
     ui: &mut Ui,
     rect: Rect,
     record: &neutra_core::FileRecord,
-    row: usize,
     selected: bool,
     ranges: &[std::ops::Range<usize>],
 ) {
     let hovered = ui.rect_contains_pointer(rect);
     let fill = if selected {
-        ACTIVE
+        SELECTED
     } else if hovered {
         HOVER
-    } else if row.is_multiple_of(2) {
-        CANVAS
     } else {
-        Color32::from_rgb(25, 26, 36)
+        CANVAS
     };
     ui.painter().rect_filled(rect, 0.0, fill);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0_f32, Color32::from_rgb(39, 41, 54)),
+        Stroke::new(1.0_f32, LINE),
     );
     let columns = detail_columns(rect);
     let badge = Rect::from_center_size(
         columns.name.left_center() + Vec2::new(21.0, 0.0),
-        Vec2::new(22.0, 19.0),
+        Vec2::new(28.0, 20.0),
     );
     let badge_color = type_color(record);
-    ui.painter().rect_filled(badge, 1.0, RAISED);
+    ui.painter().rect_filled(badge, 4.0, RAISED);
     ui.painter().rect_stroke(
         badge,
-        1.0,
+        4.0,
         Stroke::new(1.0_f32, badge_color),
         StrokeKind::Inside,
     );
@@ -293,8 +290,8 @@ fn paint_details_row(
         badge.center(),
         Align2::CENTER_CENTER,
         type_badge(record),
-        mono(7.5),
-        badge_color,
+        mono(9.0),
+        TEXT,
     );
     paint_highlighted(
         ui,
@@ -306,13 +303,13 @@ fn paint_details_row(
         record.name(),
         ranges,
         &NameStyle {
-            font: sans(11.5),
+            font: sans(BODY),
             color: TEXT,
-            highlight: ACID_STRONG,
+            highlight: ACID,
         },
     );
     let metadata = if selected {
-        Color32::from_rgb(207, 209, 222)
+        TEXT
     } else {
         MUTED
     };
@@ -321,22 +318,22 @@ fn paint_details_row(
         .text(
             columns.path.left_center() + Vec2::new(7.0, 0.0),
             Align2::LEFT_CENTER,
-            shorten(&parent_path(&record.path), ((columns.path.width() / 6.0) as usize).max(16)),
-            mono(9.5),
+            shorten(&parent_path(&record.path), (((columns.path.width() - 20.0) / 6.6) as usize).max(16)),
+            mono(CAPTION),
             metadata,
         );
     ui.painter().text(
         columns.modified.left_center() + Vec2::new(7.0, 0.0),
         Align2::LEFT_CENTER,
         format_mtime(record.mtime),
-        sans(10.0),
+        sans(SMALL),
         metadata,
     );
     ui.painter().text(
         columns.size.right_center() - Vec2::new(7.0, 0.0),
         Align2::RIGHT_CENTER,
         format_size(record.size),
-        mono(9.5),
+        mono(CAPTION),
         metadata,
     );
 }
@@ -439,7 +436,7 @@ fn draw_list_row(
         Align2::CENTER_CENTER,
         type_badge(record),
         mono(7.0),
-        type_color(record),
+        TEXT,
     );
     paint_highlighted(
         ui,
@@ -451,9 +448,9 @@ fn draw_list_row(
         record.name(),
         ranges,
         &NameStyle {
-            font: sans(10.5),
+            font: sans(SMALL),
             color: TEXT,
-            highlight: ACID_STRONG,
+            highlight: ACID,
         },
     );
     if response.clicked() {
@@ -555,14 +552,14 @@ fn draw_grid_tile(
             rect.center_top() + Vec2::new(0.0, 62.0),
             Align2::CENTER_TOP,
             shorten(record.name(), 28),
-            sans(10.0),
+            sans(CAPTION),
             TEXT,
         );
     ui.painter().text(
         rect.center_bottom() - Vec2::new(0.0, 6.0),
         Align2::CENTER_BOTTOM,
         format_size(record.size),
-        mono(8.5),
+        mono(CAPTION),
         MUTED,
     );
     if response.clicked() {
@@ -598,7 +595,7 @@ fn paint_large_file_icon(ui: &Ui, center: egui::Pos2, record: &neutra_core::File
         Align2::CENTER_BOTTOM,
         type_badge(record),
         mono(8.0),
-        color,
+        TEXT,
     );
 }
 

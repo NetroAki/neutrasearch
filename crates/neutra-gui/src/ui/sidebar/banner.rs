@@ -2,7 +2,7 @@
 //! or scan re-arms it.
 
 use super::super::widgets::{
-    ACID, BLUE, BLUE_DIM, MUTED, WARN, WARN_DIM, sans,
+    ACID, BLUE, SELECTED, MUTED, WARN, WARN_DIM, sans,
     secondary_button,
 };
 use super::SidebarTab;
@@ -22,7 +22,7 @@ pub(crate) fn runtime_banner(app: &mut NeutraApp, ui: &mut egui::Ui, state: supe
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(sans(12.0)).strong());
         ui.label(RichText::new("\u{b7}").font(sans(12.0)).color(MUTED));
-        ui.label(RichText::new(detail).font(sans(10.5)).color(MUTED));
+        ui.label(RichText::new(detail).font(sans(11.0)).color(MUTED));
     });
     banner_actions(app, ui, state, primary, secondary);
 }
@@ -72,7 +72,7 @@ fn primary_label(state: super::super::RuntimeState) -> Option<&'static str> {
 
 pub(crate) fn banner_color(state: super::super::RuntimeState) -> Color32 {
     match state {
-        super::super::RuntimeState::IndexingBackground => BLUE_DIM,
+        super::super::RuntimeState::IndexingBackground => SELECTED,
         super::super::RuntimeState::Permission => WARN_DIM,
         super::super::RuntimeState::Stale => WARN_DIM,
         _ => super::super::widgets::SURFACE,
@@ -103,9 +103,9 @@ fn banner_actions(
                 banner_primary(app, ui, state);
             }
         }
-        ui.label(RichText::new("|").font(sans(10.0)).color(MUTED));
+        ui.label(RichText::new("|").font(sans(11.0)).color(MUTED));
         if ui
-            .add(egui::Button::new(RichText::new(secondary).font(sans(10.5)).color(ACID)).frame(false))
+            .add(egui::Button::new(RichText::new(secondary).font(sans(11.0)).color(ACID)).frame(false))
             .clicked()
         {
             app.diagnostics_open = true;
