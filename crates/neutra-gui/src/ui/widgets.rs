@@ -236,7 +236,7 @@ pub(super) fn type_badge(record: &neutra_core::FileRecord) -> String {
 
 pub(super) fn type_color(record: &neutra_core::FileRecord) -> Color32 {
     if record.kind == FileKind::Dir {
-        return TEAL;
+        return WARN;
     }
     extension_color(record.extension())
 }
@@ -244,11 +244,10 @@ pub(super) fn type_color(record: &neutra_core::FileRecord) -> Color32 {
 pub(super) fn extension_color(extension: &str) -> Color32 {
     match extension.to_ascii_lowercase().as_str() {
         "pdf" => ERROR,
-        "xls" | "xlsx" | "ods" | "csv" => GREEN,
-        "doc" | "docx" | "txt" | "md" | "rtf" => BLUE,
+        "xls" | "xlsx" | "ods" | "csv" | "doc" | "docx" | "txt" | "md" | "rtf" => MUTED,
         "zip" | "7z" | "rar" | "tar" | "gz" | "pak" | "iso" => WARN,
         "mp3" | "wav" | "flac" | "ogg" | "aif" | "aiff" | "m4a" | "opus" => VIOLET,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "mp4" | "mkv" => INFO,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "mp4" | "mkv" => GREEN,
         _ => MUTED,
     }
 }

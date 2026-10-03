@@ -11,7 +11,7 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
         return;
     }
     details_header(app, ui);
-    let row_h = 29.0;
+    let row_h = 26.0;
     let mut open_path = None;
     // Handle selection keys before the scroll area so a new selection can be
     // scrolled into view in the same frame.
@@ -68,7 +68,7 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
 
 fn details_header(app: &mut NeutraApp, ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 25.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, RAISED);
+    ui.painter().rect_filled(rect, 0.0, SURFACE);
     ui.painter().hline(
         rect.x_range(),
         rect.bottom(),
@@ -132,8 +132,8 @@ fn sort_header(
     ui.painter().text(
         anchor,
         alignment,
-        format!("{label}{arrow}"),
-        sans(CAPTION),
+        format!("{}{arrow}", tracked(label)),
+        sans(MICRO),
         if active || response.hovered() {
             ACID
         } else {
@@ -268,11 +268,10 @@ fn paint_details_row(
         CANVAS
     };
     ui.painter().rect_filled(rect, 0.0, fill);
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom(),
-        Stroke::new(1.0_f32, LINE),
-    );
+    ui.painter().hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, LINE));
+    if selected {
+        ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, ACID_STRONG);
+    }
     let columns = detail_columns(rect);
     let badge = Rect::from_center_size(
         columns.name.left_center() + Vec2::new(21.0, 0.0),
@@ -303,7 +302,7 @@ fn paint_details_row(
         record.name(),
         ranges,
         &NameStyle {
-            font: sans(BODY),
+            font: sans(SMALL),
             color: TEXT,
             highlight: ACID,
         },

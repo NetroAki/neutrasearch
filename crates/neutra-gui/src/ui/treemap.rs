@@ -134,7 +134,7 @@ fn treemap_legend(ui: &mut Ui) {
         ("Archive", extension_color("zip")),
         ("Image", extension_color("png")),
         ("Audio", extension_color("mp3")),
-        ("Folder", TEAL),
+        ("Folder", WARN),
     ];
     let mut x = rect.left() + 5.0;
     for (label, color) in items {
@@ -361,7 +361,7 @@ fn map_panel(
         let tile = tile.shrink(1.0);
         let response = ui.interact(tile, Id::new(("map-tile", &block.path)), Sense::click());
         let base = if block.folder {
-            TEAL
+            WARN
         } else {
             extension_color(&block.extension)
         };
