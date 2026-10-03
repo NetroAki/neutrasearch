@@ -37,7 +37,6 @@ pub(crate) const ACID_STRONG: Color32 = hex(0xDC2626);
 /// accent-glow lightened (red-400) for accent text; 5.7:1 or better on every
 /// surface it sits on, where the raw glow red fails on surface-800.
 pub(crate) const ACID: Color32 = hex(0xF87171);
-/// Selected row fill.
 pub(crate) const SELECTED: Color32 = hex(0x1E293B);
 /// accent-warn, and accent-warn at 16% over surface-900.
 pub(crate) const WARN: Color32 = hex(0xF59E0B);
@@ -96,8 +95,7 @@ pub(crate) fn configure(ctx: &egui::Context) {
             .font_data
             .insert(name.to_owned(), Arc::new(FontData::from_owned(load_font(bytes))));
     }
-    // Inter and Roboto Mono lead; Noto stays behind them for scripts and
-    // symbols they do not cover.
+    // Noto stays behind Inter and Roboto Mono for scripts and symbols they lack.
     let fallback = ["neutra_sans", "neutra_arabic", "neutra_devanagari", "neutra_cjk", "neutra_symbols", "neutra_symbols2"];
     let proportional: Vec<String> = ["neutra_inter"].into_iter().chain(fallback).map(str::to_owned).collect();
     let monospace: Vec<String> = ["neutra_robotomono", "neutra_mono"].into_iter().chain(fallback).map(str::to_owned).collect();

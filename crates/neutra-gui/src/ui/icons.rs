@@ -6,8 +6,7 @@ use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 pub(super) use super::widgets::GREEN;
 
-/// Pill chip, as in the mockup's browser filters: uppercase micro label, an
-/// accent-glow outline and tint when active.
+/// Pill filter chip with an accent-glow outline and tint when active.
 pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     let (text, fill, outline) = if active {
         (ACID, GLOW.gamma_multiply(0.14), GLOW)
@@ -21,8 +20,7 @@ pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::
             .corner_radius(12)
             .min_size(Vec2::new(0.0, 24.0)),
     );
-    // The explicit fill and stroke hide egui's default keyboard-focus look, so
-    // draw the 2px accent-glow focus ring here.
+    // Explicit fill and stroke hide egui's focus look, so draw the ring here.
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),

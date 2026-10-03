@@ -55,7 +55,7 @@ pub(super) fn side_panel(app: &mut NeutraApp, ui: &mut egui::Ui) {
         });
 }
 
-/// Overline: tracked 10px uppercase in surface-400, used for section titles.
+/// Tracked uppercase section title.
 pub(super) fn overline(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(tracked(text)).font(sans(10.0)).color(MUTED).strong());
 }

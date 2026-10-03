@@ -484,8 +484,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
         response.request_focus();
         app.search_focus_requested = false;
     }
-    // egui's text edit gives up focus on Esc, so has_focus() is already false
-    // by now; losing focus on the Esc frame is the signal to clear.
+    // The text edit drops focus on Esc, so losing focus on that frame means clear.
     if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         // The changed-query check below issues the single requery.
         app.query.clear();
@@ -497,9 +496,8 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
             Stroke::new(2.0_f32, GLOW.gamma_multiply(0.7)),
             StrokeKind::Outside,
         );
-        // Everything-style flow: Enter/Down leave the search box into the
-        // results. egui's text edit consumes the arrow keys while focused, so
-        // this must happen on the search response itself.
+        // Enter/Down leave the search box for the results. The text edit consumes
+        // arrow keys while focused, so this runs on the search response.
         let move_down = ui.input(|input| input.key_pressed(egui::Key::ArrowDown));
         let commit = ui.input(|input| input.key_pressed(egui::Key::Enter));
         if move_down || commit {
