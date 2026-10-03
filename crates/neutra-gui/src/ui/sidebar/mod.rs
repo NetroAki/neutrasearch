@@ -4,7 +4,7 @@ pub(crate) mod banner;
 pub(crate) mod card;
 pub(crate) mod sections;
 
-use super::widgets::{LINE_STRONG, MUTED, SUBTLE, SURFACE, fmt_count, sans};
+use super::widgets::{LINE_STRONG, MUTED, SURFACE, fmt_count, sans};
 use crate::NeutraApp;
 use egui::{Align, Layout, Margin, RichText, Stroke};
 
@@ -40,7 +40,7 @@ pub(super) fn side_panel(app: &mut NeutraApp, ui: &mut egui::Ui) {
     egui::Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(4)
+        .corner_radius(8)
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             panel_header(app, ui);
@@ -55,9 +55,14 @@ pub(super) fn side_panel(app: &mut NeutraApp, ui: &mut egui::Ui) {
         });
 }
 
+/// Overline: 10/14 uppercase in Text Secondary, used for section titles.
+pub(super) fn overline(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text.to_uppercase()).font(sans(10.0)).color(MUTED).strong());
+}
+
 fn panel_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Locations & Index").font(sans(14.0)).strong());
+        ui.label(RichText::new("Locations & Index").font(sans(18.0)).strong());
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.small_button("\u{d7}").clicked() {
                 app.diagnostics_open = false;
@@ -97,17 +102,19 @@ fn panel_tab(app: &mut NeutraApp, ui: &mut egui::Ui) {
 
 pub(super) fn status_bar(app: &NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
+        ui.add_space(8.0);
         ui.label(
             RichText::new(if app.index_is_empty() {
                 "No index yet".to_owned()
             } else {
                 format!("{} files indexed", fmt_count(app.index_len()))
             })
-            .font(sans(10.0))
+            .font(sans(11.0))
             .color(MUTED),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new("Neutra Software").font(sans(10.0)).color(SUBTLE));
+            ui.add_space(8.0);
+            ui.label(RichText::new("Neutra Software").font(sans(11.0)).color(MUTED));
             ui.add_space(16.0);
             status_dot(app, ui);
         });
@@ -124,7 +131,7 @@ fn status_dot(app: &NeutraApp, ui: &mut egui::Ui) {
     } else {
         ("Index up to date", GREEN)
     };
-    ui.label(RichText::new(text).font(sans(10.0)).color(MUTED));
+    ui.label(RichText::new(text).font(sans(11.0)).color(MUTED));
     let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
     ui.painter().circle_filled(dot.center(), 3.0, color);
 }

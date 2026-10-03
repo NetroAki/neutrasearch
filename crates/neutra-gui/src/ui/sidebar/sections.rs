@@ -10,7 +10,7 @@ use egui::{Align, Layout, RichText};
 
 pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Search Locations").font(sans(12.0)).strong());
+        super::overline(ui, "Search locations");
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
                 .add_enabled(
@@ -29,7 +29,7 @@ pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     });
     ui.label(
         RichText::new("Folders to include in the index.")
-            .font(sans(10.0))
+            .font(sans(11.0))
             .color(MUTED),
     );
     ui.add_space(6.0);
@@ -70,7 +70,7 @@ pub(crate) fn scanner_section(app: &NeutraApp, ui: &mut egui::Ui) {
 pub(crate) fn maintenance_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.label(
         RichText::new("Rebuilding replaces the index only after a complete scan.")
-            .font(sans(10.0))
+            .font(sans(11.0))
             .color(MUTED),
     );
     ui.add_space(6.0);
@@ -105,14 +105,14 @@ fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
 pub(crate) fn network_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.label(
         RichText::new("Look for Neutrasearch helpers on mounted network servers.")
-            .font(sans(10.0))
+            .font(sans(11.0))
             .color(MUTED),
     );
     ui.add_space(6.0);
     if app.remote_watcher_started {
         ui.label(
             RichText::new("Watching for network servers")
-                .font(sans(10.5))
+                .font(sans(11.0))
                 .color(BLUE),
         );
     } else if secondary_button(ui, "Watch network servers", MUTED).clicked() {
@@ -134,7 +134,7 @@ pub(crate) fn location_rows(app: &mut NeutraApp, ui: &mut egui::Ui) {
         let (status, color) = root_status(app, &root_text);
         ui.horizontal(|ui| {
             location_icon(ui, &root_text);
-            ui.label(RichText::new(shorten(&root_text, 34)).font(mono(9.0)).color(TEXT));
+            ui.label(RichText::new(shorten(&root_text, 34)).font(mono(11.0)).color(TEXT));
             row_tail(app, ui, index, &root_text, status, color, &mut remove);
         });
     }
@@ -162,7 +162,7 @@ fn row_tail(
 ) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         row_menu(app, ui, index, root_text, remove);
-        ui.label(RichText::new(status).font(sans(10.0)).color(color));
+        ui.label(RichText::new(status).font(sans(11.0)).color(color));
         let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());
         ui.painter().circle_filled(dot.center(), 3.0, color);
     });

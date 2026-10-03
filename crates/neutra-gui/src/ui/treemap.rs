@@ -128,12 +128,13 @@ fn treemap_legend(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
     ui.painter().rect_filled(rect, 0.0, CANVAS);
     let items = [
-        ("PDF", Color32::from_rgb(132, 52, 52)),
-        ("Spreadsheet", Color32::from_rgb(91, 83, 134)),
-        ("Document", Color32::from_rgb(57, 92, 145)),
-        ("Archive", Color32::from_rgb(139, 105, 50)),
-        ("Image", Color32::from_rgb(116, 64, 133)),
-        ("Folder", Color32::from_rgb(62, 91, 101)),
+        ("PDF", extension_color("pdf")),
+        ("Spreadsheet", extension_color("xlsx")),
+        ("Document", extension_color("docx")),
+        ("Archive", extension_color("zip")),
+        ("Image", extension_color("png")),
+        ("Audio", extension_color("mp3")),
+        ("Folder", TEAL),
     ];
     let mut x = rect.left() + 5.0;
     for (label, color) in items {
@@ -159,7 +160,7 @@ fn treemap_legend(ui: &mut Ui) {
         Align2::RIGHT_CENTER,
         "Area represents on-disk size",
         sans(9.0),
-        SUBTLE,
+        MUTED,
     );
 }
 
@@ -230,7 +231,7 @@ fn file_row(ui: &mut Ui, file: &TreeFile, depth: usize, action: &std::cell::RefC
         sans(9.5),
         MUTED,
     );
-    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), Align2::RIGHT_CENTER, format_size(file.size), mono(8.0), SUBTLE);
+    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), Align2::RIGHT_CENTER, format_size(file.size), mono(8.0), MUTED);
     if response.double_clicked() {
         *action.borrow_mut() = Some(TreeAction::Open(file.path.clone()));
     } else if response.clicked() {
@@ -293,7 +294,7 @@ fn tree_row(
             Align2::RIGHT_CENTER,
             format_size(folder.size),
             mono(8.0),
-            SUBTLE,
+            MUTED,
         );
     }
     if caret_response.clicked() {
@@ -360,7 +361,7 @@ fn map_panel(
         let tile = tile.shrink(1.0);
         let response = ui.interact(tile, Id::new(("map-tile", &block.path)), Sense::click());
         let base = if block.folder {
-            Color32::from_rgb(62, 91, 101)
+            TEAL
         } else {
             extension_color(&block.extension)
         };
@@ -464,7 +465,7 @@ fn breadcrumb(
                 Align2::CENTER_CENTER,
                 ">",
                 mono(9.0),
-                SUBTLE,
+                MUTED,
             );
             x += 12.0;
         }
@@ -484,7 +485,7 @@ fn breadcrumb(
              Align2::RIGHT_CENTER,
              label,
              mono(8.5),
-             SUBTLE,
+             MUTED,
          );
      }
 }
