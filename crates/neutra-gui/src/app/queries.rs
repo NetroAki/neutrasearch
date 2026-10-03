@@ -97,12 +97,20 @@ pub(crate) fn requery(app: &mut NeutraApp) {
     query.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
     // Cache for result highlighting; built from the fully-assembled query.
     app.matcher = query.matcher().ok();
-    let result = if let Some(compact) = &app.compact {
-        compact.search(&query).ok()
-    } else {
-        app.index.search(&query).ok()
-    };
-    if let Some((hits, stats)) = result {
+    if app.compact.is_some() {
+        // Scanning 60M+ records takes seconds when cold, so it runs off the
+        // UI thread; the previous results stay up until the new ones land.
+        app.search_seq += 1;
+        app.searching = true;
+        let job = super::search_worker::SearchJob {
+            id: app.search_seq,
+            query,
+            index_path: app.cache_path.clone(),
+        };
+        let _ = app.search_tx.send(job);
+        return;
+    }
+    if let Ok((hits, stats)) = app.index.search(&query) {
         app.hits = hits;
         app.search_stats = stats;
     }
@@ -190,7 +198,7 @@ fn reject_index(app: &mut NeutraApp, status: String) {
  /// branches. Each fetch streams its subtrees with pages released, so tree
  /// browsing holds megabytes, not the tens of gigabytes of full builds.
  pub(crate) fn request_tree_model(app: &mut NeutraApp) {
-     if index_is_empty(app) {
+     if index_is_empty(app) || app.tree_summary_pending {
          return;
      }
      let missing: Vec<String> = crate::ui::Hierarchy::missing_dirs(
@@ -226,6 +234,24 @@ fn reject_index(app: &mut NeutraApp, status: String) {
      });
  }
 
+/// Build the shallow folder summary in the background so the tree opens
+/// instantly. The tree waits for it instead of scanning the whole index.
+pub(crate) fn ensure_tree_summary(app: &mut NeutraApp) {
+    let Some(compact) = &app.compact else { return };
+    if app.tree_summary_pending {
+        return;
+    }
+    let generation = compact.generation();
+    let path = app.cache_path.clone();
+    let tx = app.tx.clone();
+    app.tree_summary_pending = true;
+    app.tree_building = true;
+    std::thread::spawn(move || {
+        let ok = neutra_core::TreeSummary::ensure(&path, generation).is_ok();
+        let _ = tx.send(Event::TreeSummary { generation, ok });
+    });
+}
+
  fn fetch_tree_dirs(
     missing: &[String],
     current: &str,
@@ -238,16 +264,29 @@ fn reject_index(app: &mut NeutraApp, status: String) {
             &resident_records.unwrap_or_default(),
         ));
     };
-    let (compact, delta) = CompactIndex::open_with_delta_snapshot_fast(&path)
-        .map_err(|error| format!("cannot open index for disk hierarchy: {error}"))?;
-    if compact.generation() != generation {
-        return Err("index replaced mid-fetch".into());
-    }
+    // Folders within the summary's depth answer instantly; deeper ones
+    // stream just their own subtree from the index.
+    let summary = neutra_core::TreeSummary::open_for_compact(&path, generation).ok();
+    let mut opened: Option<(CompactIndex, Option<neutra_core::DeltaIndex>)> = None;
     let mut partial = crate::ui::Hierarchy::empty();
     for dir in missing {
-        let listing = compact
-            .list_directory(dir, None, delta.as_ref())
-            .map_err(|error| format!("cannot list {dir}: {error}"))?;
+        let listing = match summary.as_ref().and_then(|tree| tree.listing(dir)) {
+            Some(listing) => listing,
+            None => {
+                if opened.is_none() {
+                    let pair = CompactIndex::open_with_delta_snapshot_fast(&path)
+                        .map_err(|error| format!("cannot open index for disk hierarchy: {error}"))?;
+                    if pair.0.generation() != generation {
+                        return Err("index replaced mid-fetch".into());
+                    }
+                    opened = Some(pair);
+                }
+                let (compact, delta) = opened.as_ref().expect("opened above");
+                compact
+                    .list_directory(dir, None, delta.as_ref())
+                    .map_err(|error| format!("cannot list {dir}: {error}"))?
+            }
+        };
         let folder = crate::ui::Hierarchy::folder_from_listing(dir, listing);
         partial.insert(dir.clone(), folder, dir == current);
     }

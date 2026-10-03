@@ -17,6 +17,7 @@ mod icons;
 mod results;
 mod sidebar;
 mod theme;
+mod tree_panel;
  mod treemap;
  pub(super) mod widgets;
 
@@ -27,7 +28,7 @@ use widgets::{
      extension_color, fixed_strip, fmt_count, format_mtime, format_size, mono,
     parent_path, path_name, primary_button, sans, secondary_button, segment_button, shorten,
     type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK, VIOLET, CANVAS, ERROR, HOVER,
-    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, GLOW, WARN, CAPTION, SMALL, MICRO, tracked,
+    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, GLOW, WARN, CAPTION, SMALL, MICRO, tracked, bar_style, ghost_style,
 };
 use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
 use dialogs::{about_dialog, diagnostics_dialog};
@@ -306,13 +307,11 @@ fn runtime_state(app: &NeutraApp) -> RuntimeState {
 
 
 fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.visuals_mut().widgets.inactive.bg_fill = BLACK;
-    ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-    ui.visuals_mut().widgets.inactive.corner_radius = 0.into();
+    bar_style(ui);
     ui.add_space(8.0);
     ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(20.0)));
     ui.add_space(6.0);
-    ui.label(RichText::new("Neutrasearch").font(sans(12.0)).strong());
+    ui.label(RichText::new(tracked("Neutrasearch")).font(sans(11.0)).strong());
     ui.add_space(12.0);
 
     if runtime_state(app) == RuntimeState::FirstRun {
@@ -842,7 +841,7 @@ fn no_locations_view(app: &mut NeutraApp, ui: &mut Ui) {
 }
 
 fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.add_space(10.0);
+    ui.add_space(8.0);
     // The engine caps how many hits are materialized; report the full matched
     // count so a capped view never looks complete.
     let total = app.hits.len();
@@ -858,14 +857,14 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
     };
     ui.label(RichText::new(label).font(sans(12.0)).strong());
     let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-    ui.painter()
-        .circle_filled(dot.center(), 3.0, icons::GREEN);
+    ui.painter().circle_filled(dot.center(), 3.0, if app.searching { WARN } else { icons::GREEN });
     ui.label(
-        RichText::new(format!(
-            "Completed in {:.2}s",
-            app.search_stats.wall_us as f64 / 1_000_000.0
-        ))
-        .font(sans(10.0))
+        RichText::new(if app.searching {
+            "Searching...".to_owned()
+        } else {
+            format!("Completed in {:.2}s", app.search_stats.wall_us as f64 / 1_000_000.0)
+        })
+        .font(sans(11.0))
         .color(MUTED),
     );
     if app.regex_mode && segment_button(ui, "Regex ×", true).clicked() {
@@ -900,7 +899,8 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
         app.requery();
     }
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(7.0);
+        ui.add_space(8.0);
+        ghost_style(ui);
         ui.menu_button(format!("{}  ▾", app.view_mode.label()), |ui| {
             for view in ResultView::ALL {
                 if ui
@@ -913,6 +913,7 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
             }
         }
     });
+        ui.spacing_mut().item_spacing.x = 0.0;
         if icons::view_button(ui, false, app.view_mode == ResultView::Grid).clicked() {
             app.view_mode = ResultView::Grid;
             app.save_settings();
@@ -921,6 +922,7 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
             app.view_mode = ResultView::List;
             app.save_settings();
         }
+        ui.spacing_mut().item_spacing.x = 6.0;
         if let Some(path) = app.selected.clone() {
             ui.menu_button("Selected  ▾", |ui| {
                 if ui.button("Open").clicked() {

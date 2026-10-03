@@ -74,6 +74,10 @@ Bold is colour and size, because egui draws one weight per font file.
 - Side panel (device-card chrome): surface-900, 1px outline, radius 8, tracked uppercase title; location rows sit in a recessed surface-950 well.
 - File-type badges: outlined in the type colour (audio violet, images and video green, folders and archives amber, PDF red, others neutral) with text-colour letters.
 - Context menus and windows: surface-900, 1px outline, radius 8 to 12.
+- Menu bar: transparent items on surface-950 that fill with surface-3 only on hover or while open; the wordmark is a tracked uppercase title.
+- Toolbar dropdowns: transparent ghost buttons with a 1px surface-700 outline, 28px tall, level with the filter chips. The list/grid toggle is one joined segmented control with outer corners only.
+- Folder tree: tracked uppercase column headers on surface-900, 26px rows, a share bar (surface-500, accent-active on the open folder), size and item counts in Roboto Mono 11. The open folder gets the same selection bar as a result row. A click opens a folder, a double-click or chevron expands it.
+- Map tiles: the type colour at about a third strength as the fill, a stronger outline, Text Primary labels (never white on a saturated fill).
 
 ## Icons
 

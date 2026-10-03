@@ -25,6 +25,10 @@ pub(crate) struct NeutraApp {
     pub(crate) query: String,
     pub(crate) hits: Vec<SearchHit>,
     pub(crate) search_stats: SearchStats,
+    /// Newest queued search id and whether its results are still pending.
+    pub(crate) search_seq: u64,
+    pub(crate) searching: bool,
+    pub(crate) search_tx: Sender<super::search_worker::SearchJob>,
     /// Compiled text matcher for the current query, reused by result
     /// highlighting so a regex compiles once per query, not per row per frame.
     pub(crate) matcher: Option<neutra_core::QueryMatcher>,
@@ -75,6 +79,8 @@ pub(crate) struct NeutraApp {
     pub(crate) tree_expanded: BTreeSet<String>,
      pub(crate) tree_model: Option<ui::Hierarchy>,
      pub(crate) tree_building: bool,
+     /// The shallow folder summary is being built; the tree waits for it.
+     pub(crate) tree_summary_pending: bool,
      /// Directories with a fetch in flight. Guards against duplicate spawns
      /// while a slow subtree scan runs.
      pub(crate) tree_pending: BTreeSet<String>,
@@ -108,6 +114,9 @@ impl NeutraApp {
              query: startup_query(),
             hits: Vec::new(),
             search_stats: SearchStats::default(),
+            search_seq: 0,
+            searching: false,
+            search_tx: super::search_worker::spawn(tx.clone(), cc.egui_ctx.clone()),
             matcher: None,
             sort_reversed: settings.sort_reversed,
             lanes: BTreeMap::new(),
@@ -158,6 +167,7 @@ impl NeutraApp {
             tree_expanded: BTreeSet::from(["/".into()]),
              tree_model: None,
              tree_building: false,
+             tree_summary_pending: false,
              tree_pending: BTreeSet::new(),
             remote_watcher_started: false,
         };
@@ -171,6 +181,7 @@ impl NeutraApp {
             app.save_settings();
         }
         app.requery();
+        app.ensure_tree_summary();
          if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
             crate::transport::spawn_network_watcher(tx);
             app.remote_watcher_started = true;

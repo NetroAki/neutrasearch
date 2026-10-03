@@ -1,6 +1,6 @@
 use super::*;
-use std::collections::BTreeSet;
-use super::hierarchy::{Hierarchy, TreeFile};
+use super::hierarchy::{Hierarchy};
+use super::tree_panel::tree_panel;
 
 
 #[derive(Clone)]
@@ -38,7 +38,11 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
             ui.vertical_centered(|ui| {
                 ui.spinner();
                 ui.label(
-                    RichText::new("Preparing the indexed drive hierarchy...")
+                    RichText::new(if app.tree_summary_pending {
+                        "Building the folder map (once per index update)..."
+                    } else {
+                        "Preparing the indexed drive hierarchy..."
+                    })
                         .font(sans(11.0))
                         .color(MUTED),
                 );
@@ -47,7 +51,8 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
         return;
     }
     let hierarchy = app.tree_model.take().expect("tree model checked above");
-    if !hierarchy.folders.contains_key(&app.treemap_path) {
+    // A folder that is still loading must not bounce the view back to the root.
+    if !hierarchy.folders.contains_key(&app.treemap_path) && !app.tree_building {
         app.treemap_path = "/".into();
     }
     treemap_legend(ui);
@@ -55,9 +60,6 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
     let current_path = app.treemap_path.clone();
     let selected = app.selected.clone();
     let mut expanded = std::mem::take(&mut app.tree_expanded);
-    for ancestor in ancestor_paths(&current_path) {
-        expanded.insert(ancestor);
-    }
     let navigation = std::cell::RefCell::<Option<TreeAction>>::new(None);
     if narrow {
         let mut fraction = app.tree_vertical_fraction;
@@ -110,11 +112,11 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
                 },
             );
         if split.double_clicked() {
-            fraction = 268.0 / available_width;
+            fraction = 380.0 / available_width;
         }
         split.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-        let minimum = (220.0 / available_width).clamp(0.1, 0.8);
-        let maximum = (360.0 / available_width).clamp(minimum, 0.9);
+        let minimum = (340.0 / available_width).clamp(0.1, 0.8);
+        let maximum = (560.0 / available_width).clamp(minimum, 0.9);
         app.tree_fraction = fraction.clamp(minimum, maximum);
     }
     app.tree_expanded = expanded;
@@ -129,7 +131,6 @@ fn treemap_legend(ui: &mut Ui) {
     ui.painter().rect_filled(rect, 0.0, CANVAS);
     let items = [
         ("PDF", extension_color("pdf")),
-        ("Spreadsheet", extension_color("xlsx")),
         ("Document", extension_color("docx")),
         ("Archive", extension_color("zip")),
         ("Image", extension_color("png")),
@@ -139,199 +140,35 @@ fn treemap_legend(ui: &mut Ui) {
     let mut x = rect.left() + 5.0;
     for (label, color) in items {
         let swatch = Rect::from_min_size(egui::pos2(x, rect.center().y - 4.0), Vec2::splat(9.0));
-        ui.painter().rect_filled(swatch, 0.0, color);
+        ui.painter().rect_filled(swatch, 2.0, color.gamma_multiply(0.34));
         ui.painter().rect_stroke(
             swatch,
-            0.0,
-            Stroke::new(1.0_f32, Color32::from_white_alpha(80)),
+            2.0,
+            Stroke::new(1.0_f32, color.gamma_multiply(0.8)),
             StrokeKind::Inside,
         );
         ui.painter().text(
             swatch.right_center() + Vec2::new(5.0, 0.0),
             Align2::LEFT_CENTER,
             label,
-            sans(9.0),
+            sans(CAPTION),
             MUTED,
         );
-        x += 18.0 + label.len() as f32 * 5.8;
+        x += 26.0 + label.len() as f32 * 6.8;
     }
     ui.painter().text(
         rect.right_center() - Vec2::new(8.0, 0.0),
         Align2::RIGHT_CENTER,
         "Area represents on-disk size",
-        sans(9.0),
+        sans(CAPTION),
         MUTED,
     );
 }
 
-enum TreeAction {
+pub(super) enum TreeAction {
     Navigate(String),
     Select(String),
     Open(String),
-}
-
-fn tree_panel(
-    ui: &mut Ui,
-    hierarchy: &Hierarchy,
-    current_path: &str,
-    expanded: &mut BTreeSet<String>,
-    action: &std::cell::RefCell<Option<TreeAction>>,
-) {
-    ui.painter().rect_filled(ui.max_rect(), 0.0, SURFACE);
-    let root = hierarchy.folders.get("/").cloned().unwrap_or_default();
-    fixed_strip(ui, 31.0, SURFACE, |ui| {
-        ui.add_space(8.0);
-        ui.label(RichText::new("Indexed space").font(sans(11.0)).strong());
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(7.0);
-            ui.label(
-                RichText::new(format_size(root.size))
-                    .font(mono(9.0))
-                    .color(MUTED),
-            );
-        });
-    });
-    // Flatten the expanded subtree and index the current folder files, so
-    // only visible rows paint each frame.
-    let mut folder_rows: Vec<(&str, usize)> = Vec::new();
-    let mut stack = vec![("/", 0)];
-    while let Some((path, depth)) = stack.pop() {
-        folder_rows.push((path, depth));
-        if expanded.contains(path) {
-             if let Some(folder) = hierarchy.folders.get(path) {
-                 for child in folder.children.iter().rev() {
-                     stack.push((child.path.as_str(), depth + 1));
-                 }
-             }
-        }
-    }
-    let file_depth = ancestor_paths(current_path).len();
-    let files = hierarchy.folders.get(current_path).map_or(&[] as &[TreeFile], |folder| &folder.direct_files);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show_rows(ui, 24.0, folder_rows.len() + files.len(), |ui, range| {
-            for row in range {
-                if row < folder_rows.len() {
-                    let (path, depth) = folder_rows[row];
-                    tree_row(ui, hierarchy, path, depth, current_path, expanded, action);
-                } else if let Some(file) = files.get(row - folder_rows.len()) {
-                    file_row(ui, file, file_depth, action);
-                }
-            }
-        });
-}
-
-fn file_row(ui: &mut Ui, file: &TreeFile, depth: usize, action: &std::cell::RefCell<Option<TreeAction>>) {
-    let (rect, response) = tree_line(ui, depth, &file.path, false, false);
-    let clip = Rect::from_min_max(rect.min + Vec2::new(5.0, 0.0), egui::pos2((rect.right() - 68.0).max(rect.left()), rect.bottom()));
-    ui.painter().with_clip_rect(clip).text(
-        rect.left_center() + Vec2::new(22.0 + depth as f32 * 13.0, 0.0),
-        Align2::LEFT_CENTER,
-        path_name(&file.path),
-        sans(9.5),
-        MUTED,
-    );
-    ui.painter().text(rect.right_center() - Vec2::new(6.0, 0.0), Align2::RIGHT_CENTER, format_size(file.size), mono(8.0), MUTED);
-    if response.double_clicked() {
-        *action.borrow_mut() = Some(TreeAction::Open(file.path.clone()));
-    } else if response.clicked() {
-        *action.borrow_mut() = Some(TreeAction::Select(file.path.clone()));
-    }
-}
-
-fn tree_row(
-    ui: &mut Ui,
-    hierarchy: &Hierarchy,
-    path: &str,
-    depth: usize,
-    current: &str,
-    expanded: &mut BTreeSet<String>,
-    action: &std::cell::RefCell<Option<TreeAction>>,
-) {
-    let selected = path == current;
-    let name = if path == "/" {
-        "Indexed space".into()
-    } else {
-        path_name(path)
-    };
-    let has_children = hierarchy
-        .folders
-        .get(path)
-        .is_some_and(|folder| !folder.children.is_empty() || !folder.direct_files.is_empty());
-    let (rect, response) = tree_line(ui, depth, path, selected, has_children);
-    let caret_rect = Rect::from_center_size(
-        rect.left_center() + Vec2::new(10.0 + depth as f32 * 13.0, 0.0),
-        Vec2::splat(18.0),
-    );
-    let caret_response = ui.interact(caret_rect, Id::new(("tree-caret", path)), Sense::click());
-    if has_children {
-        let points = if expanded.contains(path) {
-            vec![
-                caret_rect.center() - Vec2::new(3.0, 1.5),
-                caret_rect.center() + Vec2::new(3.0, -1.5),
-                caret_rect.center() + Vec2::new(0.0, 2.5),
-            ]
-        } else {
-            vec![
-                caret_rect.center() - Vec2::new(1.5, 3.0),
-                caret_rect.center() + Vec2::new(-1.5, 3.0),
-                caret_rect.center() + Vec2::new(2.5, 0.0),
-            ]
-        };
-        ui.painter()
-            .add(egui::Shape::convex_polygon(points, SUBTLE, Stroke::NONE));
-    }
-    ui.painter().text(
-        caret_rect.right_center() + Vec2::new(3.0, 0.0),
-        Align2::LEFT_CENTER,
-        shorten(&name, 34),
-        sans(9.5),
-        if selected { TEXT } else { MUTED },
-    );
-    if let Some(folder) = hierarchy.folders.get(path) {
-        ui.painter().text(
-            rect.right_center() - Vec2::new(6.0, 0.0),
-            Align2::RIGHT_CENTER,
-            format_size(folder.size),
-            mono(8.0),
-            MUTED,
-        );
-    }
-    if caret_response.clicked() {
-        if !expanded.remove(path) {
-            expanded.insert(path.to_owned());
-        }
-    } else if response.clicked() {
-        expanded.insert(path.to_owned());
-        *action.borrow_mut() = Some(TreeAction::Navigate(path.to_owned()));
-    }
-}
-
-fn tree_line(
-    ui: &mut Ui,
-    depth: usize,
-    id: &str,
-    selected: bool,
-    _folder: bool,
-) -> (Rect, egui::Response) {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
-    let response =
-        response.union(ui.interact(rect, Id::new(("tree-row", id, depth)), Sense::click()));
-    if selected {
-        ui.painter().rect_filled(rect, 0.0, ACTIVE);
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, HOVER);
-    }
-    if selected {
-        ui.painter().rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(1.0_f32, ACID_STRONG),
-            StrokeKind::Inside,
-        );
-    }
-    (rect, response)
 }
 
 fn map_panel(
@@ -345,9 +182,10 @@ fn map_panel(
     breadcrumb(ui, hierarchy, current_path, action);
     let blocks = map_blocks(hierarchy, current_path);
     if blocks.is_empty() {
+        let loaded = hierarchy.folders.contains_key(current_path);
         ui.centered_and_justified(|ui| {
             ui.label(
-                RichText::new("This folder has no indexed children")
+                RichText::new(if loaded { "This folder has no indexed children" } else { "Loading..." })
                     .font(sans(11.0))
                     .color(MUTED),
             )
@@ -368,22 +206,18 @@ fn map_panel(
         let selected = selected_path == Some(block.path.as_str());
         ui.painter().rect_filled(
             tile,
-            0.0,
-            if response.hovered() {
-                base.gamma_multiply(1.14)
-            } else {
-                base
-            },
+            2.0,
+            base.gamma_multiply(if response.hovered() { 0.5 } else { 0.34 }),
         );
         ui.painter().rect_stroke(
             tile,
-            0.0,
+            2.0,
             Stroke::new(
                 if selected { 2.0_f32 } else { 1.0_f32 },
                 if selected {
                     ACID
                 } else {
-                    Color32::from_white_alpha(48)
+                    base.gamma_multiply(0.8)
                 },
             ),
             StrokeKind::Inside,
@@ -394,15 +228,15 @@ fn map_panel(
                 tile.left_top() + Vec2::new(5.0, 5.0),
                 Align2::LEFT_TOP,
                 format!("{prefix}{}", block.name),
-                sans(9.5),
-                Color32::WHITE,
+                sans(CAPTION),
+                TEXT,
             );
             ui.painter().text(
                 tile.left_bottom() + Vec2::new(5.0, -5.0),
                 Align2::LEFT_BOTTOM,
                 format!("{} · {}", format_size(block.bytes), block.count),
-                mono(8.0),
-                Color32::from_white_alpha(205),
+                mono(10.0),
+                MUTED,
             );
         }
         response
@@ -442,7 +276,7 @@ fn breadcrumb(
         } else {
             path_name(path)
         };
-        let width = 13.0 + label.chars().count() as f32 * 6.0;
+        let width = 13.0 + label.chars().count() as f32 * 6.6;
         let button = Rect::from_min_size(egui::pos2(x, rect.top() + 3.0), Vec2::new(width, 24.0));
         let response = ui.interact(button, Id::new(("crumb", path)), Sense::click());
         if response.hovered() {
@@ -452,7 +286,7 @@ fn breadcrumb(
             button.center(),
             Align2::CENTER_CENTER,
             &label,
-            sans(9.5),
+            sans(CAPTION),
             MUTED,
         );
         if response.clicked() {
@@ -464,7 +298,7 @@ fn breadcrumb(
                 egui::pos2(x + 4.0, rect.center().y),
                 Align2::CENTER_CENTER,
                 ">",
-                mono(9.0),
+                mono(CAPTION),
                 MUTED,
             );
             x += 12.0;
@@ -484,7 +318,7 @@ fn breadcrumb(
              rect.right_center() - Vec2::new(8.0, 0.0),
              Align2::RIGHT_CENTER,
              label,
-             mono(8.5),
+             mono(CAPTION),
              MUTED,
          );
      }
@@ -523,7 +357,9 @@ fn map_blocks(hierarchy: &Hierarchy, current: &str) -> Vec<MapBlock> {
 fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
     match action {
         TreeAction::Navigate(path) => {
-            for ancestor in ancestor_paths(&path) {
+            // Opening a folder reveals it in the tree but leaves its own
+            // expansion alone; that is the chevron's job.
+            for ancestor in ancestor_paths(&path).into_iter().filter(|a| *a != path) {
                 app.tree_expanded.insert(ancestor);
             }
             app.treemap_path = path;

@@ -35,6 +35,10 @@ Still oversized — split at the next feature that touches them, don't split spe
 
 ## Accepted micro-costs
 
+- **Folder summary is built at GUI launch, not at index publish.** `neutra-core/src/dir_tree.rs` derives the top-three-level summary (`<index>.tree`) by streaming the existing `.dirs` sidecar once per generation, so the first launch after an index update builds it in the background (about 20 seconds on 61M records) and the tree waits for it. Repay by emitting it from the sidecar writer so it exists the moment the index is published.
+- **Folder summary ignores the live delta.** Totals for the top three levels come from the published base; changes in the live WAL appear in those totals after the next publish. Folders below depth three still merge the delta exactly through `list_directory`.
+- **Folders below depth three stream their own subtree.** A very large fourth-level folder costs time proportional to its subtree (about a second for 10M records). Repay by raising `MAX_DEPTH` in `dir_tree.rs` or giving the summary a random-access layout.
+- **No automated test for the tree panel's click and keyboard behaviour.** It was checked by clicking through the running app; the flattening and navigation logic in `ui/tree_panel.rs` has no unit test.
 - **Phosphor icons are not bundled.** DESIGN.md (from the Neutraudio spec) names Phosphor Icons as SVG assets; the GUI still draws its small glyphs (home, drive, database, view toggles, search) as vector shapes in `ui/icons.rs` and `ui/widgets.rs`. Taken 2026-10-03 to keep the binary and dependency set unchanged during the token rework. Repay by bundling the needed Phosphor SVGs and rendering them through egui's SVG image loader.
 - Accent folding covers Latin diacritics only (`strip_accent` in `neutra-core/src/matcher.rs`); other scripts still compare exactly. Repay with NFKD folding if non-Latin accent-insensitive search is requested.
 - `find_ci` Unicode path is O(n·m) per start position (no allocation; correct for multi-char case maps). Revisit only if non-ASCII search shows up in profiles; full case-folding (ß↔ss) would need a folding crate and is a semantic change.

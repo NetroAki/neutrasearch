@@ -170,6 +170,28 @@ pub(crate) fn configure(ctx: &egui::Context) {
     ctx.set_global_style(style);
 }
 
+/// Menu-bar buttons: no fill or outline until hovered or open.
+pub(crate) fn bar_style(ui: &mut Ui) {
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.bg_stroke = Stroke::NONE;
+    widgets.hovered.weak_bg_fill = HOVER;
+    widgets.hovered.bg_stroke = Stroke::NONE;
+    widgets.open.weak_bg_fill = HOVER;
+    widgets.open.bg_stroke = Stroke::NONE;
+}
+
+/// Toolbar dropdowns: transparent with a 1px outline, so they sit level with
+/// the filter chips and the view toggle.
+pub(crate) fn ghost_style(ui: &mut Ui) {
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
+    widgets.hovered.weak_bg_fill = HOVER;
+    widgets.open.weak_bg_fill = HOVER;
+    ui.spacing_mut().interact_size.y = 28.0;
+}
+
 fn load_font(compressed: &'static [u8]) -> Vec<u8> {
     zstd::stream::decode_all(compressed).expect("embedded font must decompress")
 }

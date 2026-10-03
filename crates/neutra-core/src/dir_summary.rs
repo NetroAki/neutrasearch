@@ -716,7 +716,7 @@ impl From<OldSummaryChild> for DirectoryChild {
  /// of decode_sidecar: consumers that need binary search or parent/child
  /// consistency use decode_sidecar. Returns the file layout version and
  /// base generation from the header.
- fn walk_frames(
+ pub(crate) fn walk_frames(
      bytes: &[u8],
      emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
  ) -> io::Result<(u32, u64)> {
