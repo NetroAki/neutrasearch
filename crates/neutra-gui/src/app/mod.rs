@@ -12,6 +12,7 @@ mod events;
 mod queries;
 mod scan_events;
 mod scans;
+pub(crate) mod search_worker;
 mod state;
 mod types;
 
@@ -61,6 +62,10 @@ impl NeutraApp {
 
     pub(crate) fn request_tree_model(&mut self) {
         queries::request_tree_model(self)
+    }
+
+    pub(crate) fn ensure_tree_summary(&mut self) {
+        queries::ensure_tree_summary(self)
     }
 
     pub(crate) fn save_settings(&mut self) {

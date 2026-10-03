@@ -32,6 +32,14 @@ pub(crate) enum Event {
         model: ui::Hierarchy,
     },
     TreeFailed(String),
+    SearchDone {
+        id: u64,
+        result: super::search_worker::SearchResult,
+    },
+    TreeSummary {
+        generation: u64,
+        ok: bool,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

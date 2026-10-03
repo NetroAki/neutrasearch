@@ -160,6 +160,23 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   status bar up, filter chips show a keyboard focus ring, the per-location
   "..." button opens its menu on click, and Escape closes the About window.
 - Status text, empty-value placeholders, and CLI help no longer use em dashes.
+- Typing in the search box no longer freezes the window: searches run on a
+  background worker that keeps only the newest query, the toolbar shows
+  "Searching..." and the previous results stay up until the new ones land.
+- The folder view opens instantly. A small summary of the top three folder
+  levels (sizes, counts, subfolders) is built once per index update in the
+  background from the existing directory-summary file, and deeper folders load
+  just their own subtree on demand. On a 61M-record index the switch went from
+  more than five seconds to under a quarter of a second.
+- The folder tree is a details tree with Name, Share, Size and Items columns,
+  each folder's biggest files under it, and arrow-key navigation. A click opens
+  a folder, a double-click, the chevron, or the arrow keys expand it, and a
+  click no longer expands and navigates at once; a folder that was still
+  loading no longer bounces the view back to the root.
+- The menu bar, toolbar dropdowns, and view toggle share one style: transparent
+  menu items, outlined ghost dropdowns, a joined list/grid toggle, a tracked
+  wordmark, and 8px margins on every row. Map tiles are dark tinted blocks with
+  a type-coloured outline instead of solid orange.
 - Result paths show the tail with a leading ellipsis and fit their column;
   inactive sort headers no longer show arrows.
 - The results canvas moved to the reference blue-slate tone and the kind tabs

@@ -17,6 +17,7 @@ pub mod delta;
 pub mod matcher;
 pub mod dir_overlay;
 pub mod dir_summary;
+pub mod dir_tree;
 pub mod index;
 pub mod mounts;
 pub mod paths;
@@ -28,7 +29,8 @@ pub mod types;
 pub use compact_build::BuildStats as CompactBuildStats;
   pub use compact_spill::{SpillAccumulator, SpillRuns};
   pub use delta::{DeltaChange, DeltaIndex, DEFAULT_COMPACT_AT, DELTA_HEADER_BYTES};
- pub use dir_overlay::DirectorySummaryOverlay;
+pub use dir_overlay::DirectorySummaryOverlay;
+pub use dir_tree::TreeSummary;
   pub use dir_summary::{
       aggregate_records, DirectoryChild, DirectorySummary, DirectorySummaryEntry,
   };

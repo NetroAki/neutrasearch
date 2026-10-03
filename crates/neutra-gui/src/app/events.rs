@@ -20,6 +20,7 @@ pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
         app.last_generation = generation;
         app.tree_model = None;
         app.requery();
+        app.ensure_tree_summary();
     }
     if app.cache_dirty
         && !app.building_cache
@@ -77,6 +78,25 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
         Event::TreeFailed(error) => {
             app.tree_building = false;
             note(app, "tree", "DISK MAP", error, true);
+        }
+        Event::SearchDone { id, result } => {
+            // Only the newest search may update the view.
+            if id == app.search_seq {
+                app.searching = false;
+                if let Some((hits, stats)) = result {
+                    app.hits = hits;
+                    app.search_stats = stats;
+                }
+            }
+        }
+        Event::TreeSummary { generation, ok } => {
+            app.tree_summary_pending = false;
+            app.tree_building = false;
+            if !ok {
+                note(app, "tree", "FOLDER MAP", "Folder map unavailable; folders load directly", false);
+            } else if generation != crate::app::queries::data_generation(app) {
+                app.ensure_tree_summary();
+            }
         }
     }
 }

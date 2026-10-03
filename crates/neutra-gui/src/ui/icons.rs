@@ -32,6 +32,13 @@ pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::
     response
 }
 
+/// Centered spinner shown while the first results of a search are pending.
+pub(super) fn searching_placeholder(ui: &mut egui::Ui) {
+    ui.centered_and_justified(|ui| {
+        ui.spinner();
+    });
+}
+
 /// House glyph for the home location row.
 pub(super) fn paint_home_icon(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
@@ -71,23 +78,29 @@ pub(super) fn paint_db_icon(ui: &mut egui::Ui, color: Color32) {
 
 /// List/grid view toggle button for the results toolbar.
 pub(super) fn view_button(ui: &mut egui::Ui, list: bool, active: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(30.0, 25.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(32.0, 28.0), Sense::click());
     let p = ui.painter();
-    p.rect_filled(rect, 4.0, if active { super::widgets::SELECTED } else { super::widgets::RAISED });
-    p.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, super::widgets::LINE_STRONG), StrokeKind::Inside);
+    // The pair reads as one segmented control: outer corners only.
+    let radius = if list {
+        egui::CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }
+    } else {
+        egui::CornerRadius { nw: 0, sw: 0, ne: 6, se: 6 }
+    };
+    p.rect_filled(rect, radius, if active { super::widgets::SELECTED } else { Color32::TRANSPARENT });
+    p.rect_stroke(rect, radius, Stroke::new(1.0_f32, super::widgets::LINE_STRONG), StrokeKind::Inside);
     let color = if active { super::widgets::ACID } else { MUTED };
     let stroke = Stroke::new(1.4_f32, color);
     if list {
         for y in [0.0, 4.5, 9.0] {
             p.line_segment(
-                [rect.left_top() + Vec2::new(8.0, 8.0 + y), rect.left_top() + Vec2::new(22.0, 8.0 + y)],
+                [rect.left_top() + Vec2::new(9.0, 9.5 + y), rect.left_top() + Vec2::new(23.0, 9.5 + y)],
                 stroke,
             );
         }
     } else {
         for (dx, dy) in [(0.0, 0.0), (7.0, 0.0), (0.0, 7.0), (7.0, 7.0)] {
             p.rect_stroke(
-                Rect::from_min_size(rect.left_top() + Vec2::new(8.0 + dx, 5.5 + dy), Vec2::splat(5.5)),
+                Rect::from_min_size(rect.left_top() + Vec2::new(9.0 + dx, 7.0 + dy), Vec2::splat(5.5)),
                 1.0,
                 stroke,
                 StrokeKind::Inside,
