@@ -4,7 +4,7 @@
 
 use super::super::icons::{paint_db_icon, paint_drive_icon};
 use super::super::widgets::{
-    ACID_STRONG, BLUE, ERROR, HOVER, LINE_STRONG, MUTED, TEXT, fmt_count, mono, sans,
+    ACID_STRONG, VIOLET, ERROR, HOVER, LINE_STRONG, MUTED, TEXT, fmt_count, mono, sans,
     secondary_button, shorten,
 };
 use super::super::icons::GREEN;
@@ -62,7 +62,7 @@ pub(crate) fn indexing_card(app: &mut NeutraApp, ui: &mut egui::Ui) {
 
 fn card_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        paint_db_icon(ui, BLUE);
+        paint_db_icon(ui, VIOLET);
         ui.vertical(|ui| {
             ui.label(RichText::new("Indexing in progress").font(sans(12.0)).strong());
             ui.label(
@@ -154,9 +154,9 @@ fn drive_state(app: &NeutraApp, path: &str, lane: &LaneState) -> (&'static str, 
         return ("Ready", GREEN);
     }
     if drive_fraction(app, path).is_some() {
-        ("Indexing", BLUE)
+        ("Indexing", VIOLET)
     } else {
-        ("Indexing\u{2026}", BLUE)
+        ("Indexing\u{2026}", VIOLET)
     }
 }
 

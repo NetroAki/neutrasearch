@@ -26,8 +26,8 @@ use widgets::{
     ancestor_paths,
      extension_color, fixed_strip, fmt_count, format_mtime, format_size, mono,
     parent_path, path_name, primary_button, sans, secondary_button, segment_button, shorten,
-    type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK, BLUE, CANVAS, ERROR, HOVER,
-    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, TEAL, BODY, CAPTION, SMALL,
+    type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK, VIOLET, CANVAS, ERROR, HOVER,
+    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, GLOW, WARN, CAPTION, SMALL, MICRO, tracked,
 };
 use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
 use dialogs::{about_dialog, diagnostics_dialog};
@@ -454,9 +454,9 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
         RuntimeState::FirstRun | RuntimeState::IndexingInitial
     );
     let response = egui::Frame::new()
-        .fill(RAISED)
+        .fill(BLACK)
         .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(4)
+        .corner_radius(6)
         .inner_margin(Margin::symmetric(8, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -468,7 +468,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
                         .width((ui.available_width() - 81.0).max(160.0)),
                 );
                 egui::Frame::new()
-                    .fill(BLACK)
+                    .fill(SURFACE)
                     .stroke(Stroke::new(1.0_f32, LINE_STRONG))
                     .corner_radius(4)
                     .inner_margin(Margin::symmetric(6, 2))
@@ -488,7 +488,7 @@ fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
         ui.painter().rect_stroke(
             response.rect.expand(2.0),
             6.0,
-            Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(0x3B, 0x82, 0xF6, 179)),
+            Stroke::new(2.0_f32, GLOW.gamma_multiply(0.7)),
             StrokeKind::Outside,
         );
         // Everything-style flow: Enter/Down leave the search box into the
@@ -533,7 +533,7 @@ fn kind_strip(app: &mut NeutraApp, ui: &mut Ui) {
                         app.save_settings();
                         app.requery();
                     }
-                    ui.add_space(14.0);
+                    ui.add_space(2.0);
                 }
             });
         });
@@ -675,7 +675,7 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
     ui.add_space(34.0);
     ui.horizontal(|ui| {
-        task_icon(ui, BLUE);
+        task_icon(ui, VIOLET);
         ui.add_space(10.0);
         ui.vertical(|ui| {
             ui.label(
@@ -715,7 +715,7 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
                 bar.left_top() + Vec2::new(bar.width() * pulse * 0.72, 0.0),
                 Vec2::new(bar.width() * 0.28, bar.height()),
             );
-            ui.painter().rect_filled(segment.intersect(bar), 0.0, BLUE);
+            ui.painter().rect_filled(segment.intersect(bar), 0.0, VIOLET);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Existing results remain untouched until the replacement is ready")

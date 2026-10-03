@@ -4,7 +4,7 @@ pub(crate) mod banner;
 pub(crate) mod card;
 pub(crate) mod sections;
 
-use super::widgets::{LINE_STRONG, MUTED, SURFACE, fmt_count, sans};
+use super::widgets::{LINE_STRONG, MUTED, SURFACE, TEXT, fmt_count, sans, tracked};
 use crate::NeutraApp;
 use egui::{Align, Layout, Margin, RichText, Stroke};
 
@@ -55,14 +55,14 @@ pub(super) fn side_panel(app: &mut NeutraApp, ui: &mut egui::Ui) {
         });
 }
 
-/// Overline: 10/14 uppercase in Text Secondary, used for section titles.
+/// Overline: tracked 10px uppercase in surface-400, used for section titles.
 pub(super) fn overline(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).font(sans(10.0)).color(MUTED).strong());
+    ui.label(RichText::new(tracked(text)).font(sans(10.0)).color(MUTED).strong());
 }
 
 fn panel_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Locations & Index").font(sans(18.0)).strong());
+        ui.label(RichText::new(tracked("Locations & Index")).font(sans(11.0)).color(TEXT).strong());
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.small_button("\u{d7}").clicked() {
                 app.diagnostics_open = false;
@@ -123,9 +123,9 @@ pub(super) fn status_bar(app: &NeutraApp, ui: &mut egui::Ui) {
 
 fn status_dot(app: &NeutraApp, ui: &mut egui::Ui) {
     use super::icons::GREEN;
-    use super::widgets::BLUE;
+    use super::widgets::VIOLET;
     let (text, color) = if app.scanning || app.building_cache {
-        ("Indexing\u{2026}", BLUE)
+        ("Indexing\u{2026}", VIOLET)
     } else if app.lanes.values().any(|lane| lane.error) {
         ("Some locations unavailable", super::widgets::ERROR)
     } else {

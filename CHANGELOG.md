@@ -144,15 +144,17 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - The Locations & Index panel stays hidden until asked for (File > Locations and
   index, the Index details button, or the access-banner Review link); the old
   modal dialog survives only for first-run setup.
-- The GUI follows the design system in `DESIGN.md` (the Plugin UI Design System
-  sheet and Neutraudio §36): its slate surface ramp with a blue primary, Inter
-  and Roboto Mono, the 4 / 8 / 12 radius scale, flat rows with divider lines, a
-  Primary-tinted selected row, a bordered search field with the magnifier inside,
-  10px scrollbars, and a 2px Primary focus ring. File-type badges are tinted by
-  kind (audio violet, images and video info blue, folders teal).
-- Text that used the low-contrast muted grey now uses Text Secondary, and the
-  violet audio badge letters use the primary text colour, so every text pairing
-  clears 4.5:1.
+- The GUI now looks like the Neutraudio plugins and shell (`DESIGN.md`, from the
+  Neutraudio §36 spec, its shell tokens, and its mockup): a slate-950 canvas
+  with slate-900 panels, red as the single active accent, Inter and Roboto Mono,
+  pill filter chips with a red active state, tracked uppercase table headers and
+  panel titles, a red selection bar, recessed wells for the location list, a
+  bordered search field with the magnifier inside, 10px scrollbars, and a 2px
+  red focus ring. File-type badges are outlined by kind (audio violet, images
+  and video green, folders and archives amber, PDF red).
+- Text that used the low-contrast muted grey now uses surface-400, accent text
+  uses a lighter red so it clears 4.5:1 on every surface, and violet appears only
+  as outlines and dots.
 - Result paths show the tail with a leading ellipsis and fit their column;
   inactive sort headers no longer show arrows.
 - The results canvas moved to the reference blue-slate tone and the kind tabs

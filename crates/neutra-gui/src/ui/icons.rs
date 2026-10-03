@@ -1,30 +1,26 @@
 //! Small drawn glyphs (drive, database, view toggles) and the text tab
 //! with its underline indicator. Vector shapes, not font glyphs.
 
-use super::widgets::{ACID, MUTED, sans};
+use super::widgets::{ACID, GLOW, LINE_STRONG, MICRO, MUTED, sans, tracked};
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 pub(super) use super::widgets::GREEN;
 
-/// Text filter tab with an underline indicator for the active preset.
+/// Pill chip, as in the mockup's browser filters: uppercase micro label, an
+/// accent-glow outline and tint when active.
 pub(super) fn filter_tab(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    let color = if active { ACID } else { MUTED };
-    let response = ui.add(
-        egui::Button::new(RichText::new(label).font(sans(12.0)).color(color))
-            .frame(false)
+    let (text, fill, outline) = if active {
+        (ACID, GLOW.gamma_multiply(0.14), GLOW)
+    } else {
+        (MUTED, Color32::TRANSPARENT, LINE_STRONG)
+    };
+    ui.add(
+        egui::Button::new(RichText::new(tracked(label)).font(sans(MICRO)).strong().color(text))
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, outline))
+            .corner_radius(12)
             .min_size(Vec2::new(0.0, 24.0)),
-    );
-    if active {
-        let y = response.rect.bottom() + 1.0;
-        ui.painter().line_segment(
-            [
-                egui::pos2(response.rect.left(), y),
-                egui::pos2(response.rect.right(), y),
-            ],
-            Stroke::new(2.0_f32, ACID),
-        );
-    }
-    response
+    )
 }
 
 /// House glyph for the home location row.

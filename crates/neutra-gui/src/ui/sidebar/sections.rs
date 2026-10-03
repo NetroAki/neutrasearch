@@ -2,7 +2,7 @@
 
 use super::super::dialogs::diagnostic_row;
 use super::super::widgets::{
-    ACID_STRONG, BLUE, MUTED, TEXT, fmt_count, format_mtime, mono, sans, secondary_button,
+    ACID_STRONG, VIOLET, MUTED, TEXT, fmt_count, format_mtime, mono, sans, secondary_button,
     shorten,
 };
 use crate::NeutraApp;
@@ -33,7 +33,12 @@ pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
             .color(MUTED),
     );
     ui.add_space(6.0);
-    location_rows(app, ui);
+    egui::Frame::new()
+        .fill(super::super::widgets::BLACK)
+        .stroke(egui::Stroke::new(1.0_f32, super::super::widgets::LINE))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| location_rows(app, ui));
 }
 
 pub(crate) fn status_section(app: &NeutraApp, ui: &mut egui::Ui) {
@@ -113,7 +118,7 @@ pub(crate) fn network_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("Watching for network servers")
                 .font(sans(11.0))
-                .color(BLUE),
+                .color(VIOLET),
         );
     } else if secondary_button(ui, "Watch network servers", MUTED).clicked() {
         crate::transport::spawn_network_watcher(app.tx.clone());
@@ -189,7 +194,7 @@ fn row_menu(app: &NeutraApp, ui: &mut egui::Ui, index: usize, root_text: &str, r
 /// Unavailable, an unfinished scan reads Indexing, finished lanes Ready.
 fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
     use super::super::icons::GREEN;
-    use super::super::widgets::{BLUE, ERROR, MUTED};
+    use super::super::widgets::{VIOLET, ERROR, MUTED};
     let failed = app.lanes.iter().any(|(key, lane)| lane.error && covers(key, root));
     if failed {
         return ("Unavailable", ERROR);
@@ -209,7 +214,7 @@ fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
     if known.iter().all(|lane| lane.records > 0) {
         ("Ready", GREEN)
     } else {
-        ("Indexing\u{2026}", BLUE)
+        ("Indexing\u{2026}", VIOLET)
     }
 }
 

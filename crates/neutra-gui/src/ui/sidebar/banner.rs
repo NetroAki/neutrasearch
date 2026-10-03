@@ -2,7 +2,7 @@
 //! or scan re-arms it.
 
 use super::super::widgets::{
-    ACID, BLUE, SELECTED, MUTED, WARN, WARN_DIM, sans,
+    ACID, VIOLET, SELECTED, MUTED, WARN, WARN_DIM, sans,
     secondary_button,
 };
 use super::SidebarTab;
@@ -34,7 +34,7 @@ fn banner_copy(app: &NeutraApp, state: super::super::RuntimeState) -> Option<Ban
             "Existing results remain searchable.".to_owned(),
             None,
             "Index status",
-            BLUE,
+            VIOLET,
         )),
         super::super::RuntimeState::Permission => Some((
             "Some folders couldn't be accessed",
