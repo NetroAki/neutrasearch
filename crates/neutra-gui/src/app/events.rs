@@ -19,7 +19,7 @@ pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
     if generation != app.last_generation {
         app.last_generation = generation;
         app.tree_model = None;
-        app.requery();
+        app.requery_unless_huge();
         app.ensure_tree_summary();
     }
     if app.cache_dirty

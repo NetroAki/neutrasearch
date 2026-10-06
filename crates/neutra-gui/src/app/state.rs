@@ -180,7 +180,7 @@ impl NeutraApp {
             app.onboarding_complete = true;
             app.save_settings();
         }
-        app.requery();
+        app.requery_unless_huge();
         app.ensure_tree_summary();
          if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
             crate::transport::spawn_network_watcher(tx);
@@ -194,12 +194,7 @@ impl NeutraApp {
             app.onboarding_scan = true;
             app.save_settings();
             app.begin_scan_with_elevation(cfg!(target_os = "linux"));
-         } else if !env_flag("NEUTRASEARCH_NO_AUTOSCAN") {
-            // Every launch re-scans the configured roots (everything by
-            // default); the previous index stays searchable until the new
-            // one lands. Opt out with NEUTRASEARCH_NO_AUTOSCAN=1.
-            app.begin_scan_with_elevation(cfg!(target_os = "linux"));
-        }
+         }
         app
     }
 

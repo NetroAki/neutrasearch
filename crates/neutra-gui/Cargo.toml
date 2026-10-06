@@ -13,12 +13,13 @@ neutra-core.workspace = true
 neutra-remote = { path = "../neutra-remote" }
 anyhow.workspace = true
 libc.workspace = true
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex = "1"
 zstd.workspace = true
 arboard = { version = "3", default-features = false }
-eframe = { version = "0.34", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = "0.34"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }

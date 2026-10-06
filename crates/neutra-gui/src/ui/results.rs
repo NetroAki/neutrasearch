@@ -599,7 +599,7 @@ fn paint_large_file_icon(ui: &Ui, center: egui::Pos2, record: &neutra_core::File
 }
 
 fn empty_results(app: &mut NeutraApp, ui: &mut Ui) {
-    if app.searching { return icons::searching_placeholder(ui); }
+    if app.searching || (app.search_seq == 0 && app.query.is_empty()) { return if app.searching { icons::searching_placeholder(ui) } else { icons::idle_placeholder(ui, app.index_len()) }; }
     let invalid_regex = app.regex_mode
         && !app.query.is_empty()
         && RegexBuilder::new(&app.query)
