@@ -52,6 +52,15 @@ impl NeutraApp {
         queries::index_len(self)
     }
 
+    /// Re-run the listing, except on the very first pass over a huge index
+    /// (a full decode costs minutes of CPU); the first typed query starts it.
+    pub(crate) fn requery_unless_huge(&mut self) {
+        let first = self.search_seq == 0 && self.query.is_empty();
+        if !(first && self.index_len() > crate::LAUNCH_LISTING_MAX) {
+            self.requery();
+        }
+    }
+
     pub(crate) fn requery(&mut self) {
         queries::requery(self)
     }

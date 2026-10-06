@@ -39,6 +39,17 @@ pub(super) fn searching_placeholder(ui: &mut egui::Ui) {
     });
 }
 
+/// Shown instead of a full-index listing on very large indexes: typing or
+/// picking a sort starts the search, so launch never decodes every record.
+pub(super) fn idle_placeholder(ui: &mut egui::Ui, records: u64) {
+    ui.centered_and_justified(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Type to search {records} indexed items"))
+                .color(super::theme::MUTED),
+        );
+    });
+}
+
 /// House glyph for the home location row.
 pub(super) fn paint_home_icon(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());

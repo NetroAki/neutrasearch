@@ -6,6 +6,8 @@ use neutra_core::{CompactIndex, Query, SearchHit, SearchStats};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
+
 pub(crate) struct SearchJob {
     pub(crate) id: u64,
     pub(crate) query: Query,
@@ -20,7 +22,9 @@ pub(crate) fn spawn(events: Sender<Event>, repaint: eframe::egui::Context) -> Se
         // The worker owns its own mapping so searches never borrow the UI's.
         let mut held: Option<CompactIndex> = None;
         while let Ok(mut job) = queue.recv() {
-            while let Ok(newer) = queue.try_recv() {
+            // Keystrokes arrive faster than a full-index scan finishes, so
+            // wait until typing pauses before starting one.
+            while let Ok(newer) = queue.recv_timeout(DEBOUNCE) {
                 job = newer;
             }
             let result = run(&mut held, &job);

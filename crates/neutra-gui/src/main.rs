@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 /// Result caps: the home view shows the newest slice of the index and typed
 /// searches stay at the interactive cap. The status bar reports the full
 /// matched count either way ("1,000 of 40,312 results"), so nothing is hidden.
+/// Above this many records the launch screen waits for the first search.
+pub(crate) const LAUNCH_LISTING_MAX: u64 = 5_000_000;
 pub(crate) const HOME_RESULT_CAP: usize = 10_000;
 pub(crate) const TYPED_RESULT_CAP: usize = 1_000;
 
@@ -44,11 +46,27 @@ fn app_icon() -> egui::IconData {
     }
 }
 
+/// Index scans fan out over rayon. Left on every core they saturate the
+/// machine for the length of a full-base search, so the GUI keeps a small,
+/// low-priority pool: searches take a little longer and nothing else slows.
+fn limit_search_threads() {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .start_handler(|_| {
+            #[cfg(unix)]
+            unsafe {
+                libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+            }
+        })
+        .build_global();
+}
+
 fn main() -> eframe::Result<()> {
     match terminal::action() {
         terminal::Action::Gui => {}
         terminal::Action::Exit(code) => std::process::exit(code),
     }
+    limit_search_threads();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
