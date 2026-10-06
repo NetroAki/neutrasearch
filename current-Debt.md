@@ -45,3 +45,10 @@ Still oversized — split at the next feature that touches them, don't split spe
 - `Query::score()` compiles the matcher per call; engines use `matcher()` once per search. Kept for test/external convenience.
 - `egui_expressive` (forked) drags `vtracer`/`visioncortex`/`image` into the GUI even with default features off; trimming requires changing the fork.
 - Streaming builds hold no live set past one chunk, but rayon sort scratch stays retained in thread arenas (~7 GiB RSS observed on the 100M-record host; harmless there). Revisit only if a smaller host OOMs during builds: cap sort threads or sort serially.
+
+## Launch weight (2026-10-06)
+
+- **AccessKit is off.** `eframe` is built without `accesskit` because `accesskit_unix` panics (abort) when the AT-SPI socket refuses the connection, which stopped the window from opening. Screen readers get no tree until this is repaid. Unblock: an eframe/accesskit release that handles a missing a11y bus, then re-enable the feature.
+- **Huge indexes skip the launch listing.** Above 5M records the window shows "Type to search" until the first query, because listing everything decodes every record (about 130 CPU-seconds on 70M). Repay with a per-block max-mtime table in the index so the newest-first listing reads a handful of blocks.
+- **Full scans still peak high in the helper.** A full rebuild peaked at 16 GB earlier; scans now run only from the Scan button, the weekly timer, or the first run. Unblock: cap sort threads in the helper (see the sort scratch note above).
+- **The live watcher exits on this machine.** `neutrasearch-watch-all` skips Btrfs subvolume mounts, so the index only updates through the weekly rebuild. Repay with a transid-bounded Btrfs sweep.
