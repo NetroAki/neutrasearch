@@ -22,7 +22,7 @@ const META_LEN: usize = 24;
 /// Build output and tool caches close thousands of files an hour. Following
 /// them would fill the delta log with records nobody searches for by name;
 /// the weekly rebuild still picks them up.
-const NOISY_DIRS: [&str; 10] =
+pub(crate) const NOISY_DIRS: [&str; 10] =
     [".git", "target", "node_modules", ".cache", "__pycache__", ".gradle", ".cargo", ".rustup", "DerivedDataCache", "Intermediate"];
 
 /// What the native watch loop needs from either kind of watcher.

@@ -338,6 +338,10 @@ impl DeltaIndex {
         )?;
         Ok(self.wal_bytes - old_bytes)
     }
+    /// The live record for `path`, when the delta holds one.
+    pub fn upsert_for(&self, path: &str) -> Option<&FileRecord> {
+        self.upserts.get(path)
+    }
     pub fn upserts(&self) -> impl Iterator<Item = &FileRecord> {
         self.upserts.values()
     }

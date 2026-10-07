@@ -7,6 +7,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Added
 
+- Btrfs transaction sweeps: every 20 seconds the helper asks each Btrfs subvolume what changed since its last transaction id and reconciles those folders against the index, so deleted files and folders, renames, new folders and the other subvolumes follow the disk without any directory walk. Directory children can now be listed from the index by skipping subtrees (`CompactIndex::directory_children`), and busy directories back off automatically.
 - Live updates on Btrfs subvolume mounts: a mount-mark watcher follows closed writes, so a saved file appears in the newest-first listing within a couple of seconds. The GUI checks the delta file about every two seconds and refreshes the empty-search listing when it changes.
 - `neutrasearch index` also writes the sorted leader lists, so the first screen is instant after the weekly rebuild.
 - Sorted leader lists: one pass per index generation stores the newest 20,000 and largest 20,000 records in `<index>.rank`. Empty-search listings, the Modified sort and the Size sort read that file and merge the live delta, so they answer in milliseconds without decoding the index. A page the file cannot prove exact (a heavy filter, a text query, another sort) falls back to the full search.

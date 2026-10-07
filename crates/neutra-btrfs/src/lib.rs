@@ -14,6 +14,7 @@ use neutra_core::{FileRecord, MountInfo, ScanStats};
 mod linux {
     use super::*;
     mod parallel;
+    pub mod sweep;
      use std::collections::{HashMap, HashSet};
      use std::time::Instant;
 
@@ -391,6 +392,8 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::scan;
+#[cfg(target_os = "linux")]
+pub use linux::sweep::{Changes, Child, Inode, Subvolume};
 
 #[cfg(not(target_os = "linux"))]
 pub fn scan(_mount: &MountInfo, _sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
