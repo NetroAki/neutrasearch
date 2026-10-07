@@ -81,6 +81,7 @@ pub(crate) struct NeutraApp {
      pub(crate) tree_building: bool,
      /// The shallow folder summary is being built; the tree waits for it.
      pub(crate) tree_summary_pending: bool,
+    pub(crate) rank_pending: bool,
      /// Directories with a fetch in flight. Guards against duplicate spawns
      /// while a slow subtree scan runs.
      pub(crate) tree_pending: BTreeSet<String>,
@@ -168,6 +169,7 @@ impl NeutraApp {
              tree_model: None,
              tree_building: false,
              tree_summary_pending: false,
+            rank_pending: false,
              tree_pending: BTreeSet::new(),
             remote_watcher_started: false,
         };
@@ -181,6 +183,7 @@ impl NeutraApp {
             app.save_settings();
         }
         app.requery_unless_huge();
+        app.ensure_ranked();
         app.ensure_tree_summary();
          if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
             crate::transport::spawn_network_watcher(tx);

@@ -23,6 +23,7 @@ pub mod mounts;
 pub mod paths;
 pub mod proto;
 pub mod query;
+pub mod ranked;
 pub mod types;
 
  pub use compact::{join_child_path, CompactIndex, DirFile, DirListing, DirSubdir};
@@ -37,6 +38,7 @@ pub use dir_tree::TreeSummary;
 pub use index::{Index, SearchHit, SearchStats};
 pub use mounts::{FsKind, MountInfo, MountSource};
 pub use matcher::QueryMatcher;
+pub use ranked::RankedLists;
 pub use query::{
     MatchFields, Query, SortKey, ARCHIVE_EXTS, AUDIO_EXTS, DOC_EXTS, EXEC_EXTS, IMAGE_EXTS,
     VIDEO_EXTS,

@@ -157,7 +157,7 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
     let more_events = app.process_events();
     if more_events {
         ui.ctx().request_repaint();
-    } else if app.scanning || app.building_cache || app.tree_building {
+    } else if app.scanning || app.building_cache || app.tree_building || app.rank_pending {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     } else if app.remote_watcher_started {
         ui.ctx().request_repaint_after(Duration::from_secs(1));

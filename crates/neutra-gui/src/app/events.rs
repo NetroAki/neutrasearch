@@ -20,6 +20,7 @@ pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
         app.last_generation = generation;
         app.tree_model = None;
         app.requery_unless_huge();
+        app.ensure_ranked();
         app.ensure_tree_summary();
     }
     if app.cache_dirty
@@ -87,6 +88,14 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
                     app.hits = hits;
                     app.search_stats = stats;
                 }
+            }
+        }
+        Event::Ranked { generation, ok } => {
+            app.rank_pending = false;
+            if ok && generation == crate::app::queries::data_generation(app) {
+                app.requery_unless_huge();
+            } else if !ok {
+                note(app, "rank", "SORTED LISTS", "Sorted lists unavailable; listings scan the index", false);
             }
         }
         Event::TreeSummary { generation, ok } => {
