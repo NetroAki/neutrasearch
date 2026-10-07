@@ -97,6 +97,7 @@ pub fn run_protocol_with_auth<R: Read>(
         let base_path = serve_index.as_ref().expect("watch mode has an index");
         let excluded = watch_exclusions(base_path);
         let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
+        crate::watch_sweep::start(Arc::clone(&store), Arc::clone(&stale), source);
         match watch_linux::FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
             Ok(watcher) => start_native_watch(watcher, store, Arc::clone(&stale)),
             Err(error) if watch_mount::needs_mount_mark(&error) => {

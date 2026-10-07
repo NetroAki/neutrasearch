@@ -23,6 +23,9 @@ pub(crate) const MAGIC: &[u8; 8] = b"NEUTIDX1";
  pub(crate) const MIN_READABLE_VERSION: u32 = 3;
 pub(crate) const HEADER: u64 = 64;
 const CHECKSUM_BYTES: usize = 4;
+mod children;
+mod table;
+use table::TableView;
 pub(crate) const BLOCK_RECORDS: usize = 32;
 pub(crate) const DESC_SIZE: u64 = 16;
 const DICT_SIZE: u64 = 16;
@@ -38,14 +41,6 @@ pub(crate) struct DictEntry {
     pub(crate) gram: u32,
     pub(crate) len: u32,
     pub(crate) offset: u64,
-}
-
-/// A fixed-width table read straight from the mapped file on demand, so the
-/// block directory and trigram dictionary cost no heap.
-#[derive(Clone, Copy)]
-struct TableView {
-    start: usize,
-    count: usize,
 }
 
 #[cfg(not(windows))]
@@ -908,43 +903,7 @@ type IndexBytes = Vec<u8>;
          }
          listing.finish(subdirs, self, delta, &prefix)
      }
-      fn block(&self, id: usize) -> Option<BlockDesc> {
-        if id >= self.blocks.count {
-            return None;
-        }
-        let p = self.blocks.start + id * DESC_SIZE as usize;
-        Some(BlockDesc {
-            offset: u64_at(&self.map, p).ok()?,
-            len: u32_at(&self.map, p + 8).ok()?,
-            count: u16_at(&self.map, p + 12).ok()?,
-        })
-    }
-
-    fn dict_entry(&self, i: usize) -> Option<DictEntry> {
-        let p = self.dict.start + i * DICT_SIZE as usize;
-        Some(DictEntry {
-            gram: u32_at(&self.map, p).ok()?,
-            len: u32_at(&self.map, p + 4).ok()?,
-            offset: u64_at(&self.map, p + 8).ok()?,
-        })
-    }
-
-    /// Binary search over the sorted dictionary in the mapped file.
-    fn dict_find(&self, gram: u32) -> Option<DictEntry> {
-        let (mut low, mut high) = (0, self.dict.count);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let entry = self.dict_entry(mid)?;
-            match entry.gram.cmp(&gram) {
-                std::cmp::Ordering::Equal => return Some(entry),
-                std::cmp::Ordering::Less => low = mid + 1,
-                std::cmp::Ordering::Greater => high = mid,
-            }
-        }
-        None
-    }
-
-    fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
+      fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
         let d = self
             .block(id as usize)
             .ok_or_else(|| invalid("path block ID out of range"))?;

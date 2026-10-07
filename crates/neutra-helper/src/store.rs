@@ -52,6 +52,11 @@ impl DurableStore {
         })
     }
 
+    /// The base and delta as one readable pair, for in-process reconcilers.
+    pub(crate) fn view(&self) -> Option<(&CompactIndex, &DeltaIndex)> {
+        self.base.as_ref().map(|base| (base, &self.delta))
+    }
+
     pub(crate) fn search(&self, query: &Query) -> Result<(Vec<SearchHit>, SearchStats)> {
         let base = self
             .base

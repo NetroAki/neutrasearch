@@ -16,13 +16,15 @@ mod store;
 #[cfg(target_os = "linux")]
 mod watch_linux;
 #[cfg(target_os = "linux")]
+mod sweep_plan;
+#[cfg(target_os = "linux")]
 mod watch_mount;
+#[cfg(target_os = "linux")]
+mod watch_sweep;
 #[cfg(test)]
 use store::write_compaction_marker;
 use protocol::run_protocol;
-use scan::{
-    dispatch_lane, exclusion_prefixes, find_local_mount, path_has_component_prefix,
-};
+use scan::{dispatch_lane, exclusion_prefixes, find_local_mount, path_has_component_prefix};
 use store::{acquire_rebuild_lock, sync_parent};
 #[cfg(test)]
 use store::DurableStore;
@@ -35,9 +37,7 @@ use neutra_core::CompactIndex;
 use std::io::{Cursor, Write};
 use std::time::Duration;
 
-/// Coalescing window for watched filesystem events: bursts (builds, git
-/// checkouts, archive extraction) commit once after quiet instead of
-/// fsync-per-event.
+/// Watched-event bursts (builds, checkouts) commit once after this quiet window.
 pub(crate) const WATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const MAX_PENDING_CHANGES: usize = crate::scan::MAX_DELTA_CHANGES;
 
