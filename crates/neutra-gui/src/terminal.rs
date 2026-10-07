@@ -94,9 +94,22 @@ fn index(args: Vec<std::ffi::OsString>) -> i32 {
         Ok(path) => neutra_core::paths::resolve_index_path(path),
         Err(message) => return error(&message),
     };
-    match build_machine_index_on_large_stack(output, allow_zfs_enumerate) {
-        Ok(()) => 0,
+    match build_machine_index_on_large_stack(output.clone(), allow_zfs_enumerate) {
+        Ok(()) => {
+            build_ranked_lists(&output);
+            0
+        }
         Err(message) => error(&message),
+    }
+}
+
+/// Precompute the newest and largest listings so the GUI's first screen is
+/// instant. A failure only costs the GUI a background build later.
+fn build_ranked_lists(path: &Path) {
+    let built = CompactIndex::open_fast(path)
+        .and_then(|index| neutra_core::RankedLists::ensure(path, index.generation()));
+    if let Err(message) = built {
+        eprintln!("neutrasearch: sorted lists not built: {message}");
     }
 }
 

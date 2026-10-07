@@ -9,7 +9,7 @@ use std::time::Instant;
 
 pub(crate) fn adopt_published_index(app: &mut NeutraApp, index: CompactIndex) {
     app.last_generation = index.generation();
-    app.compact = Some(index);
+    app.compact = Some(std::sync::Arc::new(index));
     if let Err(error) = neutra_core::paths::remember_index_path(&app.cache_path) {
         note(
             app,

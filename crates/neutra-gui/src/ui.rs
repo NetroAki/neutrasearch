@@ -159,8 +159,8 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
         ui.ctx().request_repaint();
     } else if app.scanning || app.building_cache || app.tree_building || app.rank_pending {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
-    } else if app.remote_watcher_started {
-        ui.ctx().request_repaint_after(Duration::from_secs(1));
+    } else {
+        ui.ctx().request_repaint_after(Duration::from_secs(if app.remote_watcher_started { 1 } else { 2 }));
     }
 
     let focus_search = ui.input_mut(|input| {

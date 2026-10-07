@@ -40,6 +40,14 @@ pub(crate) struct DictEntry {
     pub(crate) offset: u64,
 }
 
+/// A fixed-width table read straight from the mapped file on demand, so the
+/// block directory and trigram dictionary cost no heap.
+#[derive(Clone, Copy)]
+struct TableView {
+    start: usize,
+    count: usize,
+}
+
 #[cfg(not(windows))]
 type IndexBytes = Mmap;
 #[cfg(windows)]
@@ -49,8 +57,8 @@ type IndexBytes = Vec<u8>;
      map: IndexBytes,
      generation: u64,
      record_count: u64,
-     blocks: Vec<BlockDesc>,
-     dict: Vec<DictEntry>,
+     blocks: TableView,
+     dict: TableView,
      record_version: u32,
  }
 
@@ -378,7 +386,6 @@ type IndexBytes = Vec<u8>;
         let dict_count = u32_at(data, 28)? as usize;
         let desc_offset = u64_at(data, 32)? as usize;
         let dict_offset = u64_at(data, 48)? as usize;
-        let mut blocks = Vec::with_capacity(block_count);
         for i in 0..block_count {
             let p = desc_offset + i * DESC_SIZE as usize;
             let d = BlockDesc {
@@ -387,9 +394,8 @@ type IndexBytes = Vec<u8>;
                 count: u16_at(data, p + 12)?,
             };
             checked(data, d.offset as usize, d.len as usize)?;
-            blocks.push(d);
         }
-        let mut dict = Vec::with_capacity(dict_count);
+        let mut previous_gram = None;
         for i in 0..dict_count {
             let p = dict_offset + i * DICT_SIZE as usize;
             let d = DictEntry {
@@ -398,17 +404,17 @@ type IndexBytes = Vec<u8>;
                 offset: u64_at(data, p + 8)?,
             };
             checked(data, d.offset as usize, d.len as usize)?;
-            dict.push(d);
-        }
-        if !dict.windows(2).all(|w| w[0].gram < w[1].gram) {
-            return Err(invalid("trigram dictionary is not sorted"));
+            if previous_gram.is_some_and(|before| before >= d.gram) {
+                return Err(invalid("trigram dictionary is not sorted"));
+            }
+            previous_gram = Some(d.gram);
         }
         Ok(Self {
             map,
             generation,
             record_count,
-            blocks,
-            dict,
+            blocks: TableView { start: desc_offset, count: block_count },
+            dict: TableView { start: dict_offset, count: dict_count },
             record_version,
         })
     }
@@ -510,7 +516,7 @@ type IndexBytes = Vec<u8>;
              .map(|record| (record.path.as_ref(), record))
              .collect();
          let mut batch = Vec::with_capacity(BATCH);
-         for id in 0..base.blocks.len() as u32 {
+         for id in 0..base.blocks.count as u32 {
              for record in base.read_block(id)? {
                  let path = record.path.as_ref();
                  if removed.contains(path) || upserts.contains_key(path) {
@@ -539,7 +545,7 @@ type IndexBytes = Vec<u8>;
 
      pub fn records(&self) -> io::Result<Vec<FileRecord>> {
         let mut out = Vec::with_capacity(self.record_count as usize);
-        for id in 0..self.blocks.len() as u32 {
+        for id in 0..self.blocks.count as u32 {
             out.extend(self.read_block(id)?);
         }
         Ok(out)
@@ -573,7 +579,7 @@ type IndexBytes = Vec<u8>;
     /// overlay construction quadratic.
     pub fn records_by_path(&self, path: &str) -> io::Result<Vec<FileRecord>> {
         let mut low = 0usize;
-        let mut high = self.blocks.len();
+        let mut high = self.blocks.count;
         while low < high {
             let middle = low + (high - low) / 2;
             let records = self.read_block(middle as u32)?;
@@ -587,7 +593,7 @@ type IndexBytes = Vec<u8>;
             }
         }
         let mut matches = Vec::new();
-        for block_id in low..self.blocks.len() {
+        for block_id in low..self.blocks.count {
             for record in self.read_block(block_id as u32)? {
                 match compare_index_paths(record.path.as_ref(), path) {
                     Ordering::Less => {}
@@ -609,7 +615,7 @@ type IndexBytes = Vec<u8>;
         path: &str,
     ) -> io::Result<Option<FileRecord>> {
         let mut low = 0usize;
-        let mut high = self.blocks.len();
+        let mut high = self.blocks.count;
         while low < high {
             let middle = low + (high - low) / 2;
             let records = self.read_block(middle as u32)?;
@@ -621,7 +627,7 @@ type IndexBytes = Vec<u8>;
                 high = middle;
             }
         }
-        for block_id in low..self.blocks.len() {
+        for block_id in low..self.blocks.count {
             let records = self.read_block(block_id as u32)?;
             for record in records {
                 match compare_index_paths(record.path.as_ref(), path) {
@@ -760,14 +766,14 @@ type IndexBytes = Vec<u8>;
             collect_trigrams(term, &mut grams);
         }
         if grams.is_empty() {
-            return Ok((0..self.blocks.len() as u32).collect());
+            return Ok((0..self.blocks.count as u32).collect());
         }
         let mut entries = Vec::with_capacity(grams.len());
         for gram in grams {
-            let Ok(i) = self.dict.binary_search_by_key(&gram, |d| d.gram) else {
+            let Some(entry) = self.dict_find(gram) else {
                 return Ok(Vec::new());
             };
-            entries.push(self.dict[i]);
+            entries.push(entry);
         }
         entries.sort_unstable_by_key(|d| d.len);
         let mut candidates = self.decode_posting(entries[0])?;
@@ -807,7 +813,7 @@ type IndexBytes = Vec<u8>;
      fn release_block(&self, id: u32) {
          #[cfg(unix)]
          {
-             let Some(desc) = self.blocks.get(id as usize) else {
+             let Some(desc) = self.block(id as usize) else {
                  return;
              };
              if desc.len == 0 {
@@ -843,7 +849,7 @@ type IndexBytes = Vec<u8>;
          let prefix = dir_prefix(dir);
          // First block whose last record could fall under the prefix.
          let mut low = 0usize;
-         let mut high = self.blocks.len();
+         let mut high = self.blocks.count;
          while low < high {
              let middle = low + (high - low) / 2;
              let records = self.read_block(middle as u32)?;
@@ -872,7 +878,7 @@ type IndexBytes = Vec<u8>;
              // Pages from the binary search above are dropped just the same.
              self.release_block(low as u32 - 1);
          }
-         for block_id in low..self.blocks.len() {
+         for block_id in low..self.blocks.count {
              let mut past = false;
              for record in self.read_block(block_id as u32)? {
                  // Source scoping composes with alias collapsing: twins share
@@ -902,10 +908,45 @@ type IndexBytes = Vec<u8>;
          }
          listing.finish(subdirs, self, delta, &prefix)
      }
-      fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
-        let d = *self
-            .blocks
-            .get(id as usize)
+      fn block(&self, id: usize) -> Option<BlockDesc> {
+        if id >= self.blocks.count {
+            return None;
+        }
+        let p = self.blocks.start + id * DESC_SIZE as usize;
+        Some(BlockDesc {
+            offset: u64_at(&self.map, p).ok()?,
+            len: u32_at(&self.map, p + 8).ok()?,
+            count: u16_at(&self.map, p + 12).ok()?,
+        })
+    }
+
+    fn dict_entry(&self, i: usize) -> Option<DictEntry> {
+        let p = self.dict.start + i * DICT_SIZE as usize;
+        Some(DictEntry {
+            gram: u32_at(&self.map, p).ok()?,
+            len: u32_at(&self.map, p + 4).ok()?,
+            offset: u64_at(&self.map, p + 8).ok()?,
+        })
+    }
+
+    /// Binary search over the sorted dictionary in the mapped file.
+    fn dict_find(&self, gram: u32) -> Option<DictEntry> {
+        let (mut low, mut high) = (0, self.dict.count);
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let entry = self.dict_entry(mid)?;
+            match entry.gram.cmp(&gram) {
+                std::cmp::Ordering::Equal => return Some(entry),
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+            }
+        }
+        None
+    }
+
+    fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
+        let d = self
+            .block(id as usize)
             .ok_or_else(|| invalid("path block ID out of range"))?;
         let compressed = checked(&self.map, d.offset as usize, d.len as usize)?;
         let raw = zstd::stream::decode_all(compressed)?;

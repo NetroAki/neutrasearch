@@ -11,7 +11,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const MAGIC: &[u8; 8] = b"NEURANK1";
+const MAGIC: &[u8; 8] = b"NEURANK2";
 const PREFIX: usize = 16;
 /// Records kept per ordering. Enough that a kind filter still leaves a full page.
 const KEEP: usize = 20_000;
@@ -122,8 +122,13 @@ impl RankedLists {
         let matcher = q.matcher().ok()?;
         let mut kept: Vec<(u32, &FileRecord)> = Vec::new();
         let mut from_base = 0usize;
+        let mut shadowed = 0usize;
         for record in base {
-            if delta.is_some_and(|d| d.shadows(record.path.as_ref())) || !q.passes_filters(record) {
+            if delta.is_some_and(|d| d.shadows(record.path.as_ref())) {
+                shadowed += 1;
+                continue;
+            }
+            if !q.passes_filters(record) {
                 continue;
             }
             if let Some(score) = matcher.score(record) {
@@ -157,7 +162,7 @@ impl RankedLists {
             && !q.executable_only;
         // Nothing filtered out of the leaders means the index total is the
         // best count available; otherwise only a lower bound is known.
-        let matched = if unfiltered || from_base == base.len() {
+        let matched = if unfiltered || from_base + shadowed == base.len() {
             self.lists.total + added
         } else {
             from_base as u64 + added
@@ -253,5 +258,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&delta_path);
         let _ = std::fs::remove_file(RankedLists::path_for(&path));
+    }
+
+    #[test]
+    fn corrupt_future_timestamps_do_not_lead_the_newest_listing() {
+        let records = vec![
+            rec("/a/real.txt", 5, 1_790_000_000, crate::FileKind::File),
+            rec("/a/bogus.txt", 5, 4_500_000_000, crate::FileKind::File),
+        ];
+        let path = std::env::temp_dir().join(format!("neutra-rank-future-{}.idx", std::process::id()));
+        CompactIndex::build(&records, &path).unwrap();
+        let index = CompactIndex::open_fast(&path).unwrap();
+        let query = Query { sort: SortKey::MtimeDesc, limit: 5, ..Query::default() };
+        assert_eq!(&*index.search(&query).unwrap().0[0].record.path, "/a/real.txt");
+        drop(index);
+        let _ = std::fs::remove_file(&path);
     }
 }

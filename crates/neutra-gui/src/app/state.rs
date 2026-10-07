@@ -19,7 +19,7 @@ use crate::ui;
 
 pub(crate) struct NeutraApp {
     pub(crate) index: Index,
-    pub(crate) compact: Option<CompactIndex>,
+    pub(crate) compact: Option<std::sync::Arc<CompactIndex>>,
     pub(crate) logo: egui::TextureHandle,
     pub(crate) scan_index: Option<SpillAccumulator>,
     pub(crate) query: String,
@@ -82,6 +82,8 @@ pub(crate) struct NeutraApp {
      /// The shallow folder summary is being built; the tree waits for it.
      pub(crate) tree_summary_pending: bool,
     pub(crate) rank_pending: bool,
+    pub(crate) delta_stamp: Option<Option<(std::time::SystemTime, u64)>>,
+    pub(crate) delta_checked: Instant,
      /// Directories with a fetch in flight. Guards against duplicate spawns
      /// while a slow subtree scan runs.
      pub(crate) tree_pending: BTreeSet<String>,
@@ -89,7 +91,7 @@ pub(crate) struct NeutraApp {
 }
 
 struct Restored {
-    compact: Option<CompactIndex>,
+    compact: Option<std::sync::Arc<CompactIndex>>,
     index: Index,
     cache_error: Option<String>,
 }
@@ -170,6 +172,8 @@ impl NeutraApp {
              tree_building: false,
              tree_summary_pending: false,
             rank_pending: false,
+            delta_stamp: None,
+            delta_checked: Instant::now(),
              tree_pending: BTreeSet::new(),
             remote_watcher_started: false,
         };
@@ -261,7 +265,7 @@ impl NeutraApp {
     }
     match CompactIndex::open_fast(cache_path) {
         Ok(compact) => Restored {
-            compact: Some(compact),
+            compact: Some(std::sync::Arc::new(compact)),
             index: Index::default(),
             cache_error: None,
         },

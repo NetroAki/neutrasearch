@@ -12,6 +12,8 @@ pub(crate) struct SearchJob {
     pub(crate) id: u64,
     pub(crate) query: Query,
     pub(crate) index_path: PathBuf,
+    /// The UI's own handle, so the block tables exist in memory once.
+    pub(crate) index: std::sync::Arc<CompactIndex>,
 }
 
 pub(crate) type SearchResult = Option<(Vec<SearchHit>, SearchStats)>;
@@ -40,7 +42,7 @@ pub(crate) fn spawn(events: Sender<Event>, repaint: eframe::egui::Context) -> Se
 /// delta snapshot, so searches never borrow the UI's state.
 #[derive(Default)]
 struct Held {
-    index: Option<CompactIndex>,
+    index: Option<std::sync::Arc<CompactIndex>>,
     ranked: Option<RankedLists>,
     delta: Option<DeltaIndex>,
     delta_stamp: Option<(std::time::SystemTime, u64)>,
@@ -48,9 +50,8 @@ struct Held {
 
 impl Held {
     fn run(&mut self, job: &SearchJob) -> SearchResult {
-        let on_disk = CompactIndex::generation_on_disk(&job.index_path).ok()?;
-        if self.index.as_ref().map(CompactIndex::generation) != Some(on_disk) {
-            self.index = CompactIndex::open_fast(&job.index_path).ok();
+        if self.index.as_ref().map(|held| held.generation()) != Some(job.index.generation()) {
+            self.index = Some(std::sync::Arc::clone(&job.index));
             self.ranked = None;
             self.delta_stamp = None;
         }
@@ -58,7 +59,11 @@ impl Held {
         if self.ranked.is_none() {
             self.ranked = RankedLists::open_for_compact(&job.index_path, generation).ok();
         }
+        let loaded = self.ranked.is_some() && self.delta_stamp.is_none();
         self.refresh_delta(&job.index_path, generation);
+        if loaded || self.delta_stamp.is_some() {
+            release_scratch();
+        }
         if let Some(found) = self.ranked.as_ref().and_then(|r| r.search(&job.query, self.delta.as_ref())) {
             return Some(found);
         }
@@ -81,5 +86,14 @@ impl Held {
         }
         self.delta = stamp.and_then(|_| DeltaIndex::open_snapshot(&path, generation).ok());
         self.delta_stamp = stamp;
+    }
+}
+
+/// Loading the leader lists and delta decodes megabytes of scratch; hand the
+/// freed pages back so they do not count against the window.
+fn release_scratch() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }

@@ -15,7 +15,8 @@ mod scan;
 mod store;
 #[cfg(target_os = "linux")]
 mod watch_linux;
-
+#[cfg(target_os = "linux")]
+mod watch_mount;
 #[cfg(test)]
 use store::write_compaction_marker;
 use protocol::run_protocol;
@@ -27,7 +28,6 @@ use store::{acquire_rebuild_lock, sync_parent};
 use store::DurableStore;
 #[cfg(target_os = "windows")]
 mod windows_service;
-
 use anyhow::{Context, Result};
 use neutra_core::proto::HELPER_BUILD;
 use neutra_core::CompactIndex;

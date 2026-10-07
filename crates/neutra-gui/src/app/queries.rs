@@ -8,7 +8,7 @@ use super::types::Event;
 pub(crate) fn index_len(app: &NeutraApp) -> u64 {
     app.compact
         .as_ref()
-        .map_or(app.index.len() as u64, CompactIndex::len)
+        .map_or(app.index.len() as u64, |index| index.len())
 }
 
 pub(crate) fn index_is_empty(app: &NeutraApp) -> bool {
@@ -24,7 +24,7 @@ pub(crate) fn scan_len(app: &NeutraApp) -> u64 {
 pub(crate) fn data_generation(app: &NeutraApp) -> u64 {
     app.compact
         .as_ref()
-        .map_or_else(|| app.index.generation(), CompactIndex::generation)
+        .map_or_else(|| app.index.generation(), |index| index.generation())
 }
 
 pub(crate) fn requery(app: &mut NeutraApp) {
@@ -109,6 +109,7 @@ pub(crate) fn requery(app: &mut NeutraApp) {
             id: app.search_seq,
             query,
             index_path: app.cache_path.clone(),
+            index: std::sync::Arc::clone(app.compact.as_ref().expect("checked above")),
         };
         let _ = app.search_tx.send(job);
         return;
@@ -161,14 +162,14 @@ fn apply_kind_filter(query: &mut neutra_core::Query, filter: crate::ui::KindFilt
 }
 
 fn refresh_compact_if_replaced(app: &mut NeutraApp) -> bool {
-    let Some(current_generation) = app.compact.as_ref().map(CompactIndex::generation) else {
+    let Some(current_generation) = app.compact.as_ref().map(|index| index.generation()) else {
         return true;
     };
     match CompactIndex::generation_on_disk(&app.cache_path) {
         Ok(generation) if generation == current_generation => true,
         Ok(_) => match CompactIndex::open_fast(&app.cache_path) {
             Ok(compact) => {
-                app.compact = Some(compact);
+                app.compact = Some(std::sync::Arc::new(compact));
                 app.tree_model = None;
                 true
             }
@@ -236,6 +237,24 @@ fn reject_index(app: &mut NeutraApp, status: String) {
          }
      });
  }
+
+/// Notice live changes: about every two seconds, compare the delta file's
+/// stamp and refresh the empty-search listing when it moved, so a saved file
+/// shows up in Modified order without any action. Typed searches refresh on
+/// the next keystroke instead of rescanning on every write.
+pub(crate) fn poll_delta(app: &mut NeutraApp) {
+    if app.delta_checked.elapsed() < std::time::Duration::from_secs(2) {
+        return;
+    }
+    app.delta_checked = std::time::Instant::now();
+    let stamp = std::fs::metadata(app.cache_path.with_extension("delta"))
+        .ok()
+        .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+    let seen = app.delta_stamp.replace(stamp);
+    if seen.is_some_and(|before| before != stamp) && app.query.trim().is_empty() && !app.searching {
+        app.requery();
+    }
+}
 
 pub(crate) fn ranked_ready(app: &NeutraApp) -> bool {
     app.compact.as_ref().is_some_and(|compact| {

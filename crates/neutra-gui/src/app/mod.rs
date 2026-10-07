@@ -61,6 +61,10 @@ impl NeutraApp {
         }
     }
 
+    pub(crate) fn poll_delta(&mut self) {
+        queries::poll_delta(self)
+    }
+
     pub(crate) fn ensure_ranked(&mut self) {
         queries::ensure_ranked(self)
     }
