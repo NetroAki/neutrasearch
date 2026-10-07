@@ -56,9 +56,13 @@ impl NeutraApp {
     /// (a full decode costs minutes of CPU); the first typed query starts it.
     pub(crate) fn requery_unless_huge(&mut self) {
         let first = self.search_seq == 0 && self.query.is_empty();
-        if !(first && self.index_len() > crate::LAUNCH_LISTING_MAX) {
+        if !(first && self.index_len() > crate::LAUNCH_LISTING_MAX && !queries::ranked_ready(self)) {
             self.requery();
         }
+    }
+
+    pub(crate) fn ensure_ranked(&mut self) {
+        queries::ensure_ranked(self)
     }
 
     pub(crate) fn requery(&mut self) {

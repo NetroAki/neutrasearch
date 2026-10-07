@@ -7,6 +7,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ### Added
 
+- Sorted leader lists: one pass per index generation stores the newest 20,000 and largest 20,000 records in `<index>.rank`. Empty-search listings, the Modified sort and the Size sort read that file and merge the live delta, so they answer in milliseconds without decoding the index. A page the file cannot prove exact (a heavy filter, a text query, another sort) falls back to the full search.
 - One-time elevation on single-user machines: `packaging/linux/49-neutrasearch.rules`
   approves the indexing helper for the local active session, so scans never
   prompt for a password again after it is installed.

@@ -40,6 +40,10 @@ pub(crate) enum Event {
         generation: u64,
         ok: bool,
     },
+    Ranked {
+        generation: u64,
+        ok: bool,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

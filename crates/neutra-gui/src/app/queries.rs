@@ -70,6 +70,9 @@ pub(crate) fn requery(app: &mut NeutraApp) {
         crate::TYPED_RESULT_CAP
     };
     query.sort = match (app.sort_mode, app.sort_reversed) {
+        // With no text every score ties and relevance degrades to newest
+        // first, which the sorted leader lists can answer directly.
+        (crate::ui::SortMode::Relevance, _) if raw_query.is_empty() => SortKey::MtimeDesc,
         (crate::ui::SortMode::Relevance, _) => SortKey::Relevance,
         (crate::ui::SortMode::Modified, false) => SortKey::MtimeDesc,
         (crate::ui::SortMode::Modified, true) => SortKey::MtimeAsc,
@@ -233,6 +236,29 @@ fn reject_index(app: &mut NeutraApp, status: String) {
          }
      });
  }
+
+pub(crate) fn ranked_ready(app: &NeutraApp) -> bool {
+    app.compact.as_ref().is_some_and(|compact| {
+        neutra_core::RankedLists::is_current(&app.cache_path, compact.generation())
+    })
+}
+
+/// Build the sorted leader lists once per index generation so newest-first
+/// and largest-first listings never decode the whole index.
+pub(crate) fn ensure_ranked(app: &mut NeutraApp) {
+    let Some(compact) = &app.compact else { return };
+    if app.rank_pending || ranked_ready(app) {
+        return;
+    }
+    let generation = compact.generation();
+    let path = app.cache_path.clone();
+    let tx = app.tx.clone();
+    app.rank_pending = true;
+    std::thread::spawn(move || {
+        let ok = neutra_core::RankedLists::ensure(&path, generation).is_ok();
+        let _ = tx.send(Event::Ranked { generation, ok });
+    });
+}
 
 /// Build the shallow folder summary in the background so the tree opens
 /// instantly. The tree waits for it instead of scanning the whole index.
