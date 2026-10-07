@@ -302,7 +302,7 @@ impl FanotifyWatcher {
     }
 }
 
-fn fanotify_init(flags: u32, event_flags: i32) -> io::Result<i32> {
+pub(crate) fn fanotify_init(flags: u32, event_flags: i32) -> io::Result<i32> {
     // SAFETY: syscall has no borrowed output and returns a new descriptor.
     let fd = unsafe { libc::fanotify_init(flags, event_flags as u32) };
     if fd < 0 {
@@ -312,7 +312,7 @@ fn fanotify_init(flags: u32, event_flags: i32) -> io::Result<i32> {
     }
 }
 
-fn fanotify_mark(fd: i32, flags: u32, mask: u64, path: &CString) -> io::Result<()> {
+pub(crate) fn fanotify_mark(fd: i32, flags: u32, mask: u64, path: &CString) -> io::Result<()> {
     // SAFETY: path is a valid NUL-terminated string for the duration of the call.
     let result = unsafe { libc::fanotify_mark(fd, flags, mask, libc::AT_FDCWD, path.as_ptr()) };
     if result < 0 {
@@ -355,11 +355,11 @@ fn open_handle(mount_fd: i32, handle: &mut [u8], flags: i32) -> io::Result<File>
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn fd_path(fd: i32) -> io::Result<PathBuf> {
+pub(crate) fn fd_path(fd: i32) -> io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{fd}"))
 }
 
-fn zeroed_stat() -> libc::stat {
+pub(crate) fn zeroed_stat() -> libc::stat {
     // SAFETY: all-zero is a valid initial byte pattern for an output stat buffer.
     unsafe { std::mem::zeroed() }
 }
@@ -371,7 +371,7 @@ fn stale(error: &io::Error) -> bool {
     )
 }
 
-fn make_record(
+pub(crate) fn make_record(
     path: &Path,
     stat: &libc::stat,
     parent: u64,
@@ -403,7 +403,7 @@ fn insert_remove(changes: &mut BTreeMap<String, DeltaChange>, path: &Path) {
     changes.insert(path.clone(), DeltaChange::Remove(path.into_boxed_str()));
 }
 
-fn insert_upsert(changes: &mut BTreeMap<String, DeltaChange>, record: FileRecord) {
+pub(crate) fn insert_upsert(changes: &mut BTreeMap<String, DeltaChange>, record: FileRecord) {
     changes.insert(record.path.to_string(), DeltaChange::Upsert(record));
 }
 

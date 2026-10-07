@@ -343,6 +343,14 @@ pub(crate) fn cmp_name_ci(left: &str, right: &str) -> std::cmp::Ordering {
         .cmp(right.bytes().map(|b| b.to_ascii_lowercase()))
 }
 
+/// Timestamps past 2100 come from corrupt archives and would pin themselves
+/// to the top of every newest-first listing, so they sort as unknown.
+const LATEST_PLAUSIBLE_MTIME: i64 = 4_102_444_800;
+
+fn sort_mtime(record: &FileRecord) -> i64 {
+    if record.mtime > LATEST_PLAUSIBLE_MTIME { 0 } else { record.mtime }
+}
+
 /// The single sort comparator shared by the in-memory and compact engines.
 /// `a`/`b` carry the relevance score plus the record; ties fall back to path
 /// so ordering is deterministic.
@@ -363,8 +371,8 @@ pub(crate) fn compare_records(
         SortKey::PathDesc => b.1.path.cmp(&a.1.path),
         SortKey::SizeDesc => b.1.size.cmp(&a.1.size).then(a.1.path.cmp(&b.1.path)),
         SortKey::SizeAsc => a.1.size.cmp(&b.1.size).then(a.1.path.cmp(&b.1.path)),
-        SortKey::MtimeDesc => b.1.mtime.cmp(&a.1.mtime).then(a.1.path.cmp(&b.1.path)),
-        SortKey::MtimeAsc => a.1.mtime.cmp(&b.1.mtime).then(a.1.path.cmp(&b.1.path)),
+        SortKey::MtimeDesc => sort_mtime(b.1).cmp(&sort_mtime(a.1)).then(a.1.path.cmp(&b.1.path)),
+        SortKey::MtimeAsc => sort_mtime(a.1).cmp(&sort_mtime(b.1)).then(a.1.path.cmp(&b.1.path)),
     }
 }
 

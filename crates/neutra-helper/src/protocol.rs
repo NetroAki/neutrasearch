@@ -8,7 +8,7 @@ use crate::scan::{
 };
 pub(crate) use crate::scan::ProtocolOutput;
 #[cfg(target_os = "linux")]
-use crate::{watch_linux, MAX_PENDING_CHANGES, WATCH_DEBOUNCE};
+use crate::{watch_linux, watch_mount, MAX_PENDING_CHANGES, WATCH_DEBOUNCE};
 use crate::store::{write_stale_marker, DurableStore};
 use anyhow::{Context, Result};
 use neutra_core::proto::{
@@ -95,13 +95,17 @@ pub fn run_protocol_with_auth<R: Read>(
             .find(|mount| mount.mountpoint == mountpoint)
             .with_context(|| format!("no supported mount at {}", mountpoint.display()))?;
         let base_path = serve_index.as_ref().expect("watch mode has an index");
-        let watcher =
-            watch_linux::FanotifyWatcher::open(mount, source, watch_exclusions(base_path))?;
-        start_native_watch(
-            watcher,
-            Arc::clone(durable.as_ref().expect("watch mode has a durable store")),
-            Arc::clone(&stale),
-        );
+        let excluded = watch_exclusions(base_path);
+        let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
+        match watch_linux::FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
+            Ok(watcher) => start_native_watch(watcher, store, Arc::clone(&stale)),
+            Err(error) if watch_mount::needs_mount_mark(&error) => {
+                tracing::info!("subvolume mount: watching closed writes only");
+                let watcher = watch_mount::MountWatcher::open(mount, source, excluded)?;
+                start_native_watch(watcher, store, Arc::clone(&stale));
+            }
+            Err(error) => return Err(error),
+        }
     }
     #[cfg(not(target_os = "linux"))]
     if watch_mount.is_some() {
@@ -309,7 +313,7 @@ pub fn run_protocol_with_auth<R: Read>(
 
 #[cfg(target_os = "linux")]
 pub(crate) fn start_native_watch(
-    mut watcher: watch_linux::FanotifyWatcher,
+    mut watcher: impl watch_mount::Watch,
     store: Arc<RwLock<DurableStore>>,
     stale: Arc<AtomicBool>,
 ) {

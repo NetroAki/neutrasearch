@@ -50,6 +50,12 @@ fn app_icon() -> egui::IconData {
 /// machine for the length of a full-base search, so the GUI keeps a small,
 /// low-priority pool: searches take a little longer and nothing else slows.
 fn limit_search_threads() {
+    // Every thread otherwise grows its own malloc arena and keeps freed
+    // pages; two arenas hold the same working set in far less memory.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(8)
         .start_handler(|_| {

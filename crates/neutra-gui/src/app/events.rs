@@ -23,6 +23,7 @@ pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
         app.ensure_ranked();
         app.ensure_tree_summary();
     }
+    app.poll_delta();
     if app.cache_dirty
         && !app.building_cache
         && app.active_scans == 0
