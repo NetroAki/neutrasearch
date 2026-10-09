@@ -79,8 +79,12 @@ pub fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args:
                     )}],
                     "structuredContent":{"path":entry.path,"logical_bytes":entry.logical_bytes,"file_count":entry.file_count,"directory_count":entry.directory_count,"children":entry.children.iter().map(|child| json!({"path":child.path,"kind":child.kind,"logical_bytes":child.logical_bytes})).collect::<Vec<_>>()}
                 }),
-                Ok(None) => json!({"content":[{"type":"text","text":format!("no indexed directory summary for {path}")}],"structuredContent":{"path":path,"found":false}}),
-                Err(error) => json!({"isError":true,"content":[{"type":"text","text":format!("directory summary failed: {error}")}]}),
+                Ok(None) => {
+                    json!({"content":[{"type":"text","text":format!("no indexed directory summary for {path}")}],"structuredContent":{"path":path,"found":false}})
+                }
+                Err(error) => {
+                    json!({"isError":true,"content":[{"type":"text","text":format!("directory summary failed: {error}")}]})
+                }
             }
         }
         "neutra_status" => {
@@ -98,8 +102,8 @@ pub fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args:
 
 pub fn tools_list() -> Value {
     json!({"tools":[
-                {"name":"neutra_search","description":"Search the resident filename/path index without filesystem I/O.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text + filters: ext:rs kind:file under:/src"},"limit":{"type":"integer","minimum":1,"maximum":1000,"default":50},"metadata":{"type":"boolean","default":false,"description":"Include kind/size/mtime/fs; false returns path lines only"}},"required":["query"]}},
-                {"name":"neutra_status","description":"Report resident index status.","inputSchema":{"type":"object","properties":{}}},
-                {"name":"neutra_directory","description":"Live totals for one indexed directory (logical bytes, file and directory counts, direct children).","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute directory path as indexed"},"source":{"type":"integer","default":0,"description":"Index source id (0 = local)"}},"required":["path"]}}
-            ]})
+        {"name":"neutra_search","description":"Search the resident filename/path index without filesystem I/O.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text + filters: ext:rs kind:file under:/src"},"limit":{"type":"integer","minimum":1,"maximum":1000,"default":50},"metadata":{"type":"boolean","default":false,"description":"Include kind/size/mtime/fs; false returns path lines only"}},"required":["query"]}},
+        {"name":"neutra_status","description":"Report resident index status.","inputSchema":{"type":"object","properties":{}}},
+        {"name":"neutra_directory","description":"Live totals for one indexed directory (logical bytes, file and directory counts, direct children).","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute directory path as indexed"},"source":{"type":"integer","default":0,"description":"Index source id (0 = local)"}},"required":["path"]}}
+    ]})
 }

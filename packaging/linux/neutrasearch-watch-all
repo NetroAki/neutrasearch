@@ -1,0 +1,44 @@
+#!/bin/bash
+set -eu
+WATCH=${NEUTRASEARCH_WATCH_BIN:-/usr/local/lib/neutrasearch/neutrasearch-watch}
+BIN=${NEUTRASEARCH_BIN:-/usr/local/bin/neutrasearch}
+children=()
+ready_dir=$(mktemp -d)
+mkfifo "$ready_dir/ready"
+exec {ready_fd}<>"$ready_dir/ready"
+cleanup() {
+    kill "${children[@]}" 2>/dev/null || true
+    rm -rf -- "$ready_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+while IFS=: read -r user _ uid gid _ home _; do
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    (( uid >= 1000 && uid < 60000 )) || continue
+    [[ -d "$home" ]] || continue
+    # Only a missing index is built. Existing indexes receive metadata deltas.
+    if ! timeout 7200 env XDG_DATA_HOME= XDG_CONFIG_HOME= HOME="$home" "$BIN" --ensure-index; then
+        echo "neutrasearch: initial index for $user failed" >&2
+        exit 1
+    fi
+    for state in "$home/.local/share/neutrasearch" "$home/.config/neutrasearch"; do
+        [[ ! -d "$state" ]] || chown -R "$uid:$gid" "$state"
+    done
+    # One writer serves every mounted filesystem and publishes as the user.
+    setpriv --reuid="$uid" --regid="$gid" --init-groups \
+        --inh-caps=+sys_admin,+dac_read_search --ambient-caps=+sys_admin,+dac_read_search \
+        env XDG_DATA_HOME= XDG_CONFIG_HOME= HOME="$home" "$WATCH" / 0 >&"$ready_fd" &
+    children+=("$!")
+done < /etc/passwd
+for _ in "${children[@]}"; do
+    if ! read -r -t 120 -u "$ready_fd" state || [[ "$state" != ready ]]; then
+        echo "neutrasearch: native watchers did not become ready" >&2
+        exit 1
+    fi
+done
+if [[ -n "${NOTIFY_SOCKET:-}" ]]; then
+    systemd-notify --ready --status="Native watchers attached for ${#children[@]} account(s)"
+fi
+(( ${#children[@]} > 0 )) || exit 0
+wait -n "${children[@]}"
+exit 1

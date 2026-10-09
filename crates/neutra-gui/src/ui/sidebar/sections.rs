@@ -2,8 +2,7 @@
 
 use super::super::dialogs::diagnostic_row;
 use super::super::widgets::{
-    ACID_STRONG, VIOLET, MUTED, TEXT, fmt_count, format_mtime, mono, sans, secondary_button,
-    shorten,
+    fmt_count, format_mtime, mono, sans, secondary_button, shorten, ACID_STRONG, MUTED, TEXT,
 };
 use crate::NeutraApp;
 use egui::{Align, Layout, RichText};
@@ -19,8 +18,9 @@ pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
                 )
                 .clicked()
             {
-                if let Some(folder) =
-                    rfd::FileDialog::new().set_title("Add search folder").pick_folder()
+                if let Some(folder) = rfd::FileDialog::new()
+                    .set_title("Add search folder")
+                    .pick_folder()
                 {
                     app.add_root(folder);
                 }
@@ -43,14 +43,20 @@ pub(crate) fn locations_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
 
 pub(crate) fn status_section(app: &NeutraApp, ui: &mut egui::Ui) {
     diagnostic_row(ui, "Indexed items", &fmt_count(app.index_len()), false);
-    let index_updated = std::fs::metadata(&app.cache_path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
+    let index_updated = [&app.cache_path, &app.cache_path.with_extension("delta")]
+        .into_iter()
+        .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
+        .max()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| format_mtime(duration.as_secs() as i64))
         .unwrap_or_else(|| "unknown".into());
     diagnostic_row(ui, "Index updated", &index_updated, false);
-    diagnostic_row(ui, "Index generation", &app.last_generation.to_string(), false);
+    diagnostic_row(
+        ui,
+        "Index generation",
+        &app.last_generation.to_string(),
+        false,
+    );
     diagnostic_row(
         ui,
         "Saved index location",
@@ -60,16 +66,23 @@ pub(crate) fn status_section(app: &NeutraApp, ui: &mut egui::Ui) {
 }
 
 pub(crate) fn scanner_section(app: &NeutraApp, ui: &mut egui::Ui) {
-    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-        for lane in app.lanes.values() {
-            let value = if lane.records > 0 {
-                format!("{} objects \u{b7} {} ms \u{b7} {}", fmt_count(lane.records), lane.ms, lane.status)
-            } else {
-                lane.status.clone()
-            };
-            diagnostic_row(ui, &lane.label, &value, lane.error);
-        }
-    });
+    egui::ScrollArea::vertical()
+        .max_height(220.0)
+        .show(ui, |ui| {
+            for lane in app.lanes.values() {
+                let value = if lane.records > 0 {
+                    format!(
+                        "{} objects \u{b7} {} ms \u{b7} {}",
+                        fmt_count(lane.records),
+                        lane.ms,
+                        lane.status
+                    )
+                } else {
+                    lane.status.clone()
+                };
+                diagnostic_row(ui, &lane.label, &value, lane.error);
+            }
+        });
 }
 
 pub(crate) fn maintenance_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
@@ -85,8 +98,16 @@ pub(crate) fn maintenance_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
 fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         let rebuilding = app.scanning || app.cancelling;
-        if secondary_button(ui, if rebuilding { "Indexing\u{2026}" } else { "Rebuild index" }, ACID_STRONG)
-            .clicked()
+        if secondary_button(
+            ui,
+            if rebuilding {
+                "Indexing\u{2026}"
+            } else {
+                "Rebuild index"
+            },
+            ACID_STRONG,
+        )
+        .clicked()
         {
             app.begin_scan();
         }
@@ -94,14 +115,14 @@ fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
         if app.scanning {
             if app.cancelling {
                 ui.add_enabled(false, egui::Button::new("Cancelling\u{2026}").small());
-            } else if secondary_button(ui, "Cancel running scan", super::super::widgets::ERROR).clicked() {
+            } else if secondary_button(ui, "Cancel running scan", super::super::widgets::ERROR)
+                .clicked()
+            {
                 app.cancel_scan();
             }
         }
         #[cfg(target_os = "linux")]
-        if !rebuilding
-            && secondary_button(ui, "Rebuild as administrator", ACID_STRONG).clicked()
-        {
+        if !rebuilding && secondary_button(ui, "Rebuild as administrator", ACID_STRONG).clicked() {
             app.begin_scan_with_elevation(true);
         }
     });
@@ -118,7 +139,7 @@ pub(crate) fn network_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("Watching for network servers")
                 .font(sans(11.0))
-                .color(VIOLET),
+                .color(MUTED),
         );
     } else if secondary_button(ui, "Watch network servers", MUTED).clicked() {
         crate::transport::spawn_network_watcher(app.tx.clone());
@@ -134,12 +155,45 @@ pub(crate) fn location_rows(app: &mut NeutraApp, ui: &mut egui::Ui) {
         return;
     }
     let mut remove = None;
-    for (index, root) in app.selected_roots.iter().enumerate() {
+    for (index, root) in app.selected_roots.clone().iter().enumerate() {
         let root_text = root.display().to_string();
         let (status, color) = root_status(app, &root_text);
         ui.horizontal(|ui| {
             location_icon(ui, &root_text);
-            ui.label(RichText::new(shorten(&root_text, 34)).font(mono(11.0)).color(TEXT));
+            let response = ui.add(
+                egui::Label::new(
+                    RichText::new(shorten(&root_text, 34))
+                        .font(mono(11.0))
+                        .color(TEXT),
+                )
+                .sense(egui::Sense::click()),
+            );
+            response.context_menu(|menu| {
+                if menu.button("Search this location").clicked() {
+                    app.scope_root = Some(root_text.clone());
+                    app.requery();
+                    menu.close();
+                }
+                if menu.button("Open in file manager").clicked() {
+                    app.file_operations
+                        .dispatch(crate::transport::file_actions::Action::Open(root.clone()));
+                    menu.close();
+                }
+                if menu.button("Copy full path").clicked() {
+                    menu.ctx().copy_text(root_text.clone());
+                    menu.close();
+                }
+                if menu
+                    .add_enabled(
+                        !app.scanning && !app.building_cache,
+                        egui::Button::new("Remove from indexed locations"),
+                    )
+                    .clicked()
+                {
+                    remove = Some(index);
+                    menu.close();
+                }
+            });
             row_tail(app, ui, index, &root_text, status, color, &mut remove);
         });
     }
@@ -173,27 +227,39 @@ fn row_tail(
     });
 }
 
-fn row_menu(app: &NeutraApp, ui: &mut egui::Ui, index: usize, root_text: &str, remove: &mut Option<usize>) {
-    ui.add_enabled_ui(!app.scanning && !app.building_cache && !app.cancelling, |ui| {
-        ui.menu_button("\u{22ef}", |menu| {
-            if menu.button("Copy path").clicked() {
-                super::super::widgets::copy_to_clipboard(menu, root_text);
-                menu.close();
-            }
-            if menu.button("Remove folder").clicked() {
-                *remove = Some(index);
-                menu.close();
-            }
-        });
-    });
+fn row_menu(
+    app: &NeutraApp,
+    ui: &mut egui::Ui,
+    index: usize,
+    root_text: &str,
+    remove: &mut Option<usize>,
+) {
+    ui.add_enabled_ui(
+        !app.scanning && !app.building_cache && !app.cancelling,
+        |ui| {
+            ui.menu_button("\u{22ef}", |menu| {
+                if menu.button("Copy path").clicked() {
+                    super::super::widgets::copy_to_clipboard(menu, root_text);
+                    menu.close();
+                }
+                if menu.button("Remove folder").clicked() {
+                    *remove = Some(index);
+                    menu.close();
+                }
+            });
+        },
+    );
 }
 
 /// Aggregate lane state for one selected root: any failed lane reads
 /// Unavailable, an unfinished scan reads Indexing, finished lanes Ready.
 fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
     use super::super::icons::GREEN;
-    use super::super::widgets::{VIOLET, ERROR, MUTED};
-    let failed = app.lanes.iter().any(|(key, lane)| lane.error && covers(key, root));
+    use super::super::widgets::{ERROR, MUTED, VIOLET};
+    let failed = app
+        .lanes
+        .iter()
+        .any(|(key, lane)| lane.error && covers(key, root));
     if failed {
         return ("Unavailable", ERROR);
     }

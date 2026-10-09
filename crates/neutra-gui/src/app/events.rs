@@ -43,7 +43,13 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
             if app.cancelling && error.contains("stopped before completing") {
                 end_scan(app);
                 app.cancelling = false;
-                note(app, "scan", "NATIVE SCAN", "Indexing cancelled, previous index kept", false);
+                note(
+                    app,
+                    "scan",
+                    "NATIVE SCAN",
+                    "Indexing cancelled, previous index kept",
+                    false,
+                );
                 app.requery();
             } else {
                 end_scan(app);
@@ -65,29 +71,40 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
             note(app, "cache", "INDEX BUILD", error, true);
             app.requery();
         }
-         Event::TreeReady { generation, model } => {
-             app.tree_building = false;
-             app.tree_pending.clear();
-             if generation == crate::app::queries::data_generation(app) {
-                 let pinned =
-                     crate::ui::Hierarchy::want_dirs(&app.treemap_path, &app.tree_expanded);
-                 match app.tree_model.as_mut() {
-                     Some(hierarchy) => hierarchy.merge(model, &app.treemap_path, &pinned),
-                     None => app.tree_model = Some(model),
-                 }
-             }
-         }
+        Event::TreeReady { generation, model } => {
+            app.tree_building = false;
+            app.tree_pending.clear();
+            if generation == crate::app::queries::data_generation(app) {
+                let pinned = crate::ui::Hierarchy::want_dirs(&app.treemap_path, &app.tree_expanded);
+                match app.tree_model.as_mut() {
+                    Some(hierarchy) => hierarchy.merge(model, &app.treemap_path, &pinned),
+                    None => app.tree_model = Some(model),
+                }
+            }
+        }
         Event::TreeFailed(error) => {
             app.tree_building = false;
             note(app, "tree", "DISK MAP", error, true);
+        }
+        Event::MapFiles { key, result } => {
+            if app.map_file_key.as_ref() == Some(&key) {
+                app.map_files_pending = false;
+                match result {
+                    Ok(files) => app.map_files = files,
+                    Err(error) => note(app, "file-map", "FILE MAP", error, true),
+                }
+            }
         }
         Event::SearchDone { id, result } => {
             // Only the newest search may update the view.
             if id == app.search_seq {
                 app.searching = false;
-                if let Some((hits, stats)) = result {
-                    app.hits = hits;
-                    app.search_stats = stats;
+                match result {
+                    Ok((hits, stats)) => {
+                        app.hits = hits;
+                        app.search_stats = stats;
+                    }
+                    Err(error) => note(app, "search", "SEARCH", error, true),
                 }
             }
         }
@@ -96,14 +113,26 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
             if ok && generation == crate::app::queries::data_generation(app) {
                 app.requery_unless_huge();
             } else if !ok {
-                note(app, "rank", "SORTED LISTS", "Sorted lists unavailable; listings scan the index", false);
+                note(
+                    app,
+                    "rank",
+                    "SORTED LISTS",
+                    "Could not prepare the browsing index",
+                    true,
+                );
             }
         }
         Event::TreeSummary { generation, ok } => {
             app.tree_summary_pending = false;
             app.tree_building = false;
             if !ok {
-                note(app, "tree", "FOLDER MAP", "Folder map unavailable; folders load directly", false);
+                note(
+                    app,
+                    "tree",
+                    "FOLDER MAP",
+                    "Folder map unavailable; folders load directly",
+                    false,
+                );
             } else if generation != crate::app::queries::data_generation(app) {
                 app.ensure_tree_summary();
             }
@@ -171,7 +200,7 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             end_scan(app);
             note(app, "protocol", "PROTOCOL", error, true);
         }
-        HelperMsg::SearchResult { .. } => {}
+        HelperMsg::SearchResult { .. } | HelperMsg::WatchReady => {}
         // Directory summaries are served to serve-mode clients; the GUI's
         // one-shot scan sessions never issue them.
         HelperMsg::DirectorySummary { .. } => {}
@@ -180,7 +209,11 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             wal_bytes,
             needs_compaction,
         } => {
-            let suffix = if needs_compaction { " · compaction due" } else { "" };
+            let suffix = if needs_compaction {
+                " · compaction due"
+            } else {
+                ""
+            };
             let status = format!("{changes} changes · {wal_bytes} bytes{suffix}");
             note(app, "delta", "LIVE DELTA", status, false);
         }
@@ -228,7 +261,9 @@ fn longest_mount(mounts: &[String], path: &str) -> Option<String> {
     mounts
         .iter()
         .filter(|mount| {
-            mount.as_str() == "/" || path == mount.as_str() || path.starts_with(&format!("{mount}/"))
+            mount.as_str() == "/"
+                || path == mount.as_str()
+                || path.starts_with(&format!("{mount}/"))
         })
         .max_by_key(|mount| mount.len())
         .cloned()

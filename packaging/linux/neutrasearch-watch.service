@@ -1,0 +1,18 @@
+[Unit]
+Description=Neutrasearch live index watch supervisor
+Wants=local-fs.target
+After=local-fs.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+TimeoutStartSec=7500
+ExecStart=/usr/local/lib/neutrasearch/neutrasearch-watch-all
+Restart=on-failure
+RestartSec=30
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

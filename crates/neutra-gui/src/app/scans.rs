@@ -104,7 +104,11 @@ fn kill_scan_child(after: std::time::SystemTime) {
         return;
     };
     for entry in dir.flatten() {
-        let pid: u32 = match entry.file_name().to_str().and_then(|name| name.parse().ok()) {
+        let pid: u32 = match entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        {
             Some(pid) => pid,
             None => continue,
         };
@@ -130,7 +134,11 @@ fn kill_scan_child(after: std::time::SystemTime) {
             .ok()
             .and_then(|stat| {
                 stat.rfind(')').and_then(|end| {
-                    stat[end + 1..].split_whitespace().nth(1)?.parse::<u32>().ok()
+                    stat[end + 1..]
+                        .split_whitespace()
+                        .nth(1)?
+                        .parse::<u32>()
+                        .ok()
                 })
             });
         if ppid == Some(ourselves) {

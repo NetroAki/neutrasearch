@@ -21,7 +21,8 @@ pub struct FileRecord {
     /// Apparent size in bytes (what `ls -l` shows).
     pub size: u64,
     /// Bytes actually occupying disk (sparse holes excluded). Zero means
-    /// unknown; readers must fall back to `size` via `disk_bytes`.
+    /// unknown; readers must fall back to `size` via `disk_bytes`. The all-ones
+    /// value encodes a known zero allocation, such as a fully sparse file.
     #[serde(default)]
     pub disk: u64,
     /// Unix seconds; 0 when the source filesystem did not provide one.
@@ -45,24 +46,36 @@ pub struct FileRecord {
 impl FileRecord {
     /// On-disk footprint for disk-usage views.
     pub fn disk_bytes(&self) -> u64 {
-        if self.disk == 0 { self.size } else { self.disk }
+        match self.disk {
+            0 => self.size,
+            u64::MAX => 0,
+            allocated => allocated,
+        }
     }
-     /// Decode records in the current layout. Layout selection is always driven
-     /// by the enclosing container explicit version, never by probing: a
-     /// payload without disk shares a bincode prefix with one that has it,
-     /// so content sniffing silently yields shifted fields.
-     pub fn decode(bytes: &[u8]) -> bincode::Result<Vec<Self>> {
-         bincode::deserialize(bytes)
-     }
-     /// Decode records in the frozen pre-disk layout. The caller selected
-     /// this branch from its container version. Missing disk values read
-     /// back as zero and fall back to size via disk_bytes.
-     pub fn decode_old(bytes: &[u8]) -> bincode::Result<Vec<Self>> {
-         Ok(bincode::deserialize::<Vec<OldRecord>>(bytes)?
-             .into_iter()
-             .map(FileRecord::from)
-             .collect())
-     }
+    /// Encode a measured allocation without confusing sparse zero with legacy unknown.
+    pub fn allocated_bytes(bytes: u64) -> u64 {
+        if bytes == 0 {
+            u64::MAX
+        } else {
+            bytes
+        }
+    }
+    /// Decode records in the current layout. Layout selection is always driven
+    /// by the enclosing container explicit version, never by probing: a
+    /// payload without disk shares a bincode prefix with one that has it,
+    /// so content sniffing silently yields shifted fields.
+    pub fn decode(bytes: &[u8]) -> bincode::Result<Vec<Self>> {
+        bincode::deserialize(bytes)
+    }
+    /// Decode records in the frozen pre-disk layout. The caller selected
+    /// this branch from its container version. Missing disk values read
+    /// back as zero and fall back to size via disk_bytes.
+    pub fn decode_old(bytes: &[u8]) -> bincode::Result<Vec<Self>> {
+        Ok(bincode::deserialize::<Vec<OldRecord>>(bytes)?
+            .into_iter()
+            .map(FileRecord::from)
+            .collect())
+    }
     /// File name component of the path.
     pub fn name(&self) -> &str {
         match self.path.rfind('/') {
@@ -149,6 +162,10 @@ mod tests {
     fn disk_falls_back_and_old_payloads_decode() {
         assert_eq!(record(10, 4).disk_bytes(), 4);
         assert_eq!(record(10, 0).disk_bytes(), 10);
+        let sparse = record(2_000_000_000_000, FileRecord::allocated_bytes(0));
+        assert_eq!(sparse.disk_bytes(), 0);
+        let encoded = bincode::serialize(&vec![sparse]).unwrap();
+        assert_eq!(FileRecord::decode(&encoded).unwrap()[0].disk_bytes(), 0);
         let old = OldRecord {
             path: "/b".into(),
             size: 7,
@@ -160,17 +177,17 @@ mod tests {
             native_parent: 4,
             source: 5,
         };
-         // Old-layout bytes decode through the old branch with disk unknown.
-         let bytes = bincode::serialize(&vec![old]).unwrap();
-         let decoded = FileRecord::decode_old(&bytes).unwrap();
-         assert_eq!(decoded.len(), 1);
-         assert_eq!(decoded[0].size, 7);
-         assert_eq!(decoded[0].disk, 0);
-         assert_eq!(decoded[0].disk_bytes(), 7);
-         // Current-layout bytes decode through the current branch intact.
-         let bytes = bincode::serialize(&vec![record(9, 3)]).unwrap();
-         let decoded = FileRecord::decode(&bytes).unwrap();
-         assert_eq!(decoded[0].size, 9);
-         assert_eq!(decoded[0].disk_bytes(), 3);
+        // Old-layout bytes decode through the old branch with disk unknown.
+        let bytes = bincode::serialize(&vec![old]).unwrap();
+        let decoded = FileRecord::decode_old(&bytes).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].size, 7);
+        assert_eq!(decoded[0].disk, 0);
+        assert_eq!(decoded[0].disk_bytes(), 7);
+        // Current-layout bytes decode through the current branch intact.
+        let bytes = bincode::serialize(&vec![record(9, 3)]).unwrap();
+        let decoded = FileRecord::decode(&bytes).unwrap();
+        assert_eq!(decoded[0].size, 9);
+        assert_eq!(decoded[0].disk_bytes(), 3);
     }
 }

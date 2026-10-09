@@ -5,8 +5,7 @@
 //! jobs prefer bounded RAM over encode speed).
 
 use crate::compact::{
-    binerr, collect_trigrams, invalid, BlockDesc, BLOCK_RECORDS, DESC_SIZE, HEADER, MAGIC,
-    VERSION,
+    binerr, collect_trigrams, invalid, BlockDesc, BLOCK_RECORDS, DESC_SIZE, HEADER, MAGIC, VERSION,
 };
 use crate::compact_build::{
     clear_stale_marker, new_generation, open_private, replace_file, sync_parent, temp_path,
@@ -110,6 +109,7 @@ fn build_streamed(runs: &SpillRuns, path: &Path) -> io::Result<BuildStats> {
     clear_stale_marker(path)?;
     sync_parent(path)?;
     build_sidecar(runs, path, generation)?;
+    crate::TreeSummary::ensure(path, generation)?;
     let bytes = std::fs::metadata(path)?.len();
     Ok(BuildStats {
         generation,

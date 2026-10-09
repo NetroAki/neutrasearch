@@ -101,15 +101,15 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
- mod tests {
-     use super::*;
-     use neutra_core::{CompactIndex, FileKind, FileRecord, FsKind};
+mod tests {
+    use super::*;
+    use neutra_core::{CompactIndex, FileKind, FileRecord, FsKind};
 
-     fn build_test_base(records: &[FileRecord], path: &std::path::Path) {
-         let mut spill = neutra_core::SpillAccumulator::begin(path).unwrap();
-         spill.push_batch(records.to_vec()).unwrap();
-         CompactIndex::rebuild_streamed(spill.finish().unwrap(), path).unwrap();
-     }
+    fn build_test_base(records: &[FileRecord], path: &std::path::Path) {
+        let mut spill = neutra_core::SpillAccumulator::begin(path).unwrap();
+        spill.push_batch(records.to_vec()).unwrap();
+        CompactIndex::rebuild_streamed(spill.finish().unwrap(), path).unwrap();
+    }
     #[test]
     fn ndjson_api() {
         let path =
@@ -145,8 +145,8 @@ fn main() -> Result<()> {
                 disk: 0,
             },
         ];
-         build_test_base(&records, &path);
-         let index = CompactIndex::open(&path).unwrap();
+        build_test_base(&records, &path);
+        let index = CompactIndex::open(&path).unwrap();
         let mut output = Vec::new();
         let request = format!(
             "{{\"query\":\"needle\",\"limit\":5,\"scope_roots\":[{allowed_root:?}],\"scope_case_sensitive\":true}}\n"

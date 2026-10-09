@@ -134,8 +134,7 @@ impl FanotifyWatcher {
             revents: 0,
         }];
         loop {
-            let ready =
-                unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
             if ready < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -298,7 +297,10 @@ impl FanotifyWatcher {
 
     fn is_excluded(&self, path: &Path) -> bool {
         !path.starts_with(&self.mount.mountpoint)
-            || self.excluded.iter().any(|excluded| path == excluded)
+            || self
+                .excluded
+                .iter()
+                .any(|excluded| path.starts_with(excluded))
     }
 }
 
@@ -387,7 +389,7 @@ pub(crate) fn make_record(
     FileRecord {
         path: path.to_string_lossy().into_owned().into_boxed_str(),
         size: stat.st_size.max(0) as u64,
-        disk: (stat.st_blocks.max(0) as u64).saturating_mul(512),
+        disk: FileRecord::allocated_bytes((stat.st_blocks.max(0) as u64).saturating_mul(512)),
         mtime: stat.st_mtime,
         mode: stat.st_mode,
         kind,

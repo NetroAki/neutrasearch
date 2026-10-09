@@ -97,11 +97,7 @@ fn parse_attribute_list_entries(value: &[u8]) -> Vec<AttributeListEntry> {
 
 /// Materialize a non-resident attribute value whose runs are byte-granular
 /// (cluster size 1).
-fn read_value_bytes<R: Read + Seek>(
-    r: &mut R,
-    runs: &[Run],
-    size: u64,
-) -> Result<Vec<u8>> {
+fn read_value_bytes<R: Read + Seek>(r: &mut R, runs: &[Run], size: u64) -> Result<Vec<u8>> {
     let mut value = vec![0u8; size as usize];
     let mut done = 0u64;
     for run in runs {
@@ -114,11 +110,7 @@ fn read_value_bytes<R: Read + Seek>(
         }
     }
     if done < size {
-        bail!(
-            "attribute list runs cover {} of {} bytes",
-            done,
-            size
-        );
+        bail!("attribute list runs cover {} of {} bytes", done, size);
     }
     Ok(value)
 }
@@ -168,7 +160,8 @@ fn extension_record_runs<R: Read + Seek>(
         let non_resident = record[p + 8] != 0;
         let attribute_id = u16le(&record, p + 14).unwrap_or(0);
         let lowest_vcn = u64le(&record, p + 16).unwrap_or(0);
-        if kind == 0x80 && non_resident && record[p + 9] == 0 && attribute_id == entry.attribute_id {
+        if kind == 0x80 && non_resident && record[p + 9] == 0 && attribute_id == entry.attribute_id
+        {
             if lowest_vcn != entry.lowest_vcn {
                 bail!(
                     "extension record {} covers vcn {} but the list says {}",
@@ -208,16 +201,15 @@ pub(crate) fn complete_mft_runs<R: Read + Seek>(
     if covered >= declared_size {
         return Ok(runs);
     }
-    let value = read_value_bytes(r, &list_runs, list_size)
-        .context("read $ATTRIBUTE_LIST value")?;
+    let value = read_value_bytes(r, &list_runs, list_size).context("read $ATTRIBUTE_LIST value")?;
     let entries = parse_attribute_list_entries(&value);
     let mut extensions: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.attribute_kind == 0x80 && entry.lowest_vcn > 0)
         .collect();
-     extensions.sort_by_key(|entry| entry.lowest_vcn);
-     let mut covered: u64 = runs.iter().map(|run| run.len).sum();
-     for entry in &extensions {
+    extensions.sort_by_key(|entry| entry.lowest_vcn);
+    let mut covered: u64 = runs.iter().map(|run| run.len).sum();
+    for entry in &extensions {
         let want = entry
             .lowest_vcn
             .checked_mul(cluster_size)
@@ -253,7 +245,13 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn test_entry(kind: u32, lowest_vcn: u64, segment: u64, sequence: u16, attribute_id: u16) -> [u8; 32] {
+    fn test_entry(
+        kind: u32,
+        lowest_vcn: u64,
+        segment: u64,
+        sequence: u16,
+        attribute_id: u16,
+    ) -> [u8; 32] {
         let mut entry = [0u8; 32];
         entry[0..4].copy_from_slice(&kind.to_le_bytes());
         entry[4..6].copy_from_slice(&32u16.to_le_bytes());
@@ -270,10 +268,9 @@ mod tests {
         // value on the 14.6 TB NTFS volume (LCN 255822480). Stride is 32;
         // the old decoder required 34 and returned nothing.
         let raw = [
-            0x80, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x1a,
-            0x52, 0x1e, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x08, 0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x1a, 0x52, 0x1e, 0x34, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ];
         let mut value = Vec::new();
         value.extend_from_slice(&test_entry(0x10, 0, 0, 1, 0));
@@ -293,7 +290,14 @@ mod tests {
         assert_eq!(cont.attribute_id, 0);
     }
 
-    fn nonresident(kind: u32, attribute_id: u16, low_vcn: u64, high_vcn: u64, real: u64, runs: &[u8]) -> Vec<u8> {
+    fn nonresident(
+        kind: u32,
+        attribute_id: u16,
+        low_vcn: u64,
+        high_vcn: u64,
+        real: u64,
+        runs: &[u8],
+    ) -> Vec<u8> {
         let mut attr = vec![0u8; 64 + runs.len()];
         let total = attr.len() as u32;
         attr[0..4].copy_from_slice(&kind.to_le_bytes());
@@ -354,7 +358,10 @@ mod tests {
         let (mut disk, rec0, base) = fixture(2);
         let runs = complete_mft_runs(&mut disk, &rec0, 4096, 1024, 512, base).unwrap();
         assert_eq!(runs.len(), 2);
-        assert_eq!((runs[1].logical, runs[1].len, runs[1].physical), (8192, 4096, 30 * 4096));
+        assert_eq!(
+            (runs[1].logical, runs[1].len, runs[1].physical),
+            (8192, 4096, 30 * 4096)
+        );
         let covered: u64 = runs.iter().map(|run| run.len).sum();
         assert_eq!(covered, 12288);
     }

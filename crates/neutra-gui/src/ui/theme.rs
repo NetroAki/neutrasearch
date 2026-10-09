@@ -28,8 +28,8 @@ pub(crate) const MUTED: Color32 = hex(0x94A3B8);
 pub(crate) const SUBTLE: Color32 = hex(0x64748B);
 /// surface-800: separators.
 pub(crate) const LINE: Color32 = hex(0x1E293B);
-/// surface-700: control and panel outlines.
-pub(crate) const LINE_STRONG: Color32 = hex(0x334155);
+/// surface-500 keeps control outlines distinguishable from raised surfaces.
+pub(crate) const LINE_STRONG: Color32 = hex(0x64748B);
 /// accent-glow: outlines, active-chip border, focus ring.
 pub(crate) const GLOW: Color32 = hex(0xEF4444);
 /// accent-active: solid fills such as progress and the selection bar.
@@ -41,8 +41,8 @@ pub(crate) const SELECTED: Color32 = hex(0x1E293B);
 /// accent-warn, and accent-warn at 16% over surface-900.
 pub(crate) const WARN: Color32 = hex(0xF59E0B);
 pub(crate) const WARN_DIM: Color32 = hex(0x342D25);
-/// accent-danger.
-pub(crate) const ERROR: Color32 = hex(0xEF4444);
+/// red-400 keeps error text readable on raised surfaces.
+pub(crate) const ERROR: Color32 = hex(0xF87171);
 /// Ready and success dots (spec §36.4.1).
 pub(crate) const GREEN: Color32 = hex(0x22C55E);
 /// accent-audio: audio files, device activity. Outlines and dots only; as
@@ -81,44 +81,77 @@ pub(crate) fn tracked(text: &str) -> String {
 pub(crate) fn configure(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in [
-        ("neutra_inter", include_bytes!("../../assets/fonts/Inter-Variable.ttf.zst").as_slice()),
-        ("neutra_robotomono", include_bytes!("../../assets/fonts/RobotoMono-Variable.ttf.zst").as_slice()),
-        ("neutra_sans", include_bytes!("../../assets/fonts/NotoSans-Regular.ttf.zst").as_slice()),
-        ("neutra_mono", include_bytes!("../../assets/fonts/NotoSansMono-Regular.ttf.zst").as_slice()),
-        ("neutra_arabic", include_bytes!("../../assets/fonts/NotoSansArabic-Regular.ttf.zst").as_slice()),
-        ("neutra_devanagari", include_bytes!("../../assets/fonts/NotoSansDevanagari-Regular.ttf.zst").as_slice()),
-        ("neutra_cjk", include_bytes!("../../assets/fonts/NotoSansCJK-Regular.ttc.zst").as_slice()),
-        ("neutra_symbols", include_bytes!("../../assets/fonts/NotoSansSymbols-Regular.ttf.zst").as_slice()),
-        ("neutra_symbols2", include_bytes!("../../assets/fonts/NotoSansSymbols2-Regular.ttf.zst").as_slice()),
+        (
+            "neutra_inter",
+            include_bytes!("../../assets/fonts/Inter-Variable.ttf.zst").as_slice(),
+        ),
+        (
+            "neutra_robotomono",
+            include_bytes!("../../assets/fonts/RobotoMono-Variable.ttf.zst").as_slice(),
+        ),
+        (
+            "neutra_sans",
+            include_bytes!("../../assets/fonts/NotoSans-Regular.ttf.zst").as_slice(),
+        ),
+        (
+            "neutra_mono",
+            include_bytes!("../../assets/fonts/NotoSansMono-Regular.ttf.zst").as_slice(),
+        ),
+        (
+            "neutra_symbols",
+            include_bytes!("../../assets/fonts/NotoSansSymbols-Regular.ttf.zst").as_slice(),
+        ),
+        (
+            "neutra_symbols2",
+            include_bytes!("../../assets/fonts/NotoSansSymbols2-Regular.ttf.zst").as_slice(),
+        ),
     ] {
-        fonts
-            .font_data
-            .insert(name.to_owned(), Arc::new(FontData::from_owned(load_font(bytes))));
+        fonts.font_data.insert(
+            name.to_owned(),
+            Arc::new(FontData::from_owned(load_font(bytes))),
+        );
     }
     // Noto stays behind Inter and Roboto Mono for scripts and symbols they lack.
-    let fallback = ["neutra_sans", "neutra_arabic", "neutra_devanagari", "neutra_cjk", "neutra_symbols", "neutra_symbols2"];
-    let proportional: Vec<String> = ["neutra_inter"].into_iter().chain(fallback).map(str::to_owned).collect();
-    let monospace: Vec<String> = ["neutra_robotomono", "neutra_mono"].into_iter().chain(fallback).map(str::to_owned).collect();
-    fonts.families.insert(FontFamily::Name("Neutra Sans".into()), proportional.clone());
-    fonts.families.insert(FontFamily::Name("Neutra Mono".into()), monospace.clone());
-    for (family, names) in [(FontFamily::Proportional, proportional), (FontFamily::Monospace, monospace)] {
+    let fallback = ["neutra_sans", "neutra_symbols", "neutra_symbols2"];
+    let proportional: Vec<String> = ["neutra_inter"]
+        .into_iter()
+        .chain(fallback)
+        .map(str::to_owned)
+        .collect();
+    let monospace: Vec<String> = ["neutra_robotomono", "neutra_mono"]
+        .into_iter()
+        .chain(fallback)
+        .map(str::to_owned)
+        .collect();
+    fonts
+        .families
+        .insert(FontFamily::Name("Neutra Sans".into()), proportional.clone());
+    fonts
+        .families
+        .insert(FontFamily::Name("Neutra Mono".into()), monospace.clone());
+    for (family, names) in [
+        (FontFamily::Proportional, proportional),
+        (FontFamily::Monospace, monospace),
+    ] {
         let list = fonts.families.entry(family).or_default();
         for name in names.into_iter().rev() {
             list.insert(0, name);
         }
     }
+    super::script_fonts::remember(ctx, &fonts);
     ctx.set_fonts(fonts);
 
     Theme::dark().store(ctx);
+    ctx.set_theme(egui::Theme::Dark);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = CANVAS;
     visuals.window_fill = SURFACE;
     visuals.window_stroke = Stroke::new(1.0_f32, LINE_STRONG);
     visuals.extreme_bg_color = BLACK;
     visuals.faint_bg_color = SURFACE;
-    // Selection fill plus the 2px accent-glow ring at 70% used for keyboard focus.
+    // The opaque red-400 ring stays visible against pressed controls.
     visuals.selection.bg_fill = SELECTED;
-    visuals.selection.stroke = Stroke::new(2.0_f32, GLOW.gamma_multiply(0.7));
+    visuals.selection.stroke = Stroke::new(2.0_f32, ACID);
     visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.inactive.bg_fill = RAISED;
@@ -126,9 +159,9 @@ pub(crate) fn configure(ctx: &egui::Context) {
     visuals.widgets.hovered.bg_fill = HOVER;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, SUBTLE);
     visuals.widgets.active.bg_fill = ACTIVE;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, GLOW);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACID);
     visuals.widgets.open.bg_fill = ACTIVE;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, GLOW);
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, ACID);
     for widget in [
         &mut visuals.widgets.noninteractive,
         &mut visuals.widgets.inactive,
@@ -142,8 +175,18 @@ pub(crate) fn configure(ctx: &egui::Context) {
     visuals.window_corner_radius = RADIUS_FLOAT.into();
     visuals.menu_corner_radius = RADIUS_PANEL.into();
     // shadow-panel for popups, a deeper drop for floating windows (spec §36.5).
-    visuals.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 6, spread: 0, color: Color32::from_black_alpha(77) };
-    visuals.window_shadow = egui::epaint::Shadow { offset: [0, 18], blur: 40, spread: 0, color: Color32::from_black_alpha(140) };
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 6,
+        spread: 0,
+        color: Color32::from_black_alpha(77),
+    };
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: [0, 18],
+        blur: 40,
+        spread: 0,
+        color: Color32::from_black_alpha(140),
+    };
     ctx.set_visuals(visuals);
 
     let sans_family = FontFamily::Name("Neutra Sans".into());
@@ -153,7 +196,10 @@ pub(crate) fn configure(ctx: &egui::Context) {
     style.spacing.interact_size = Vec2::new(30.0, 30.0);
     style.spacing.menu_margin = Margin::same(8);
     // 10px scrollbars, always visible (spec §36.4.8).
-    style.spacing.scroll = egui::style::ScrollStyle { bar_width: 10.0, ..egui::style::ScrollStyle::solid() };
+    style.spacing.scroll = egui::style::ScrollStyle {
+        bar_width: 10.0,
+        ..egui::style::ScrollStyle::solid()
+    };
     let sizes = [
         (TextStyle::Small, CAPTION),
         (TextStyle::Body, SMALL),
@@ -161,11 +207,14 @@ pub(crate) fn configure(ctx: &egui::Context) {
         (TextStyle::Heading, 14.0),
     ];
     for (text_style, size) in sizes {
-        style.text_styles.insert(text_style, FontId::new(size, sans_family.clone()));
+        style
+            .text_styles
+            .insert(text_style, FontId::new(size, sans_family.clone()));
     }
-    style
-        .text_styles
-        .insert(TextStyle::Monospace, FontId::new(SMALL, FontFamily::Name("Neutra Mono".into())));
+    style.text_styles.insert(
+        TextStyle::Monospace,
+        FontId::new(SMALL, FontFamily::Name("Neutra Mono".into())),
+    );
     style.visuals = ctx.global_style().visuals.clone();
     ctx.set_global_style(style);
 }

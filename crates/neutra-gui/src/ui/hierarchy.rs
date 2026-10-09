@@ -50,8 +50,16 @@ impl Hierarchy {
 
     fn estimate(dir: &str, folder: &FolderSummary) -> u64 {
         dir.len() as u64
-            + folder.direct_files.iter().map(|file| file.path.len() as u64 + 120).sum::<u64>()
-            + folder.children.iter().map(|child| child.path.len() as u64 + 100).sum::<u64>()
+            + folder
+                .direct_files
+                .iter()
+                .map(|file| file.path.len() as u64 + 120)
+                .sum::<u64>()
+            + folder
+                .children
+                .iter()
+                .map(|child| child.path.len() as u64 + 100)
+                .sum::<u64>()
     }
 
     /// Root, the current chain, and everything expanded: the fetch set.
@@ -84,20 +92,31 @@ impl Hierarchy {
     }
 
     /// Build one folder from a fetched listing, joining relative names.
-    pub(crate) fn folder_from_listing(dir: &str, listing: neutra_core::DirListing) -> FolderSummary {
-         let join = |name: &str| neutra_core::join_child_path(dir, name);
+    pub(crate) fn folder_from_listing(
+        dir: &str,
+        listing: neutra_core::DirListing,
+    ) -> FolderSummary {
+        let join = |name: &str| neutra_core::join_child_path(dir, name);
         FolderSummary {
             size: listing.total_size,
             count: listing.total_count,
-            children: listing.subdirs.iter().map(|child| DirChild {
-                path: join(child.name.as_ref()),
-                size: child.size,
-                count: child.files,
-            }).collect(),
-            direct_files: listing.files.iter().map(|file| TreeFile {
-                path: join(file.name.as_ref()),
-                size: file.size,
-            }).collect(),
+            children: listing
+                .subdirs
+                .iter()
+                .map(|child| DirChild {
+                    path: join(child.name.as_ref()),
+                    size: child.size,
+                    count: child.files,
+                })
+                .collect(),
+            direct_files: listing
+                .files
+                .iter()
+                .map(|file| TreeFile {
+                    path: join(file.name.as_ref()),
+                    size: file.size,
+                })
+                .collect(),
             files_truncated: listing.files_truncated,
             files_complete: true,
         }
@@ -124,14 +143,21 @@ impl Hierarchy {
     /// Eviction never touches pinned paths, so rendered folders resolve.
     pub(crate) fn merge(&mut self, fetched: Hierarchy, current: &str, pinned: &[String]) {
         for (dir, folder) in fetched.folders {
-            self.insert(dir.clone(), folder, &dir == current);
+            self.insert(dir.clone(), folder, dir == current);
         }
         self.evict(pinned);
     }
 
     fn evict(&mut self, pinned: &[String]) {
         while self.bytes > Self::CACHE_BYTES {
-            let Some(oldest) = self.order.iter().find(|path| !pinned.contains(path)).cloned() else { break };
+            let Some(oldest) = self
+                .order
+                .iter()
+                .find(|path| !pinned.contains(path))
+                .cloned()
+            else {
+                break;
+            };
             if let Some(removed) = self.folders.remove(&oldest) {
                 self.bytes = self.bytes.saturating_sub(Self::estimate(&oldest, &removed));
             }
@@ -145,15 +171,27 @@ impl Hierarchy {
         let mut children = Vec::new();
         let mut direct_files = Vec::new();
         for child in entry.children {
-            let size = if child.physical_bytes == 0 { child.logical_bytes } else { child.physical_bytes };
+            let size = if child.physical_bytes == 0 {
+                child.logical_bytes
+            } else {
+                child.physical_bytes
+            };
             let path = child.path.into_string();
             if child.kind == FileKind::Dir {
-                children.push(DirChild { path, size, count: 0 });
+                children.push(DirChild {
+                    path,
+                    size,
+                    count: 0,
+                });
             } else {
                 direct_files.push(TreeFile { path, size });
             }
         }
-        let size = if entry.physical_bytes == 0 { entry.logical_bytes } else { entry.physical_bytes };
+        let size = if entry.physical_bytes == 0 {
+            entry.logical_bytes
+        } else {
+            entry.physical_bytes
+        };
         let folder = FolderSummary {
             size,
             count: entry.file_count,
@@ -200,34 +238,44 @@ mod tests {
 
     fn listing() -> neutra_core::DirListing {
         use neutra_core::{DirFile, DirListing, DirSubdir};
-             DirListing {
-                 files: vec![DirFile {
-                     name: "readme.md".into(),
-                     size: 12,
-                     logical: 12,
-                     kind: FileKind::File,
-                 }],
-                 subdirs: vec![DirSubdir {
-                     name: "archive".into(),
-                     size: 0,
-                     logical: 0,
-                     files: 0,
-                 }],
-                 total_size: 12,
-                 total_logical: 12,
-                 total_count: 1,
-                 files_truncated: false,
-             }
+        DirListing {
+            files: vec![DirFile {
+                name: "readme.md".into(),
+                size: 12,
+                logical: 12,
+                kind: FileKind::File,
+            }],
+            subdirs: vec![DirSubdir {
+                name: "archive".into(),
+                size: 0,
+                logical: 0,
+                files: 0,
+            }],
+            total_size: 12,
+            total_logical: 12,
+            total_count: 1,
+            files_truncated: false,
+        }
     }
 
     #[test]
     fn lazy_model_serves_fetched_dirs_and_evicts_beyond_budget() {
         let mut hierarchy = Hierarchy::empty();
-        hierarchy.insert("/docs".to_owned(), Hierarchy::folder_from_listing("/docs", listing()), true);
+        hierarchy.insert(
+            "/docs".to_owned(),
+            Hierarchy::folder_from_listing("/docs", listing()),
+            true,
+        );
         assert_eq!(hierarchy.folders["/docs"].size, 12);
-        assert!(hierarchy.folders["/docs"].direct_files[0].path.ends_with("readme.md"));
+        assert!(hierarchy.folders["/docs"].direct_files[0]
+            .path
+            .ends_with("readme.md"));
         assert_eq!(hierarchy.folders["/docs"].children[0].path, "/docs/archive");
-        hierarchy.insert("/old".to_owned(), Hierarchy::folder_from_listing("/old", listing()), false);
+        hierarchy.insert(
+            "/old".to_owned(),
+            Hierarchy::folder_from_listing("/old", listing()),
+            false,
+        );
         assert!(hierarchy.folders["/old"].direct_files.is_empty());
         hierarchy.bytes = Hierarchy::CACHE_BYTES + 1;
         hierarchy.evict(&["/docs".to_owned()]);
@@ -235,18 +283,31 @@ mod tests {
         assert!(hierarchy.folders.contains_key("/docs"));
     }
 
-     #[test]
-     fn hierarchy_connects_windows_drives_and_unc_shares_to_computer_root() {
-          let sep = String::from(92 as char);
-         let win = format!("C:{0}Users{0}Alex{0}report.txt", sep);
-         let unc = format!("{0}{0}server{0}share{0}team{0}plan.txt", sep);
-         let hierarchy = Hierarchy::from_records(&[file(&win), file(&unc)]);
+    #[test]
+    fn hierarchy_connects_windows_drives_and_unc_shares_to_computer_root() {
+        let sep = String::from(92 as char);
+        let win = format!("C:{0}Users{0}Alex{0}report.txt", sep);
+        let unc = format!("{0}{0}server{0}share{0}team{0}plan.txt", sep);
+        let hierarchy = Hierarchy::from_records(&[file(&win), file(&unc)]);
         let root = hierarchy.folders.get("/").unwrap();
         assert!(root.children.iter().any(|child| child.path == "C:/"));
-        assert!(root.children.iter().any(|child| child.path == "//server/share"));
+        assert!(root
+            .children
+            .iter()
+            .any(|child| child.path == "//server/share"));
         assert_eq!((root.count, root.size), (2, 84));
-        assert_eq!((hierarchy.folders["C:/"].count, hierarchy.folders["C:/"].size), (1, 42));
-        assert!(hierarchy.folders["C:/Users/Alex"].direct_files[0].path.ends_with("report.txt"));
-        assert!(hierarchy.folders["//server/share/team"].direct_files[0].path.ends_with("plan.txt"));
+        assert_eq!(
+            (
+                hierarchy.folders["C:/"].count,
+                hierarchy.folders["C:/"].size
+            ),
+            (1, 42)
+        );
+        assert!(hierarchy.folders["C:/Users/Alex"].direct_files[0]
+            .path
+            .ends_with("report.txt"));
+        assert!(hierarchy.folders["//server/share/team"].direct_files[0]
+            .path
+            .ends_with("plan.txt"));
     }
 }

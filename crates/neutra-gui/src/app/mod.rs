@@ -9,6 +9,8 @@
 
 mod cache_events;
 mod events;
+pub(crate) mod file_operations;
+pub(crate) mod map_queries;
 mod queries;
 mod scan_events;
 mod scans;
@@ -56,7 +58,8 @@ impl NeutraApp {
     /// (a full decode costs minutes of CPU); the first typed query starts it.
     pub(crate) fn requery_unless_huge(&mut self) {
         let first = self.search_seq == 0 && self.query.is_empty();
-        if !(first && self.index_len() > crate::LAUNCH_LISTING_MAX && !queries::ranked_ready(self)) {
+        if !(first && self.index_len() > crate::LAUNCH_LISTING_MAX && !queries::ranked_ready(self))
+        {
             self.requery();
         }
     }

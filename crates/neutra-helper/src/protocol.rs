@@ -2,14 +2,13 @@
 //! authentication, command dispatch, and the watch-thread lifecycle.
 //! Split from `main` so entry points stay separate from wire handling.
 
+pub(crate) use crate::scan::ProtocolOutput;
 use crate::scan::{
     launch_scans, prepare_scan, reap_scan_threads, validate_delta_changes, validate_query,
-    watch_exclusions,
 };
-pub(crate) use crate::scan::ProtocolOutput;
+use crate::store::{write_stale_marker, DurableStore};
 #[cfg(target_os = "linux")]
 use crate::{watch_linux, watch_mount, MAX_PENDING_CHANGES, WATCH_DEBOUNCE};
-use crate::store::{write_stale_marker, DurableStore};
 use anyhow::{Context, Result};
 use neutra_core::proto::{
     read_frame, write_frame, ClientMsg, HelperMsg, HELPER_BUILD, PROTO_VERSION,
@@ -19,7 +18,6 @@ use std::collections::BTreeMap;
 use std::io::{BufWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-
 
 pub(crate) fn run_protocol<R: Read>(
     rin: &mut R,
@@ -83,30 +81,33 @@ pub fn run_protocol_with_auth<R: Read>(
 
     // Scans populate one resident index; searches never trigger a rescan.
     let index = Arc::new(RwLock::new(Index::default()));
+    #[cfg(target_os = "linux")]
+    let watches = watch_mount
+        .as_ref()
+        .map(|(mount, source)| {
+            crate::watch_session::WatchSession::prepare(
+                serve_index
+                    .as_ref()
+                    .context("watch mode requires an index")?,
+                mount,
+                *source,
+            )
+        })
+        .transpose()?;
     let durable = serve_index
         .as_ref()
         .map(|path| DurableStore::open(path).map(|store| Arc::new(RwLock::new(store))))
         .transpose()?;
     let stale = Arc::new(AtomicBool::new(false));
     #[cfg(target_os = "linux")]
-    if let Some((mountpoint, source)) = watch_mount {
-        let mount = neutra_core::mounts::system_mounts()?
-            .into_iter()
-            .find(|mount| mount.mountpoint == mountpoint)
-            .with_context(|| format!("no supported mount at {}", mountpoint.display()))?;
-        let base_path = serve_index.as_ref().expect("watch mode has an index");
-        let excluded = watch_exclusions(base_path);
+    if let Some(watches) = watches {
         let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
-        crate::watch_sweep::start(Arc::clone(&store), Arc::clone(&stale), source);
-        match watch_linux::FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
-            Ok(watcher) => start_native_watch(watcher, store, Arc::clone(&stale)),
-            Err(error) if watch_mount::needs_mount_mark(&error) => {
-                tracing::info!("subvolume mount: watching closed writes only");
-                let watcher = watch_mount::MountWatcher::open(mount, source, excluded)?;
-                start_native_watch(watcher, store, Arc::clone(&stale));
-            }
-            Err(error) => return Err(error),
-        }
+        watches.start(store, Arc::clone(&stale))?;
+        anyhow::ensure!(
+            !stale.load(Ordering::Acquire),
+            "native watcher failed during startup"
+        );
+        send(&out, &HelperMsg::WatchReady)?;
     }
     #[cfg(not(target_os = "linux"))]
     if watch_mount.is_some() {
@@ -140,9 +141,14 @@ pub fn run_protocol_with_auth<R: Read>(
             }) => {
                 tracing::info!(target: "neutra_helper::protocol", "Scan command dispatch");
                 if allow_zfs_enumerate {
-                    // The ZFS lane's walk gate reads this; a scan parameter
-                    // survives pkexec where the environment does not.
-                    std::env::set_var("NEUTRASEARCH_ZFS_ALLOW_WALK", "1");
+                    send(
+                        &out,
+                        &HelperMsg::Error(
+                            "Directory walking is disabled; ZFS needs a native metadata backend"
+                                .into(),
+                        ),
+                    )?;
+                    continue;
                 }
                 match prepare_scan(mounts, roots, scan_threads.is_empty()) {
                     Ok((mounts, roots)) => {
@@ -314,7 +320,7 @@ pub fn run_protocol_with_auth<R: Read>(
 
 #[cfg(target_os = "linux")]
 pub(crate) fn start_native_watch(
-    mut watcher: impl watch_mount::Watch,
+    mut watcher: Box<dyn watch_mount::Watch>,
     store: Arc<RwLock<DurableStore>>,
     stale: Arc<AtomicBool>,
 ) {
@@ -328,25 +334,14 @@ pub(crate) fn start_native_watch(
     };
     std::thread::spawn(move || {
         let mut pending = BTreeMap::<String, DeltaChange>::new();
-        let mut rescan_seen = false;
-        'watch: loop {
+        loop {
             match watcher.read_batch() {
                 Ok(watch_linux::WatchBatch::Changes(changes)) => {
                     merge_watched_changes(&mut pending, changes);
                 }
                 Ok(watch_linux::WatchBatch::RescanRequired(reason)) => {
-                    // A renamed directory or a queue overflow makes part of
-                    // the tree ambiguous. The tracked directory itself is
-                    // still delta-applied; the rest of the index keeps
-                    // serving instead of failing every search until the
-                    // next full reindex.
-                    if !rescan_seen {
-                        rescan_seen = true;
-                        tracing::warn!(
-                            reason,
-                            "watched tree changed ambiguously; results may be incomplete until the next full reindex"
-                        );
-                    }
+                    fail_closed(&stale, &base_path, anyhow::anyhow!(reason));
+                    break;
                 }
                 Err(error) => {
                     fail_closed(&stale, &base_path, error);
@@ -356,33 +351,9 @@ pub(crate) fn start_native_watch(
             if pending.is_empty() {
                 continue;
             }
-            // Coalesce bursts: keep draining until 250ms of quiet or the
-            // change cap, then commit once instead of fsync-per-event.
-            while pending.len() < MAX_PENDING_CHANGES {
-                match watcher.wait_readable(WATCH_DEBOUNCE) {
-                    Ok(false) => break,
-                    Ok(true) => match watcher.read_batch() {
-                        Ok(watch_linux::WatchBatch::Changes(changes)) => {
-                            merge_watched_changes(&mut pending, changes);
-                        }
-                        Ok(watch_linux::WatchBatch::RescanRequired(_)) => {
-                            if !rescan_seen {
-                                rescan_seen = true;
-                                tracing::warn!(
-                                    "watched tree changed ambiguously; results may be incomplete until the next full reindex"
-                                );
-                            }
-                        }
-                    Err(error) => {
-                        fail_closed(&stale, &base_path, error);
-                        break 'watch;
-                    }
-                },
-                Err(error) => {
-                    fail_closed(&stale, &base_path, error.into());
-                    break 'watch;
-                }
-                }
+            if let Err(error) = drain_watch_burst(watcher.as_mut(), &mut pending) {
+                fail_closed(&stale, &base_path, error);
+                break;
             }
             let changes = std::mem::take(&mut pending)
                 .into_values()
@@ -427,12 +398,29 @@ pub(crate) fn start_native_watch(
     });
 }
 
-/// Merge watched events into the pending set keyed by path; the most recent
-/// change per path wins.
-fn merge_watched_changes(
+#[cfg(target_os = "linux")]
+fn drain_watch_burst(
+    watcher: &mut dyn watch_mount::Watch,
     pending: &mut BTreeMap<String, DeltaChange>,
-    changes: Vec<DeltaChange>,
-) {
+) -> Result<()> {
+    // Continuous writes must not postpone publication indefinitely.
+    let deadline = std::time::Instant::now() + WATCH_DEBOUNCE;
+    while pending.len() < MAX_PENDING_CHANGES {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            break;
+        };
+        if !watcher.wait_readable(remaining)? {
+            break;
+        }
+        match watcher.read_batch()? {
+            watch_linux::WatchBatch::Changes(changes) => merge_watched_changes(pending, changes),
+            watch_linux::WatchBatch::RescanRequired(reason) => anyhow::bail!(reason),
+        }
+    }
+    Ok(())
+}
+
+fn merge_watched_changes(pending: &mut BTreeMap<String, DeltaChange>, changes: Vec<DeltaChange>) {
     for change in changes {
         let key = match &change {
             DeltaChange::Upsert(record) => record.path.to_string(),
@@ -442,8 +430,6 @@ fn merge_watched_changes(
     }
 }
 
-/// Disable the index for a hard watch/commit failure: the fail-closed path
-/// for errors that make the on-disk state untrustworthy.
 fn fail_closed(stale: &AtomicBool, base_path: &std::path::Path, error: anyhow::Error) {
     stale.store(true, Ordering::Release);
     if let Err(marker_error) = write_stale_marker(base_path, &error.to_string()) {
@@ -461,5 +447,59 @@ fn send(out: &ProtocolOutput, msg: &HelperMsg) -> Result<()> {
 pub(crate) fn send_lossy(out: &ProtocolOutput, msg: &HelperMsg) {
     if let Err(e) = send(out, msg) {
         tracing::warn!("failed to send frame: {e}");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod watch_tests {
+    use super::*;
+
+    struct ContinuousWrites {
+        reads: usize,
+        overflow: bool,
+    }
+
+    impl watch_mount::Watch for ContinuousWrites {
+        fn read_batch(&mut self) -> Result<watch_linux::WatchBatch> {
+            self.reads += 1;
+            if self.overflow {
+                Ok(watch_linux::WatchBatch::RescanRequired(
+                    "native queue overflow",
+                ))
+            } else {
+                Ok(watch_linux::WatchBatch::Changes(vec![DeltaChange::Remove(
+                    "/busy".into(),
+                )]))
+            }
+        }
+
+        fn wait_readable(&self, _timeout: std::time::Duration) -> std::io::Result<bool> {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn continuous_writes_publish_without_waiting_for_quiet() {
+        let mut watcher = ContinuousWrites {
+            reads: 0,
+            overflow: false,
+        };
+        let mut pending = BTreeMap::new();
+        let started = std::time::Instant::now();
+        drain_watch_burst(&mut watcher, &mut pending).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(watcher.reads > 0);
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn queue_overflow_is_reported_instead_of_serving_incomplete_updates() {
+        let mut watcher = ContinuousWrites {
+            reads: 0,
+            overflow: true,
+        };
+        let error = drain_watch_burst(&mut watcher, &mut BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("native queue overflow"));
     }
 }

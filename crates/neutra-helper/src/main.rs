@@ -14,20 +14,24 @@ mod protocol;
 mod scan;
 mod store;
 #[cfg(target_os = "linux")]
-mod watch_linux;
-#[cfg(target_os = "linux")]
 mod sweep_plan;
+#[cfg(target_os = "linux")]
+mod watch_linux;
 #[cfg(target_os = "linux")]
 mod watch_mount;
 #[cfg(target_os = "linux")]
+mod watch_process;
+#[cfg(target_os = "linux")]
+mod watch_session;
+#[cfg(target_os = "linux")]
 mod watch_sweep;
-#[cfg(test)]
-use store::write_compaction_marker;
 use protocol::run_protocol;
 use scan::{dispatch_lane, exclusion_prefixes, find_local_mount, path_has_component_prefix};
-use store::{acquire_rebuild_lock, sync_parent};
+#[cfg(test)]
+use store::write_compaction_marker;
 #[cfg(test)]
 use store::DurableStore;
+use store::{acquire_rebuild_lock, sync_parent};
 #[cfg(target_os = "windows")]
 mod windows_service;
 use anyhow::{Context, Result};
@@ -42,6 +46,15 @@ pub(crate) const WATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const MAX_PENDING_CHANGES: usize = crate::scan::MAX_DELTA_CHANGES;
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+    std::env::set_var("RAYON_NUM_THREADS", "2");
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--watch-events") {
+        return watch_process::run();
+    }
     #[cfg(target_os = "windows")]
     if std::env::args().nth(1).as_deref() == Some("--windows-service") {
         return windows_service::run();
@@ -71,7 +84,7 @@ fn main() -> Result<()> {
             "internal usage: neutrasearch-helper --serve-index INDEX.nsx",
         )?))
     } else {
-         std::env::var_os("NEUTRASEARCH_SERVE_INDEX").map(std::path::PathBuf::from)
+        std::env::var_os("NEUTRASEARCH_SERVE_INDEX").map(std::path::PathBuf::from)
     };
     match arg.as_deref() {
         Some("--version") | Some("-V") => {
@@ -90,13 +103,11 @@ fn main() -> Result<()> {
         Some("--zfs-probe") => {
             let probe = neutra_zfs::probe();
             println!(
-                "zfs_cli={} libzpool={} walk_compiled={} walk_opt_in={}",
+                "zfs_cli={} libzpool={}",
                 probe.zfs_cli_version.as_deref().unwrap_or("not installed"),
                 probe.libzpool_soname.unwrap_or("not found"),
-                probe.walk_lane_compiled,
-                probe.walk_opt_in,
             );
-            println!("lanes: initial = native ZAP (requires the zfs-libzpool feature build) or --zfs-enumerate; updates = fanotify watch");
+            println!("initial indexing requires a verified native ZAP backend; no directory fallback is available");
             return Ok(());
         }
         Some("--scan-summary") => {
@@ -120,54 +131,42 @@ fn main() -> Result<()> {
             return Ok(());
         }
         Some("--build-index") => {
-            let mut args = std::env::args().skip(2).peekable();
-            let mut allow_zfs_enumerate = false;
-            let mut positional = Vec::new();
-            for arg in args.by_ref() {
-                if arg == "--zfs-enumerate" {
-                    allow_zfs_enumerate = true;
-                } else {
-                    positional.push(arg);
-                }
-            }
+            let positional: Vec<_> = std::env::args().skip(2).collect();
             let [target, output] = positional.as_slice() else {
-                anyhow::bail!("use: neutrasearch index MOUNT --output INDEX.nsx [--zfs-enumerate]");
+                anyhow::bail!("use: neutrasearch index MOUNT --output INDEX.nsx");
             };
             let output = std::path::PathBuf::from(output);
-            if allow_zfs_enumerate {
-                std::env::set_var("NEUTRASEARCH_ZFS_ALLOW_WALK", "1");
+            let mount = find_local_mount(target)?;
+            let (_rebuild_lock, delta_path) = acquire_rebuild_lock(&output)?;
+            let mountpoint = mount.mountpoint.clone();
+            let exclusions = exclusion_prefixes(&mountpoint);
+            // Stream scan batches straight into the spill: one huge mount
+            // materialized here peaked past 25 GiB.
+            let mut spill = neutra_core::SpillAccumulator::begin(&output)?;
+            let mut spill_error: Option<std::io::Error> = None;
+            let scan = dispatch_lane(&mount, &mut |record| {
+                if spill_error.is_some() {
+                    return;
+                }
+                if !exclusions
+                    .iter()
+                    .any(|prefix| path_has_component_prefix(record.path.as_ref(), prefix))
+                {
+                    if let Err(error) = spill.push_batch(vec![record]) {
+                        spill_error = Some(error);
+                    }
+                }
+            })?;
+            if let Some(error) = spill_error {
+                anyhow::bail!("spill scan batches: {error}");
             }
-             let mount = find_local_mount(target)?;
-             let (_rebuild_lock, delta_path) = acquire_rebuild_lock(&output)?;
-             let mountpoint = mount.mountpoint.clone();
-             let exclusions = exclusion_prefixes(&mountpoint);
-             // Stream scan batches straight into the spill: one huge mount
-             // materialized here peaked past 25 GiB.
-             let mut spill = neutra_core::SpillAccumulator::begin(&output)?;
-             let mut spill_error: Option<std::io::Error> = None;
-             let scan = dispatch_lane(&mount, &mut |record| {
-                 if spill_error.is_some() {
-                     return;
-                 }
-                 if !exclusions
-                     .iter()
-                     .any(|prefix| path_has_component_prefix(record.path.as_ref(), prefix))
-                 {
-                     if let Err(error) = spill.push_batch(vec![record]) {
-                         spill_error = Some(error);
-                     }
-                 }
-             })?;
-             if let Some(error) = spill_error {
-                 anyhow::bail!("spill scan batches: {error}");
-             }
-             let built = CompactIndex::rebuild_streamed(spill.finish()?, &output)?;
+            let built = CompactIndex::rebuild_streamed(spill.finish()?, &output)?;
             match std::fs::remove_file(&delta_path) {
                 Ok(()) => sync_parent(&delta_path)?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error).context("remove obsolete delta WAL after rebuild"),
             }
-             println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),scan.records,scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
+            println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),scan.records,scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
             return Ok(());
         }
         _ => {}
@@ -191,7 +190,7 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "neutra_helper=info".into()),
+                .unwrap_or_else(|_| "neutrasearch_helper=info,neutra_helper=info".into()),
         )
         .init();
 
@@ -209,14 +208,14 @@ mod tests {
         parse_macos_mount_output, portable_path_in_root, resolve_scan_mounts, run_bounded,
         validate_delta_changes, validate_query, validate_scan_roots, MAX_QUERY_RESULTS,
     };
-    use crate::store::{append_suffix, compaction_marker, compaction_marker_temp, compaction_stage};
-    use neutra_core::proto::{
-        read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION,
+    use crate::store::{
+        append_suffix, compaction_marker, compaction_marker_temp, compaction_stage,
     };
+    use neutra_core::mounts::MountInfo;
+    use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
+    use neutra_core::{DeltaChange, FileKind, FileRecord, FsKind, Query};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
-    use neutra_core::mounts::MountInfo;
-    use neutra_core::{DeltaChange, FileKind, FileRecord, FsKind, Query};
 
     fn record(path: &str, size: u64) -> FileRecord {
         FileRecord {
@@ -244,16 +243,16 @@ mod tests {
         (base, delta)
     }
 
-     fn build_test_base(
-         records: &[FileRecord],
-         path: &std::path::Path,
-     ) -> anyhow::Result<neutra_core::CompactBuildStats> {
-         let mut spill = neutra_core::SpillAccumulator::begin(path)?;
-         spill.push_batch(records.to_vec())?;
-         Ok(CompactIndex::rebuild_streamed(spill.finish()?, path)?)
-     }
+    fn build_test_base(
+        records: &[FileRecord],
+        path: &std::path::Path,
+    ) -> anyhow::Result<neutra_core::CompactBuildStats> {
+        let mut spill = neutra_core::SpillAccumulator::begin(path)?;
+        spill.push_batch(records.to_vec())?;
+        Ok(CompactIndex::rebuild_streamed(spill.finish()?, path)?)
+    }
 
-     fn remove_store(base: &std::path::Path, delta: &std::path::Path) {
+    fn remove_store(base: &std::path::Path, delta: &std::path::Path) {
         let mut lock = delta.as_os_str().to_os_string();
         lock.push(".lock");
         for path in [
@@ -267,6 +266,61 @@ mod tests {
             compaction_marker_temp(base),
         ] {
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ready_catalog_checkpoints_changes_without_rewriting_the_base() {
+        let (base_path, delta_path) = store_paths("catalog-checkpoint");
+        build_test_base(&[record("/old.txt", 1)], &base_path).unwrap();
+        let base = CompactIndex::open_fast(&base_path).unwrap();
+        let generation = base.generation();
+        neutra_core::BrowserIndex::ensure(&base_path, generation).unwrap();
+        let mut store = DurableStore::open_with_threshold(&base_path, 17).unwrap();
+        let result = store
+            .apply_bounded(vec![neutra_core::DeltaChange::Upsert(record(
+                "/saved.txt",
+                9,
+            ))])
+            .unwrap();
+        assert!(result.compacted.is_none());
+        assert_eq!(
+            CompactIndex::generation_on_disk(&base_path).unwrap(),
+            generation
+        );
+        let browser = neutra_core::BrowserIndex::open(&base_path, generation).unwrap();
+        assert!(browser.covers_delta(&base_path).unwrap());
+        store
+            .delta
+            .apply(neutra_core::DeltaChange::Upsert(record("/pending.txt", 10)))
+            .unwrap();
+        store.delta.sync().unwrap();
+        assert!(!browser.covers_delta(&base_path).unwrap());
+        store
+            .apply_bounded(vec![neutra_core::DeltaChange::Upsert(record(
+                "/pending.txt",
+                10,
+            ))])
+            .unwrap();
+        assert!(browser.covers_delta(&base_path).unwrap());
+        let hits = browser
+            .search(&base, &neutra_core::Query::default(), None)
+            .unwrap()
+            .0;
+        assert!(hits.iter().any(|hit| &*hit.record.path == "/saved.txt"));
+        drop(browser);
+        drop(base);
+        drop(store);
+        remove_store(&base_path, &delta_path);
+        for suffix in [
+            ".browse",
+            ".browse.base",
+            ".browse.lock",
+            ".browse-wal",
+            ".browse-shm",
+        ] {
+            let _ = std::fs::remove_file(store::append_suffix(&base_path, suffix));
         }
     }
 
@@ -604,7 +658,7 @@ mod tests {
 
     #[test]
     fn one_shot_protocol_ends_after_scan_preparation_error() {
-            use std::sync::Mutex;
+        use std::sync::Mutex;
 
         #[derive(Clone)]
         struct SharedOutput(Arc<Mutex<Vec<u8>>>);
@@ -665,7 +719,7 @@ mod tests {
 
     #[test]
     fn directory_summary_serves_live_totals_from_the_durable_pair() {
-            use std::sync::Mutex;
+        use std::sync::Mutex;
 
         #[derive(Clone)]
         struct SharedOutput(Arc<Mutex<Vec<u8>>>);
@@ -750,14 +804,18 @@ mod tests {
     fn store_cleanup(base: &std::path::Path, delta: &std::path::Path) {
         let mut lock = delta.as_os_str().to_os_string();
         lock.push(".lock");
-        for path in [base.to_path_buf(), delta.to_path_buf(), std::path::PathBuf::from(lock)] {
+        for path in [
+            base.to_path_buf(),
+            delta.to_path_buf(),
+            std::path::PathBuf::from(lock),
+        ] {
             let _ = std::fs::remove_file(path);
         }
     }
 
     #[test]
     fn authentication_runs_after_hello_before_commands() {
-            use std::sync::Mutex;
+        use std::sync::Mutex;
 
         #[derive(Clone)]
         struct SharedOutput(Arc<Mutex<Vec<u8>>>);
@@ -844,7 +902,7 @@ mod tests {
         let replacement_generation = store.base.as_ref().unwrap().generation();
         assert_ne!(replacement_generation, original_generation);
         assert_eq!(store.delta.generation(), replacement_generation);
-        assert_eq!(store.delta.change_count(), 0);
+        assert_eq!(store.delta.change_count().unwrap(), 0);
         let (hits, stats) = store.search(&Query::parse("ext:txt")).unwrap();
         assert_eq!(stats.matched, 1);
         assert_eq!(hits[0].record.path.as_ref(), "/new.txt");

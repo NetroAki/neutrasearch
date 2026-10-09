@@ -3,27 +3,28 @@
 //! The base is immutable and mmapped on Unix. Windows snapshots use owned
 //! bytes because Windows forbids atomically replacing a file with live mapped
 //! views; this keeps compaction compatible with persistent readers.
+use crate::compact_spill::SpillAccumulator;
 use crate::matcher::compare_records;
- use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats};
- use crate::compact_spill::SpillAccumulator;
+use crate::{DeltaIndex, FileRecord, Query, SearchHit, SearchStats};
 #[cfg(not(windows))]
 use memmap2::Mmap;
 use rayon::prelude::*;
- use std::cmp::Ordering;
- use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub(crate) const MAGIC: &[u8; 8] = b"NEUTIDX1";
- pub(crate) const VERSION: u32 = 4;
- /// Newest readable record layout. Bases at this version store disk bytes;
- /// version 3 bases remain readable with disk falling back to size.
- pub(crate) const MIN_READABLE_VERSION: u32 = 3;
+pub(crate) const VERSION: u32 = 5;
+/// Newest readable record layout. Bases at this version store disk bytes;
+/// version 3 bases remain readable with disk falling back to size.
+pub(crate) const MIN_READABLE_VERSION: u32 = 3;
 pub(crate) const HEADER: u64 = 64;
 const CHECKSUM_BYTES: usize = 4;
 mod children;
+mod search;
 mod table;
 use table::TableView;
 pub(crate) const BLOCK_RECORDS: usize = 32;
@@ -48,280 +49,286 @@ type IndexBytes = Mmap;
 #[cfg(windows)]
 type IndexBytes = Vec<u8>;
 
- pub struct CompactIndex {
-     map: IndexBytes,
-     generation: u64,
-     record_count: u64,
-     blocks: TableView,
-     dict: TableView,
-     record_version: u32,
- }
+pub struct CompactIndex {
+    map: IndexBytes,
+    generation: u64,
+    record_count: u64,
+    blocks: TableView,
+    dict: TableView,
+    record_version: u32,
+}
 
- /// One file row in a directory listing. Sizes track both views: on-disk
- /// for the tree, apparent for search-compatible reporting.
- #[derive(Debug, Clone)]
- pub struct DirFile {
-     pub name: Box<str>,
-     pub size: u64,
-     pub logical: u64,
-     pub kind: crate::FileKind,
- }
- /// One direct subdirectory with its subtree totals.
- #[derive(Debug, Clone)]
- pub struct DirSubdir {
-     pub name: Box<str>,
-     pub size: u64,
-     pub logical: u64,
-     pub files: u64,
- }
- /// A single directory fetched on demand: file rows plus subdirectory
- /// totals, bounded to keep tree browsing under a fixed memory budget.
- #[derive(Debug, Clone, Default)]
- pub struct DirListing {
-     pub files: Vec<DirFile>,
-     pub subdirs: Vec<DirSubdir>,
-     pub total_size: u64,
-     pub total_logical: u64,
-     pub total_count: u64,
-     pub files_truncated: bool,
- }
+/// One file row in a directory listing. Sizes track both views: on-disk
+/// for the tree, apparent for search-compatible reporting.
+#[derive(Debug, Clone)]
+pub struct DirFile {
+    pub name: Box<str>,
+    pub size: u64,
+    pub logical: u64,
+    pub kind: crate::FileKind,
+}
+/// One direct subdirectory with its subtree totals.
+#[derive(Debug, Clone)]
+pub struct DirSubdir {
+    pub name: Box<str>,
+    pub size: u64,
+    pub logical: u64,
+    pub files: u64,
+}
+/// A single directory fetched on demand: file rows plus subdirectory
+/// totals, bounded to keep tree browsing under a fixed memory budget.
+#[derive(Debug, Clone, Default)]
+pub struct DirListing {
+    pub files: Vec<DirFile>,
+    pub subdirs: Vec<DirSubdir>,
+    pub total_size: u64,
+    pub total_logical: u64,
+    pub total_count: u64,
+    pub files_truncated: bool,
+}
 
- impl DirListing {
-     fn absorb(
-         &mut self,
-         record: &FileRecord,
-         prefix: &str,
-         subdirs: &mut HashMap<Box<str>, (u64, u64, u64)>,
-     ) {
-         let relative = &record.path.as_ref()[prefix.len()..];
-         if relative.is_empty() {
-             return;
-         }
-         let contributes = matches!(
-             record.kind,
-             crate::FileKind::File | crate::FileKind::Symlink
-         );
-         let size = if contributes { record.disk_bytes() } else { 0 };
-         let logical = if contributes { record.size } else { 0 };
-         match relative.find('/') {
-             None => {
-                 if record.kind == crate::FileKind::Dir {
-                     // Empty directories still show as folders.
-                     subdirs.entry(relative.into()).or_insert((0, 0, 0));
-                     return;
-                 }
-                 self.total_size = self.total_size.saturating_add(size);
-                 self.total_logical = self.total_logical.saturating_add(logical);
-                 if contributes {
-                     self.total_count += 1;
-                 }
-                 self.files.push(DirFile {
-                     name: relative.into(),
-                     size,
-                     logical,
-                     kind: record.kind,
-                 });
-             }
-             Some(slash) => {
-                 let bucket = subdirs
-                     .entry(relative[..slash].into())
-                     .or_insert((0, 0, 0));
-                 bucket.0 = bucket.0.saturating_add(size);
-                 bucket.1 = bucket.1.saturating_add(logical);
-                 if contributes {
-                     bucket.2 += 1;
-                 }
-                 self.total_size = self.total_size.saturating_add(size);
-                 self.total_logical = self.total_logical.saturating_add(logical);
-                 if contributes {
-                     self.total_count += 1;
-                 }
-             }
-         }
-     }
+impl DirListing {
+    fn absorb(
+        &mut self,
+        record: &FileRecord,
+        prefix: &str,
+        subdirs: &mut HashMap<Box<str>, (u64, u64, u64)>,
+    ) {
+        let relative = &record.path.as_ref()[prefix.len()..];
+        if relative.is_empty() {
+            return;
+        }
+        let contributes = matches!(
+            record.kind,
+            crate::FileKind::File | crate::FileKind::Symlink
+        );
+        let size = if contributes { record.disk_bytes() } else { 0 };
+        let logical = if contributes { record.size } else { 0 };
+        match relative.find('/') {
+            None => {
+                if record.kind == crate::FileKind::Dir {
+                    // Empty directories still show as folders.
+                    subdirs.entry(relative.into()).or_insert((0, 0, 0));
+                    return;
+                }
+                self.total_size = self.total_size.saturating_add(size);
+                self.total_logical = self.total_logical.saturating_add(logical);
+                if contributes {
+                    self.total_count += 1;
+                }
+                self.files.push(DirFile {
+                    name: relative.into(),
+                    size,
+                    logical,
+                    kind: record.kind,
+                });
+            }
+            Some(slash) => {
+                let bucket = subdirs.entry(relative[..slash].into()).or_insert((0, 0, 0));
+                bucket.0 = bucket.0.saturating_add(size);
+                bucket.1 = bucket.1.saturating_add(logical);
+                if contributes {
+                    bucket.2 += 1;
+                }
+                self.total_size = self.total_size.saturating_add(size);
+                self.total_logical = self.total_logical.saturating_add(logical);
+                if contributes {
+                    self.total_count += 1;
+                }
+            }
+        }
+    }
 
-     fn finish(
-         mut self,
-         subdirs: HashMap<Box<str>, (u64, u64, u64)>,
-         base: &CompactIndex,
-         delta: Option<&DeltaIndex>,
-         prefix: &str,
-     ) -> io::Result<Self> {
-         if let Some(delta) = delta {
-             for path in delta.removed() {
-                 if strip_prefix_folded(path, prefix).is_some() {
-                     // Exact base sizes resolve through the index; unknown
-                     // paths (already-compacted churn) subtract nothing.
-                     for record in base.records_by_path(path)? {
-                         self.remove_record(&record, prefix);
-                     }
-                 }
-             }
-             for record in delta.upserts() {
-                 if strip_prefix_folded(record.path.as_ref(), prefix).is_some() {
-                     // An upsert supersedes any base row for the same file.
-                     let contributes = matches!(
-                         record.kind,
-                         crate::FileKind::File | crate::FileKind::Symlink
-                     );
-                     self.drop_file_row(record.path.as_ref(), prefix, contributes);
-                     let mut buckets = HashMap::new();
-                     self.absorb(record, prefix, &mut buckets);
-                     for (name, (size, logical, files)) in buckets {
-                         self.merge_subdir(name, size, logical, files);
-                     }
-                 }
-             }
-         }
-         let mut subdirs: Vec<DirSubdir> = subdirs
-             .into_iter()
-             .map(|(name, (size, logical, files))| DirSubdir { name, size, logical, files })
-             .collect();
-         subdirs.sort_unstable_by_key(|child| std::cmp::Reverse(child.size));
-         self.files.sort_unstable_by_key(|file| std::cmp::Reverse(file.size));
-         if self.files.len() > CompactIndex::MAX_LISTED_FILES {
-             self.files.truncate(CompactIndex::MAX_LISTED_FILES);
-             self.files_truncated = true;
-         }
-         self.subdirs = subdirs;
-         Ok(self)
-     }
+    fn finish(
+        mut self,
+        subdirs: HashMap<Box<str>, (u64, u64, u64)>,
+        base: &CompactIndex,
+        delta: Option<&DeltaIndex>,
+        prefix: &str,
+    ) -> io::Result<Self> {
+        if let Some(delta) = delta {
+            delta.for_each_removed(|path| {
+                if strip_prefix_folded(&path, prefix).is_some() {
+                    // Exact base sizes resolve through the index; unknown
+                    // paths (already-compacted churn) subtract nothing.
+                    for record in base.records_by_path(&path)? {
+                        self.remove_record(&record, prefix);
+                    }
+                }
+                Ok(())
+            })?;
+            delta.for_each_upsert(|record| {
+                if strip_prefix_folded(record.path.as_ref(), prefix).is_some() {
+                    // An upsert supersedes any base row for the same file.
+                    let contributes = matches!(
+                        record.kind,
+                        crate::FileKind::File | crate::FileKind::Symlink
+                    );
+                    self.drop_file_row(record.path.as_ref(), prefix, contributes);
+                    let mut buckets = HashMap::new();
+                    self.absorb(&record, prefix, &mut buckets);
+                    for (name, (size, logical, files)) in buckets {
+                        self.merge_subdir(name, size, logical, files);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        let mut subdirs: Vec<DirSubdir> = subdirs
+            .into_iter()
+            .map(|(name, (size, logical, files))| DirSubdir {
+                name,
+                size,
+                logical,
+                files,
+            })
+            .collect();
+        subdirs.sort_unstable_by_key(|child| std::cmp::Reverse(child.size));
+        self.files
+            .sort_unstable_by_key(|file| std::cmp::Reverse(file.size));
+        if self.files.len() > CompactIndex::MAX_LISTED_FILES {
+            self.files.truncate(CompactIndex::MAX_LISTED_FILES);
+            self.files_truncated = true;
+        }
+        self.subdirs = subdirs;
+        Ok(self)
+    }
 
-     /// Drop a direct file row, adjusting totals by its stored size.
-     /// `contributes` mirrors the record kind that earned the row its count.
-     fn drop_file_row(&mut self, path: &str, prefix: &str, contributes: bool) {
-         let Some(relative) = strip_prefix_folded(path, prefix) else {
-             return;
-         };
-         if relative.is_empty() || relative.contains('/') {
-             return;
-         }
-         if let Some(index) = self
-             .files
-             .iter()
-             .position(|file| folded_eq(file.name.as_ref(), relative))
-         {
-             let removed = self.files.remove(index);
-             self.total_size = self.total_size.saturating_sub(removed.size);
-             self.total_logical = self.total_logical.saturating_sub(removed.logical);
-             if contributes {
-                 self.total_count = self.total_count.saturating_sub(1);
-             }
-         }
-     }
+    /// Drop a direct file row, adjusting totals by its stored size.
+    /// `contributes` mirrors the record kind that earned the row its count.
+    fn drop_file_row(&mut self, path: &str, prefix: &str, contributes: bool) {
+        let Some(relative) = strip_prefix_folded(path, prefix) else {
+            return;
+        };
+        if relative.is_empty() || relative.contains('/') {
+            return;
+        }
+        if let Some(index) = self
+            .files
+            .iter()
+            .position(|file| folded_eq(file.name.as_ref(), relative))
+        {
+            let removed = self.files.remove(index);
+            self.total_size = self.total_size.saturating_sub(removed.size);
+            self.total_logical = self.total_logical.saturating_sub(removed.logical);
+            if contributes {
+                self.total_count = self.total_count.saturating_sub(1);
+            }
+        }
+    }
 
-     fn remove_record(&mut self, record: &FileRecord, prefix: &str) {
-         let Some(relative) = strip_prefix_folded(record.path.as_ref(), prefix) else {
-             return;
-         };
-         if relative.is_empty() {
-             return;
-         }
-         let contributes = matches!(
-             record.kind,
-             crate::FileKind::File | crate::FileKind::Symlink
-         );
-         let size = if contributes { record.disk_bytes() } else { 0 };
-         let logical = if contributes { record.size } else { 0 };
-         match relative.find('/') {
-             None => {
-                 if record.kind == crate::FileKind::Dir {
-                     // Directory tombstones drop the bucket; file totals
-                     // leave through their own tombstones, as before.
-                     if let Some(index) = self
-                         .subdirs
-                         .iter()
-                         .position(|child| folded_eq(child.name.as_ref(), relative))
-                     {
-                         self.subdirs.remove(index);
-                     }
-                     return;
-                 }
-                 self.drop_file_row(record.path.as_ref(), prefix, contributes);
-             }
-             Some(slash) => {
-                 if !contributes {
-                     return;
-                 }
-                 // One deep file is gone: totals always move, the bucket
-                 // follows only when this listing holds it.
-                 self.total_size = self.total_size.saturating_sub(size);
-                 self.total_logical = self.total_logical.saturating_sub(logical);
-                 self.total_count = self.total_count.saturating_sub(1);
-                 let name = &relative[..slash];
-                 if let Some(bucket) = self
-                     .subdirs
-                     .iter_mut()
-                     .find(|child| folded_eq(child.name.as_ref(), name))
-                 {
-                     bucket.size = bucket.size.saturating_sub(size);
-                     bucket.logical = bucket.logical.saturating_sub(logical);
-                     bucket.files = bucket.files.saturating_sub(1);
-                 }
-             }
-         }
-     }
+    fn remove_record(&mut self, record: &FileRecord, prefix: &str) {
+        let Some(relative) = strip_prefix_folded(record.path.as_ref(), prefix) else {
+            return;
+        };
+        if relative.is_empty() {
+            return;
+        }
+        let contributes = matches!(
+            record.kind,
+            crate::FileKind::File | crate::FileKind::Symlink
+        );
+        let size = if contributes { record.disk_bytes() } else { 0 };
+        let logical = if contributes { record.size } else { 0 };
+        match relative.find('/') {
+            None => {
+                if record.kind == crate::FileKind::Dir {
+                    // Directory tombstones drop the bucket; file totals
+                    // leave through their own tombstones, as before.
+                    if let Some(index) = self
+                        .subdirs
+                        .iter()
+                        .position(|child| folded_eq(child.name.as_ref(), relative))
+                    {
+                        self.subdirs.remove(index);
+                    }
+                    return;
+                }
+                self.drop_file_row(record.path.as_ref(), prefix, contributes);
+            }
+            Some(slash) => {
+                if !contributes {
+                    return;
+                }
+                // One deep file is gone: totals always move, the bucket
+                // follows only when this listing holds it.
+                self.total_size = self.total_size.saturating_sub(size);
+                self.total_logical = self.total_logical.saturating_sub(logical);
+                self.total_count = self.total_count.saturating_sub(1);
+                let name = &relative[..slash];
+                if let Some(bucket) = self
+                    .subdirs
+                    .iter_mut()
+                    .find(|child| folded_eq(child.name.as_ref(), name))
+                {
+                    bucket.size = bucket.size.saturating_sub(size);
+                    bucket.logical = bucket.logical.saturating_sub(logical);
+                    bucket.files = bucket.files.saturating_sub(1);
+                }
+            }
+        }
+    }
 
-     fn merge_subdir(&mut self, name: Box<str>, size: u64, logical: u64, files: u64) {
-         match self
-             .subdirs
-             .iter_mut()
-             .find(|child| folded_eq(child.name.as_ref(), name.as_ref()))
-         {
-             Some(child) => {
-                 child.size = child.size.saturating_add(size);
-                 child.logical = child.logical.saturating_add(logical);
-                 child.files += files;
-             }
-             None => self.subdirs.push(DirSubdir { name, size, logical, files }),
-         }
-     }
- }
+    fn merge_subdir(&mut self, name: Box<str>, size: u64, logical: u64, files: u64) {
+        match self
+            .subdirs
+            .iter_mut()
+            .find(|child| folded_eq(child.name.as_ref(), name.as_ref()))
+        {
+            Some(child) => {
+                child.size = child.size.saturating_add(size);
+                child.logical = child.logical.saturating_add(logical);
+                child.files += files;
+            }
+            None => self.subdirs.push(DirSubdir {
+                name,
+                size,
+                logical,
+                files,
+            }),
+        }
+    }
+}
 
- /// Join a directory with a relative child name from a listing.
- pub fn join_child_path(dir: &str, name: &str) -> String {
-     let dir = dir.trim_end_matches('/');
-     if dir.is_empty() {
-         format!("/{name}")
-     } else {
-         format!("{dir}/{name}")
-     }
- }
+/// Join a directory with a relative child name from a listing.
+pub fn join_child_path(dir: &str, name: &str) -> String {
+    let dir = dir.trim_end_matches('/');
+    if dir.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
 
- /// Scan prefix for one directory: normalized form always ends in `/` so
- /// the directory record itself sorts before the prefix and is skipped.
- fn dir_prefix(dir: &str) -> String {
-     if dir == "/" {
-         return "/".into();
-     }
-     let trimmed = dir.trim_end_matches('/');
-     let mut prefix = String::with_capacity(trimmed.len() + 1);
-     prefix.push_str(trimmed);
-     prefix.push('/');
-     prefix
- }
+/// Scan prefix for one directory: normalized form always ends in `/` so
+/// the directory record itself sorts before the prefix and is skipped.
+fn dir_prefix(dir: &str) -> String {
+    if dir == "/" {
+        return "/".into();
+    }
+    let trimmed = dir.trim_end_matches('/');
+    let mut prefix = String::with_capacity(trimmed.len() + 1);
+    prefix.push_str(trimmed);
+    prefix.push('/');
+    prefix
+}
 
- /// Folded prefix match using the same byte fold as index ordering, so the
- /// scan window agrees with the block sort order on every platform.
- fn starts_with_folded(path: &str, prefix: &str) -> bool {
-     let (path, prefix) = (path.as_bytes(), prefix.as_bytes());
-     path.len() >= prefix.len()
-         && path[..prefix.len()]
-             .iter()
-             .zip(prefix.iter())
-             .all(|(left, right)| fold_byte(*left) == fold_byte(*right))
- }
+/// Folded prefix match using the same byte fold as index ordering, so the
+/// scan window agrees with the block sort order on every platform.
+fn starts_with_folded(path: &str, prefix: &str) -> bool {
+    let (path, prefix) = (path.as_bytes(), prefix.as_bytes());
+    path.len() >= prefix.len()
+        && path[..prefix.len()]
+            .iter()
+            .zip(prefix.iter())
+            .all(|(left, right)| fold_byte(*left) == fold_byte(*right))
+}
 
- fn strip_prefix_folded<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
-     starts_with_folded(path, prefix).then(|| &path[prefix.len()..])
- }
+fn strip_prefix_folded<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    starts_with_folded(path, prefix).then(|| &path[prefix.len()..])
+}
 
- impl CompactIndex {
-
-
-
-
-
+impl CompactIndex {
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_impl(path, true)
     }
@@ -347,10 +354,9 @@ type IndexBytes = Vec<u8>;
             )));
         }
         #[cfg(not(windows))]
-        let map = {
-            let file = File::open(path)?;
-            unsafe { Mmap::map(&file)? }
-        };
+        let mut file = File::open(path)?;
+        #[cfg(not(windows))]
+        let map = unsafe { Mmap::map(&file)? };
         #[cfg(windows)]
         let map = std::fs::read(path)?;
         if map.len() < HEADER as usize + CHECKSUM_BYTES || &map[..8] != MAGIC {
@@ -364,12 +370,29 @@ type IndexBytes = Vec<u8>;
                     .try_into()
                     .map_err(|_| invalid("missing compact index checksum"))?,
             );
-            if crc32fast::hash(data) != expected_checksum {
+            #[cfg(not(windows))]
+            let checksum = {
+                use std::io::{Seek, SeekFrom};
+                file.seek(SeekFrom::Start(0))?;
+                let mut hasher = crc32fast::Hasher::new();
+                let mut remaining = data_len;
+                let mut buffer = [0u8; 64 * 1024];
+                while remaining > 0 {
+                    let take = remaining.min(buffer.len());
+                    file.read_exact(&mut buffer[..take])?;
+                    hasher.update(&buffer[..take]);
+                    remaining -= take;
+                }
+                hasher.finalize()
+            };
+            #[cfg(windows)]
+            let checksum = crc32fast::hash(data);
+            if checksum != expected_checksum {
                 return Err(invalid("compact index checksum mismatch"));
             }
         }
         let record_version = u32_at(data, 8)?;
-        if record_version != VERSION && record_version != MIN_READABLE_VERSION {
+        if !(MIN_READABLE_VERSION..=VERSION).contains(&record_version) {
             return Err(invalid("unsupported compact index version"));
         }
         if u32_at(data, 12)? != BLOCK_RECORDS as u32 {
@@ -404,12 +427,26 @@ type IndexBytes = Vec<u8>;
             }
             previous_gram = Some(d.gram);
         }
+        #[cfg(unix)]
+        unsafe {
+            libc::madvise(
+                map.as_ptr() as *mut libc::c_void,
+                map.len(),
+                libc::MADV_DONTNEED,
+            );
+        }
         Ok(Self {
             map,
             generation,
             record_count,
-            blocks: TableView { start: desc_offset, count: block_count },
-            dict: TableView { start: dict_offset, count: dict_count },
+            blocks: TableView {
+                start: desc_offset,
+                count: block_count,
+            },
+            dict: TableView {
+                start: dict_offset,
+                count: dict_count,
+            },
             record_version,
         })
     }
@@ -484,7 +521,7 @@ type IndexBytes = Vec<u8>;
             return Err(invalid("invalid compact index header"));
         }
         let record_version = u32_at(&header, 8)?;
-        if record_version != VERSION && record_version != MIN_READABLE_VERSION {
+        if !(MIN_READABLE_VERSION..=VERSION).contains(&record_version) {
             return Err(invalid("invalid compact index header"));
         }
         u64_at(&header, 56)
@@ -496,49 +533,45 @@ type IndexBytes = Vec<u8>;
 
     /// Return every base record in path order. Used by compaction to rewrite
     /// the base from current logical content rather than a WAL snapshot.
-     /// Stream a base+delta merge into a spill for compaction. Materializing
-     /// the merge peaked past 25 GiB on large hosts; this holds one block
-     /// plus the small delta maps while the spill merge restores order.
-     pub fn spill_compacted_base(
-         base: &CompactIndex,
-         delta: &DeltaIndex,
-         spill: &mut SpillAccumulator,
-     ) -> io::Result<()> {
-         const BATCH: usize = 10_000;
-         let removed: HashSet<&str> = delta.removed().map(|path| path.as_ref()).collect();
-         let upserts: HashMap<&str, &FileRecord> = delta
-             .upserts()
-             .map(|record| (record.path.as_ref(), record))
-             .collect();
-         let mut batch = Vec::with_capacity(BATCH);
-         for id in 0..base.blocks.count as u32 {
-             for record in base.read_block(id)? {
-                 let path = record.path.as_ref();
-                 if removed.contains(path) || upserts.contains_key(path) {
-                     continue;
-                 }
-                 batch.push(record);
-                 if batch.len() >= BATCH {
-                     spill.push_batch(std::mem::take(&mut batch))?;
-                     batch.reserve(BATCH);
-                 }
-             }
-             base.release_block(id);
-         }
-         for record in delta.upserts() {
-             batch.push(record.clone());
-             if batch.len() >= BATCH {
-                 spill.push_batch(std::mem::take(&mut batch))?;
-                 batch.reserve(BATCH);
-             }
-         }
-         if !batch.is_empty() {
-             spill.push_batch(batch)?;
-         }
-         Ok(())
-     }
+    /// Stream a base+delta merge into a spill for compaction. Materializing
+    /// the merge peaked past 25 GiB on large hosts; this holds one block
+    /// plus the small delta maps while the spill merge restores order.
+    pub fn spill_compacted_base(
+        base: &CompactIndex,
+        delta: &DeltaIndex,
+        spill: &mut SpillAccumulator,
+    ) -> io::Result<()> {
+        const BATCH: usize = 10_000;
+        let mut batch = Vec::with_capacity(BATCH);
+        for id in 0..base.blocks.count as u32 {
+            for record in base.read_block(id)? {
+                let path = record.path.as_ref();
+                if delta.shadows(path)? {
+                    continue;
+                }
+                batch.push(record);
+                if batch.len() >= BATCH {
+                    spill.push_batch(std::mem::take(&mut batch))?;
+                    batch.reserve(BATCH);
+                }
+            }
+            base.release_block(id);
+        }
+        delta.for_each_upsert(|record| {
+            batch.push(record);
+            if batch.len() >= BATCH {
+                spill.push_batch(std::mem::take(&mut batch))?;
+                batch.reserve(BATCH);
+            }
+            Ok(())
+        })?;
+        if !batch.is_empty() {
+            spill.push_batch(batch)?;
+        }
+        Ok(())
+    }
 
-     pub fn records(&self) -> io::Result<Vec<FileRecord>> {
+    pub fn records(&self) -> io::Result<Vec<FileRecord>> {
         let mut out = Vec::with_capacity(self.record_count as usize);
         for id in 0..self.blocks.count as u32 {
             out.extend(self.read_block(id)?);
@@ -578,9 +611,9 @@ type IndexBytes = Vec<u8>;
         while low < high {
             let middle = low + (high - low) / 2;
             let records = self.read_block(middle as u32)?;
-            let beyond = records
-                .last()
-                .is_some_and(|record| compare_index_paths(record.path.as_ref(), path) == Ordering::Less);
+            let beyond = records.last().is_some_and(|record| {
+                compare_index_paths(record.path.as_ref(), path) == Ordering::Less
+            });
             if beyond {
                 low = middle + 1;
             } else {
@@ -641,275 +674,130 @@ type IndexBytes = Vec<u8>;
         Ok(None)
     }
 
-    pub fn search(&self, q: &Query) -> io::Result<(Vec<SearchHit>, SearchStats)> {
-        self.search_overlay(q, None)
-    }
+    /// Cap on file rows per directory listing. Beyond it the largest files
+    /// are kept and the listing flags truncation; without a bound one
+    /// monster directory could pin tens of megabytes in the tree cache.
+    pub const MAX_LISTED_FILES: usize = 200_000;
 
-    /// Search the immutable base and mutable WAL overlay as one logical index.
-    /// Shadowed base paths are suppressed before ranking, so matched counts and
-    /// result limits remain exact.
-    pub fn search_with_delta(
-        &self,
-        q: &Query,
-        delta: &DeltaIndex,
-    ) -> io::Result<(Vec<SearchHit>, SearchStats)> {
-        self.search_overlay(q, Some(delta))
-    }
-
-    fn search_overlay(
-        &self,
-        q: &Query,
-        delta: Option<&DeltaIndex>,
-    ) -> io::Result<(Vec<SearchHit>, SearchStats)> {
-        let started = Instant::now();
-        let matcher = q.matcher()?;
-        let candidates = self.candidate_blocks(q)?;
-        let cmp = |a: &(u32, FileRecord), b: &(u32, FileRecord)| {
-            compare_records(q.sort, &(a.0, &a.1), &(b.0, &b.1))
-        };
-        let prune_at = q.limit.saturating_mul(2).max(q.limit.saturating_add(32));
-        // Split the candidate blocks into a fixed number of contiguous
-        // groups (not thousands of tiny chunks): each group streams its
-        // blocks keeping only a pruned top-N, so peak memory is groups ×
-        // limit plus one in-flight block per thread. Per-chunk collect and
-        // reduce trees both re-moved every record through O(depth) merges
-        // and burned minutes on full-base searches.
-        const GROUPS: usize = 64;
-        let group_len = candidates.len().div_ceil(GROUPS).max(1);
-        let mut decoded: Vec<io::Result<(u64, Vec<(u32, FileRecord)>)>> = Vec::new();
-        candidates
-            .par_chunks(group_len)
-            .map(|group| {
-                let mut matched = 0u64;
-                let mut ranked = Vec::<(u32, FileRecord)>::new();
-                for &block in group {
-                    for record in self.read_block(block)? {
-                        if delta.is_some_and(|overlay| overlay.shadows(record.path.as_ref())) {
-                            continue;
-                        }
-                        if q.passes_filters(&record) {
-                            if let Some(score) = matcher.score(&record) {
-                                matched += 1;
-                                ranked.push((score, record));
-                            }
-                        }
-                    }
-                    if q.limit > 0 && ranked.len() >= prune_at {
-                        retain_best(&mut ranked, q.limit, &cmp);
-                    }
-                }
-                if q.limit > 0 && ranked.len() > q.limit {
-                    retain_best(&mut ranked, q.limit, &cmp);
-                }
-                Ok((matched, ranked))
-            })
-            .collect_into_vec(&mut decoded);
-        let mut ranked = Vec::<(u32, FileRecord)>::new();
-        let mut matched = 0u64;
-        for part in decoded {
-            let (count, mut top) = part?;
-            matched += count;
-            ranked.append(&mut top);
-            if q.limit > 0 && ranked.len() >= prune_at {
-                retain_best(&mut ranked, q.limit, &cmp);
-            }
-        }
-        if let Some(overlay) = delta {
-            for record in overlay.upserts() {
-                if q.passes_filters(record) {
-                    if let Some(score) = matcher.score(record) {
-                        matched += 1;
-                        ranked.push((score, record.clone()));
-                        if q.limit > 0 && ranked.len() >= prune_at {
-                            retain_best(&mut ranked, q.limit, &cmp);
-                        }
-                    }
-                }
-            }
-        }
-        if q.limit > 0 {
-            retain_best(&mut ranked, q.limit, &cmp);
-        }
-        ranked.sort_unstable_by(&cmp);
-        let hits = ranked
-            .into_iter()
-            .map(|(score, record)| SearchHit { score, record })
-            .collect();
-        // Full-base searches transiently allocate gigabytes of decoded
-        // records; hand fully-free pages back so a long-lived GUI does not
-        // pin them in allocator arenas forever. No-op when small.
+    /// Drop a decoded block's pages back to the kernel. Bulk scans touch
+    /// gigabytes of read-only mapping; clean pages fault back in on demand,
+    /// so holding them only inflates resident size toward OOM.
+    pub(crate) fn release_block(&self, id: u32) {
         #[cfg(unix)]
-        if self.record_count > 1_000_000 {
-            unsafe {
-                libc::malloc_trim(0);
+        {
+            let Some(desc) = self.block(id as usize) else {
+                return;
+            };
+            if desc.len == 0 {
+                return;
+            }
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as usize;
+            // Linux fault-around maps neighbouring pages again after a narrow
+            // eviction. Release that window too, including the descriptor, so
+            // a sequential scan cannot accumulate the entire index in RSS.
+            let window = page.max(64 * 1024);
+            for (offset, len) in [
+                (desc.offset as usize, desc.len as usize),
+                (
+                    self.blocks.start + id as usize * DESC_SIZE as usize,
+                    DESC_SIZE as usize,
+                ),
+            ] {
+                let start = offset / window * window;
+                let end = ((offset + len).div_ceil(window) * window).min(self.map.len());
+                let addr = (self.map.as_ptr() as usize).saturating_add(start);
+                // SAFETY: both ranges belong to this immutable mapping.
+                unsafe {
+                    libc::madvise(addr as *mut libc::c_void, end - start, libc::MADV_DONTNEED);
+                }
             }
         }
-        Ok((
-            hits,
-            SearchStats {
-                scanned: self.record_count
-                    + delta.map_or(0, |overlay| overlay.change_count() as u64),
-                matched,
-                wall_us: started.elapsed().as_micros() as u64,
-            },
-        ))
+        #[cfg(not(unix))]
+        {
+            let _ = id;
+        }
     }
-
-    fn candidate_blocks(&self, q: &Query) -> io::Result<Vec<u32>> {
-        let mut grams = HashSet::new();
-        for term in &q.terms {
-            collect_trigrams(term, &mut grams);
+    /// List one directory's direct children with subtree totals, streaming
+    /// path-ordered blocks instead of materializing the base. Cost scales
+    /// with the subtree, not the index; mapped pages are released as the
+    /// scan advances. WAL changes merge on top with exact sizes resolved
+    /// against the base, so totals stay correct while a delta is live.
+    pub fn list_directory(
+        &self,
+        dir: &str,
+        source: Option<u32>,
+        delta: Option<&DeltaIndex>,
+    ) -> io::Result<DirListing> {
+        let prefix = dir_prefix(dir);
+        // First block whose last record could fall under the prefix.
+        let mut low = 0usize;
+        let mut high = self.blocks.count;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let records = self.read_block(middle as u32)?;
+            self.release_block(middle as u32);
+            if records.last().is_some_and(|record| {
+                compare_index_paths(record.path.as_ref(), &prefix) == Ordering::Less
+            }) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
         }
-        if grams.is_empty() {
-            return Ok((0..self.blocks.count as u32).collect());
+        let mut listing = DirListing::default();
+        let mut subdirs: HashMap<Box<str>, (u64, u64, u64)> = HashMap::new();
+        // Native lanes expose aliases: an exact source/path pair contributes
+        // once, matching summary builds. The previous record moves along
+        // with no extra allocation.
+        // Seed from the block before the window so a duplicate pair
+        // straddling the boundary still collapses.
+        let mut previous: Option<FileRecord> = if low > 0 {
+            self.read_block(low as u32 - 1)?.pop()
+        } else {
+            None
+        };
+        if low > 0 {
+            // Pages from the binary search above are dropped just the same.
+            self.release_block(low as u32 - 1);
         }
-        let mut entries = Vec::with_capacity(grams.len());
-        for gram in grams {
-            let Some(entry) = self.dict_find(gram) else {
-                return Ok(Vec::new());
-            };
-            entries.push(entry);
-        }
-        entries.sort_unstable_by_key(|d| d.len);
-        let mut candidates = self.decode_posting(entries[0])?;
-        // Three rare lists normally reduce candidates enough; exact verification
-        // preserves correctness even when the remaining required grams are skipped.
-        for entry in entries.into_iter().skip(1).take(2) {
-            let right = self.decode_posting(entry)?;
-            candidates = intersect(&candidates, &right);
-            if candidates.is_empty() {
+        for block_id in low..self.blocks.count {
+            let mut past = false;
+            for record in self.read_block(block_id as u32)? {
+                // Source scoping composes with alias collapsing: twins share
+                // source and path, so both sides of the filter agree.
+                if source.is_some_and(|wanted| record.source != wanted) {
+                    continue;
+                }
+                let duplicate = previous.as_ref().is_some_and(|prior| {
+                    prior.source == record.source
+                        && folded_eq(prior.path.as_ref(), record.path.as_ref())
+                });
+                if !duplicate {
+                    let path = record.path.as_ref();
+                    if starts_with_folded(path, &prefix) {
+                        listing.absorb(&record, &prefix, &mut subdirs);
+                    } else if compare_index_paths(path, &prefix) == Ordering::Greater {
+                        past = true;
+                        break;
+                    }
+                }
+                previous = Some(record);
+            }
+            self.release_block(block_id as u32);
+            if past {
                 break;
             }
         }
-        Ok(candidates)
+        listing.finish(subdirs, self, delta, &prefix)
     }
-    fn decode_posting(&self, d: DictEntry) -> io::Result<Vec<u32>> {
-        let bytes = checked(&self.map, d.offset as usize, d.len as usize)?;
-        let mut out = Vec::new();
-        let mut p = 0;
-        let mut id = 0u32;
-        while p < bytes.len() {
-            let delta = get_varint(bytes, &mut p)?;
-            id = id
-                .checked_add(delta)
-                .ok_or_else(|| invalid("posting delta overflow"))?;
-            out.push(id);
-        }
-        Ok(out)
-    }
-     /// Cap on file rows per directory listing. Beyond it the largest files
-     /// are kept and the listing flags truncation; without a bound one
-     /// monster directory could pin tens of megabytes in the tree cache.
-     pub const MAX_LISTED_FILES: usize = 200_000;
-
-     /// Drop a decoded block's pages back to the kernel. Bulk scans touch
-     /// gigabytes of read-only mapping; clean pages fault back in on demand,
-     /// so holding them only inflates resident size toward OOM.
-     fn release_block(&self, id: u32) {
-         #[cfg(unix)]
-         {
-             let Some(desc) = self.block(id as usize) else {
-                 return;
-             };
-             if desc.len == 0 {
-                 return;
-             }
-             let addr = (self.map.as_ptr() as usize).saturating_add(desc.offset as usize);
-             // SAFETY: descriptor ranges were bounds-checked at open, and the
-             // mapping is read-only so evicting clean pages is always safe.
-             unsafe {
-                 libc::madvise(
-                     addr as *mut libc::c_void,
-                     desc.len as usize,
-                     libc::MADV_DONTNEED,
-                 );
-             }
-         }
-         #[cfg(not(unix))]
-         {
-             let _ = id;
-         }
-     }
-     /// List one directory's direct children with subtree totals, streaming
-     /// path-ordered blocks instead of materializing the base. Cost scales
-     /// with the subtree, not the index; mapped pages are released as the
-     /// scan advances. WAL changes merge on top with exact sizes resolved
-     /// against the base, so totals stay correct while a delta is live.
-     pub fn list_directory(
-         &self,
-         dir: &str,
-         source: Option<u32>,
-         delta: Option<&DeltaIndex>,
-     ) -> io::Result<DirListing> {
-         let prefix = dir_prefix(dir);
-         // First block whose last record could fall under the prefix.
-         let mut low = 0usize;
-         let mut high = self.blocks.count;
-         while low < high {
-             let middle = low + (high - low) / 2;
-             let records = self.read_block(middle as u32)?;
-             self.release_block(middle as u32);
-             if records.last().is_some_and(|record| {
-                 compare_index_paths(record.path.as_ref(), &prefix) == Ordering::Less
-             }) {
-                 low = middle + 1;
-             } else {
-                 high = middle;
-             }
-         }
-         let mut listing = DirListing::default();
-         let mut subdirs: HashMap<Box<str>, (u64, u64, u64)> = HashMap::new();
-         // Native lanes expose aliases: an exact source/path pair contributes
-         // once, matching summary builds. The previous record moves along
-         // with no extra allocation.
-         // Seed from the block before the window so a duplicate pair
-         // straddling the boundary still collapses.
-         let mut previous: Option<FileRecord> = if low > 0 {
-             self.read_block(low as u32 - 1)?.pop()
-         } else {
-             None
-         };
-         if low > 0 {
-             // Pages from the binary search above are dropped just the same.
-             self.release_block(low as u32 - 1);
-         }
-         for block_id in low..self.blocks.count {
-             let mut past = false;
-             for record in self.read_block(block_id as u32)? {
-                 // Source scoping composes with alias collapsing: twins share
-                 // source and path, so both sides of the filter agree.
-                 if source.is_some_and(|wanted| record.source != wanted) {
-                     continue;
-                 }
-                 let duplicate = previous.as_ref().is_some_and(|prior| {
-                     prior.source == record.source
-                         && folded_eq(prior.path.as_ref(), record.path.as_ref())
-                 });
-                 if !duplicate {
-                     let path = record.path.as_ref();
-                     if starts_with_folded(path, &prefix) {
-                         listing.absorb(&record, &prefix, &mut subdirs);
-                     } else if compare_index_paths(path, &prefix) == Ordering::Greater {
-                         past = true;
-                         break;
-                     }
-                 }
-                 previous = Some(record);
-             }
-             self.release_block(block_id as u32);
-             if past {
-                 break;
-             }
-         }
-         listing.finish(subdirs, self, delta, &prefix)
-     }
-      fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
+    pub(crate) fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
         let d = self
             .block(id as usize)
             .ok_or_else(|| invalid("path block ID out of range"))?;
         let compressed = checked(&self.map, d.offset as usize, d.len as usize)?;
         let raw = zstd::stream::decode_all(compressed)?;
-        let records: Vec<FileRecord> = if self.record_version == VERSION {
+        self.release_block(id);
+        let records: Vec<FileRecord> = if self.record_version >= 4 {
             FileRecord::decode(&raw)
         } else {
             FileRecord::decode_old(&raw)
@@ -1005,33 +893,33 @@ pub(crate) fn invalid(e: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.into())
 }
 
- /// Byte fold shared by index ordering and prefix scans so both agree on
- /// every platform.
- fn fold_byte(byte: u8) -> u8 {
-     let byte = if byte == b'\\' { b'/' } else { byte };
-     #[cfg(any(target_os = "windows", target_os = "macos"))]
-     {
-         byte.to_ascii_lowercase()
-     }
-     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-     {
-         byte
-     }
- }
+/// Byte fold shared by index ordering and prefix scans so both agree on
+/// every platform.
+fn fold_byte(byte: u8) -> u8 {
+    let byte = if byte == b'\\' { b'/' } else { byte };
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        byte.to_ascii_lowercase()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        byte
+    }
+}
 
- fn folded_eq(left: &str, right: &str) -> bool {
-     left.len() == right.len()
-         && left
-             .bytes()
-             .zip(right.bytes())
-             .all(|(left, right)| fold_byte(left) == fold_byte(right))
- }
+fn folded_eq(left: &str, right: &str) -> bool {
+    left.len() == right.len()
+        && left
+            .bytes()
+            .zip(right.bytes())
+            .all(|(left, right)| fold_byte(left) == fold_byte(right))
+}
 
- pub(crate) fn compare_index_paths(left: &str, right: &str) -> std::cmp::Ordering {
-     let left = left.as_bytes();
-     let right = right.as_bytes();
-     for (left, right) in left.iter().zip(right) {
-         match fold_byte(*left).cmp(&fold_byte(*right)) {
+pub(crate) fn compare_index_paths(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    for (left, right) in left.iter().zip(right) {
+        match fold_byte(*left).cmp(&fold_byte(*right)) {
             std::cmp::Ordering::Equal => {}
             other => return other,
         }
@@ -1052,7 +940,6 @@ fn equivalent_index_path(left: &str, right: &str) -> bool {
         left == right
     }
 }
-
 
 pub(crate) fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
@@ -1117,10 +1004,8 @@ mod tests {
     }
     #[test]
     fn open_rejects_unknown_record_versions() {
-        let path = std::env::temp_dir().join(format!(
-            "neutra-compact-badver-{}.nsx",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("neutra-compact-badver-{}.nsx", std::process::id()));
         let mut bytes = vec![0u8; HEADER as usize + CHECKSUM_BYTES];
         bytes[..8].copy_from_slice(MAGIC);
         bytes[8..12].copy_from_slice(&99u32.to_le_bytes());
@@ -1130,108 +1015,108 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("unsupported compact index version"),
+            error
+                .to_string()
+                .contains("unsupported compact index version"),
             "unexpected error: {error}"
         );
         let _ = std::fs::remove_file(&path);
     }
 
-     fn dir(path: &str) -> FileRecord {
-         FileRecord {
-             path: path.into(),
-             size: 0,
-             mtime: 0,
-             mode: 0,
-             kind: FileKind::Dir,
-             fs: FsKind::Btrfs,
-             native_id: 0,
-             native_parent: 0,
-             source: 0,
-             disk: 0,
-         }
-     }
+    fn dir(path: &str) -> FileRecord {
+        FileRecord {
+            path: path.into(),
+            size: 0,
+            mtime: 0,
+            mode: 0,
+            kind: FileKind::Dir,
+            fs: FsKind::Btrfs,
+            native_id: 0,
+            native_parent: 0,
+            source: 0,
+            disk: 0,
+        }
+    }
 
-     #[test]
-     fn list_directory_returns_direct_children_with_totals() {
-         let mut records = vec![
-             rec("/home/a/top.txt", 10),
-             rec("/home/a/top.txt", 10),
-             rec("/home/a/sub/deep.txt", 20),
-             rec("/home/a/sub/deeper/x.txt", 5),
-             dir("/home/a/empty"),
-             rec("/home/b/other.txt", 7),
-         ];
-         // Apparent and on-disk sizes diverge: totals track both views.
-         records[0].disk = 4;
-         let path = std::env::temp_dir().join(format!(
-             "neutra-compact-{}-listing.idx",
-             std::process::id()
-         ));
-         CompactIndex::build(&records, &path).unwrap();
-         let index = CompactIndex::open_fast(&path).unwrap();
-         let listing = index.list_directory("/home/a", None, None).unwrap();
-         // Duplicate alias pair counts once; outside paths stay out.
-         assert_eq!(listing.total_size, 29);
-         assert_eq!(listing.total_logical, 35);
-         assert_eq!(listing.total_count, 3);
-         assert_eq!(listing.files.len(), 1);
-         assert_eq!(listing.files[0].name.as_ref(), "top.txt");
-         assert_eq!(listing.files[0].size, 4);
-         assert_eq!(listing.files[0].logical, 10);
-         assert_eq!(listing.subdirs.len(), 2);
-         assert_eq!(listing.subdirs[0].name.as_ref(), "sub");
-         assert_eq!(listing.subdirs[0].size, 25);
-         assert_eq!(listing.subdirs[0].files, 2);
-         assert_eq!(listing.subdirs[1].name.as_ref(), "empty");
-         let missing = index.list_directory("/nope", None, None).unwrap();
-         assert_eq!(missing.total_count, 0);
-         assert!(missing.files.is_empty() && missing.subdirs.is_empty());
-         drop(index);
-         std::fs::remove_file(path).unwrap();
-     }
+    #[test]
+    fn list_directory_returns_direct_children_with_totals() {
+        let mut records = vec![
+            rec("/home/a/top.txt", 10),
+            rec("/home/a/top.txt", 10),
+            rec("/home/a/sub/deep.txt", 20),
+            rec("/home/a/sub/deeper/x.txt", 5),
+            dir("/home/a/empty"),
+            rec("/home/b/other.txt", 7),
+        ];
+        // Apparent and on-disk sizes diverge: totals track both views.
+        records[0].disk = 4;
+        let path =
+            std::env::temp_dir().join(format!("neutra-compact-{}-listing.idx", std::process::id()));
+        CompactIndex::build(&records, &path).unwrap();
+        let index = CompactIndex::open_fast(&path).unwrap();
+        let listing = index.list_directory("/home/a", None, None).unwrap();
+        // Duplicate alias pair counts once; outside paths stay out.
+        assert_eq!(listing.total_size, 29);
+        assert_eq!(listing.total_logical, 35);
+        assert_eq!(listing.total_count, 3);
+        assert_eq!(listing.files.len(), 1);
+        assert_eq!(listing.files[0].name.as_ref(), "top.txt");
+        assert_eq!(listing.files[0].size, 4);
+        assert_eq!(listing.files[0].logical, 10);
+        assert_eq!(listing.subdirs.len(), 2);
+        assert_eq!(listing.subdirs[0].name.as_ref(), "sub");
+        assert_eq!(listing.subdirs[0].size, 25);
+        assert_eq!(listing.subdirs[0].files, 2);
+        assert_eq!(listing.subdirs[1].name.as_ref(), "empty");
+        let missing = index.list_directory("/nope", None, None).unwrap();
+        assert_eq!(missing.total_count, 0);
+        assert!(missing.files.is_empty() && missing.subdirs.is_empty());
+        drop(index);
+        std::fs::remove_file(path).unwrap();
+    }
 
-     #[test]
-     fn list_directory_merges_live_delta_exactly() {
-         let records = vec![rec("/d/f.txt", 10), rec("/d/sub/g.txt", 20)];
-         let path = std::env::temp_dir().join(format!(
-             "neutra-compact-{}-listing-delta.idx",
-             std::process::id()
-         ));
-         CompactIndex::build(&records, &path).unwrap();
-         let index = CompactIndex::open_fast(&path).unwrap();
-         let wal = std::env::temp_dir().join(format!(
-             "neutra-compact-{}-listing-delta.wal",
-             std::process::id()
-         ));
-         let _ = std::fs::remove_file(&wal);
-         let mut delta = DeltaIndex::open(&wal, index.generation()).unwrap();
-         delta
-             .apply(crate::DeltaChange::Upsert(rec("/d/f.txt", 30)))
-             .unwrap();
-         delta
-             .apply(crate::DeltaChange::Upsert(rec("/d/new.txt", 5)))
-             .unwrap();
-         delta
-             .apply(crate::DeltaChange::Remove("/d/sub/g.txt".into()))
-             .unwrap();
-         delta.sync().unwrap();
-         let listing = index.list_directory("/d", None, Some(&delta)).unwrap();
-         assert_eq!(listing.total_size, 35);
-         assert_eq!(listing.total_count, 2);
-         assert_eq!(listing.files.len(), 2);
-         assert_eq!(listing.files[0].name.as_ref(), "f.txt");
-         assert_eq!(listing.files[0].size, 30);
-         drop(index);
-         drop(delta);
-         std::fs::remove_file(path).unwrap();
-         std::fs::remove_file(&wal).unwrap();
-         let mut lock = wal.into_os_string();
-         lock.push(".lock");
-         let _ = std::fs::remove_file(lock);
-     }
+    #[test]
+    fn list_directory_merges_live_delta_exactly() {
+        let records = vec![rec("/d/f.txt", 10), rec("/d/sub/g.txt", 20)];
+        let path = std::env::temp_dir().join(format!(
+            "neutra-compact-{}-listing-delta.idx",
+            std::process::id()
+        ));
+        CompactIndex::build(&records, &path).unwrap();
+        let index = CompactIndex::open_fast(&path).unwrap();
+        let wal = std::env::temp_dir().join(format!(
+            "neutra-compact-{}-listing-delta.wal",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&wal);
+        let mut delta = DeltaIndex::open(&wal, index.generation()).unwrap();
+        delta
+            .apply(crate::DeltaChange::Upsert(rec("/d/f.txt", 30)))
+            .unwrap();
+        delta
+            .apply(crate::DeltaChange::Upsert(rec("/d/new.txt", 5)))
+            .unwrap();
+        delta
+            .apply(crate::DeltaChange::Remove("/d/sub/g.txt".into()))
+            .unwrap();
+        delta.sync().unwrap();
+        let listing = index.list_directory("/d", None, Some(&delta)).unwrap();
+        assert_eq!(listing.total_size, 35);
+        assert_eq!(listing.total_count, 2);
+        assert_eq!(listing.files.len(), 2);
+        assert_eq!(listing.files[0].name.as_ref(), "f.txt");
+        assert_eq!(listing.files[0].size, 30);
+        drop(index);
+        drop(delta);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(&wal).unwrap();
+        let mut lock = wal.into_os_string();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(lock);
+    }
 
-     #[test]
-     fn compact_roundtrip_and_substring_search() {
+    #[test]
+    fn compact_roundtrip_and_substring_search() {
         let records = vec![
             rec("/home/a/AlphaDocument.txt", 1),
             rec("/home/a/beta.rs", 2),

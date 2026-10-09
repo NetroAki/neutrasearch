@@ -2,7 +2,24 @@
 set -euo pipefail
 
 git fetch --depth=1 origin refs/tags/v0.1.3
-git archive FETCH_HEAD scripts packaging | tar -xf -
+restore_dir=$(mktemp -d)
+trap 'rm -rf "$restore_dir"' EXIT
+git archive FETCH_HEAD scripts packaging | tar -xf - -C "$restore_dir"
+python - "$restore_dir" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+root = Path(sys.argv[1])
+for source in root.rglob("*"):
+    if not source.is_file():
+        continue
+    destination = Path(source.relative_to(root))
+    if destination.exists():
+        continue
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+PY
 cp .github/windows/install-service.ps1 packaging/windows/install-service.ps1
 if grep -q 'Stop-Service -Name.*NeutrasearchHelper' packaging/windows/install-service.ps1; then
     echo 'restored service installer still uses the unbounded Stop-Service path' >&2

@@ -1,8 +1,8 @@
 //! Status banners and modal dialogs: runtime banners, the locations/index
 //! diagnostics window, and the about window.
 
-use super::*;
 use super::widgets::*;
+use super::*;
 
 pub(super) fn diagnostics_dialog(app: &mut NeutraApp, ctx: &egui::Context) {
     if !app.diagnostics_open {
@@ -90,7 +90,11 @@ pub(super) fn diagnostic_row(ui: &mut Ui, key: &str, value: &str, error: bool) {
     // the two-column layout instead of clipping the value.
     if width < 300.0 {
         ui.vertical(|ui| {
-            ui.label(RichText::new(key).font(sans(11.0)).color(if error { ERROR } else { MUTED }));
+            ui.label(
+                RichText::new(key)
+                    .font(sans(11.0))
+                    .color(if error { ERROR } else { MUTED }),
+            );
             ui.label(
                 RichText::new(shorten(value, 64))
                     .font(mono(11.0))

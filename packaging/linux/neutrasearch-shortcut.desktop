@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Neutrasearch shortcut
+Exec=/usr/local/lib/neutrasearch/neutrasearch-register-shortcut
+OnlyShowIn=KDE;
+NoDisplay=true
+Terminal=false

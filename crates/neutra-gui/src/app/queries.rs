@@ -3,7 +3,7 @@
 
 use super::state::NeutraApp;
 use super::types::Event;
- use neutra_core::{CompactIndex, FileKind, SortKey};
+use neutra_core::{CompactIndex, FileKind, SortKey};
 
 pub(crate) fn index_len(app: &NeutraApp) -> u64 {
     app.compact
@@ -16,9 +16,7 @@ pub(crate) fn index_is_empty(app: &NeutraApp) -> bool {
 }
 
 pub(crate) fn scan_len(app: &NeutraApp) -> u64 {
-    app.scan_index
-        .as_ref()
-        .map_or(0, |index| index.len())
+    app.scan_index.as_ref().map_or(0, |index| index.len())
 }
 
 pub(crate) fn data_generation(app: &NeutraApp) -> u64 {
@@ -90,6 +88,12 @@ pub(crate) fn requery(app: &mut NeutraApp) {
         .filter(|scope| crate::scope_within_selected_roots(scope, &app.selected_roots));
     if let Some(root) = scoped_root {
         query.scope_roots.push(root.to_owned());
+    } else if !app.search_roots.is_empty() {
+        query.scope_roots.extend(
+            app.search_roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned()),
+        );
     } else {
         query.scope_roots.extend(
             app.selected_roots
@@ -98,9 +102,19 @@ pub(crate) fn requery(app: &mut NeutraApp) {
         );
     }
     query.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    query.exclude_roots = app
+        .search_excluded
+        .iter()
+        .map(|root| root.to_string_lossy().into_owned())
+        .collect();
+    if app.last_query.as_ref() != Some(&query) {
+        app.page_offset = 0;
+        app.page_cursors = vec![None];
+        app.last_query = Some(query.clone());
+    }
     // Cache for result highlighting; built from the fully-assembled query.
     app.matcher = query.matcher().ok();
-    if app.compact.is_some() {
+    if let Some(compact) = &app.compact {
         // Scanning 60M+ records takes seconds when cold, so it runs off the
         // UI thread; the previous results stay up until the new ones land.
         app.search_seq += 1;
@@ -109,7 +123,9 @@ pub(crate) fn requery(app: &mut NeutraApp) {
             id: app.search_seq,
             query,
             index_path: app.cache_path.clone(),
-            index: std::sync::Arc::clone(app.compact.as_ref().expect("checked above")),
+            index: std::sync::Arc::clone(compact),
+            offset: app.page_offset,
+            after: app.page_cursors.last().cloned().flatten(),
         };
         let _ = app.search_tx.send(job);
         return;
@@ -198,67 +214,108 @@ fn reject_index(app: &mut NeutraApp, status: String) {
     );
 }
 
- /// Fetch whatever the visible set lacks: root, the current chain, expanded
- /// branches. Each fetch streams its subtrees with pages released, so tree
- /// browsing holds megabytes, not the tens of gigabytes of full builds.
- pub(crate) fn request_tree_model(app: &mut NeutraApp) {
-     if index_is_empty(app) || app.tree_summary_pending {
-         return;
-     }
-     let missing: Vec<String> = crate::ui::Hierarchy::missing_dirs(
-         app.tree_model.as_ref(),
-         &app.treemap_path,
-         &app.tree_expanded,
-     )
-     .into_iter()
-     .filter(|path| !app.tree_pending.contains(path))
-     .collect();
-     if missing.is_empty() {
-         return;
-     }
-     app.tree_building = true;
-     app.tree_pending.extend(missing.iter().cloned());
-     let generation = data_generation(app);
-     let tx = app.tx.clone();
-     let current = app.treemap_path.clone();
-     let compact_path = app.compact.as_ref().map(|_| app.cache_path.clone());
-     let resident_records = compact_path
-         .is_none()
-         .then(|| app.index.records().to_vec());
-     std::thread::spawn(move || {
-         let model = fetch_tree_dirs(&missing, &current, compact_path, generation, resident_records);
-         match model {
-             Ok(model) => {
-                 let _ = tx.send(Event::TreeReady { generation, model });
-             }
-             Err(error) => {
-                 let _ = tx.send(Event::TreeFailed(error));
-             }
-         }
-     });
- }
+/// Fetch whatever the visible set lacks: root, the current chain, expanded
+/// branches. Each fetch streams its subtrees with pages released, so tree
+/// browsing holds megabytes, not the tens of gigabytes of full builds.
+pub(crate) fn request_tree_model(app: &mut NeutraApp) {
+    if index_is_empty(app) || app.tree_summary_pending {
+        return;
+    }
+    let missing: Vec<String> = crate::ui::Hierarchy::missing_dirs(
+        app.tree_model.as_ref(),
+        &app.treemap_path,
+        &app.tree_expanded,
+    )
+    .into_iter()
+    .filter(|path| !app.tree_pending.contains(path))
+    .collect();
+    if missing.is_empty() {
+        return;
+    }
+    app.tree_building = true;
+    app.tree_pending.extend(missing.iter().cloned());
+    let generation = data_generation(app);
+    let tx = app.tx.clone();
+    let current = app.treemap_path.clone();
+    let compact_path = app.compact.as_ref().map(|_| app.cache_path.clone());
+    let resident_records = compact_path.is_none().then(|| app.index.records().to_vec());
+    std::thread::spawn(move || {
+        let model = fetch_tree_dirs(
+            &missing,
+            &current,
+            compact_path,
+            generation,
+            resident_records,
+        );
+        match model {
+            Ok(model) => {
+                let _ = tx.send(Event::TreeReady { generation, model });
+            }
+            Err(error) => {
+                let _ = tx.send(Event::TreeFailed(error));
+            }
+        }
+    });
+}
 
-/// Notice live changes: about every two seconds, compare the delta file's
+/// Notice live changes: four times a second, compare the delta file's
 /// stamp and refresh the empty-search listing when it moved, so a saved file
 /// shows up in Modified order without any action. Typed searches refresh on
 /// the next keystroke instead of rescanning on every write.
 pub(crate) fn poll_delta(app: &mut NeutraApp) {
-    if app.delta_checked.elapsed() < std::time::Duration::from_secs(2) {
+    if app.delta_checked.elapsed() < std::time::Duration::from_millis(250) {
         return;
     }
     app.delta_checked = std::time::Instant::now();
+    let mut stale_path = app.cache_path.as_os_str().to_os_string();
+    stale_path.push(".stale");
+    if std::path::PathBuf::from(stale_path).is_file() {
+        reject_index(
+            app,
+            "Native metadata updates failed; review index details and rebuild the index".into(),
+        );
+        app.tree_model = None;
+        return;
+    }
+    if app.compact.is_none() && app.cache_path.is_file() {
+        if let Ok(index) = CompactIndex::open_fast(&app.cache_path) {
+            super::cache_events::adopt_published_index(app, index);
+            app.ensure_ranked();
+            app.ensure_tree_summary();
+            app.requery();
+        }
+    }
+    let mut status_path = app.cache_path.as_os_str().to_os_string();
+    status_path.push(".watch-status");
+    if let Ok(file) = std::fs::File::open(std::path::PathBuf::from(status_path)) {
+        use std::io::Read;
+        let mut status = String::new();
+        if file.take(8192).read_to_string(&mut status).is_ok() {
+            if status.trim().is_empty() {
+                app.lanes.remove("watch");
+            } else {
+                super::events::note(app, "watch", "LIVE UPDATES", status, true);
+            }
+        }
+    }
     let stamp = std::fs::metadata(app.cache_path.with_extension("delta"))
         .ok()
         .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
-    let seen = app.delta_stamp.replace(stamp);
-    if seen.is_some_and(|before| before != stamp) && app.query.trim().is_empty() && !app.searching {
+    let changed = app.delta_stamp.is_some_and(|before| before != stamp);
+    if changed && app.query.trim().is_empty() {
+        if app.searching {
+            return;
+        }
+        app.delta_stamp = Some(stamp);
         app.requery();
+    } else {
+        app.delta_stamp = Some(stamp);
     }
 }
 
 pub(crate) fn ranked_ready(app: &NeutraApp) -> bool {
     app.compact.as_ref().is_some_and(|compact| {
-        neutra_core::RankedLists::is_current(&app.cache_path, compact.generation())
+        neutra_core::BrowserIndex::is_current(&app.cache_path, compact.generation())
     })
 }
 
@@ -274,7 +331,7 @@ pub(crate) fn ensure_ranked(app: &mut NeutraApp) {
     let tx = app.tx.clone();
     app.rank_pending = true;
     std::thread::spawn(move || {
-        let ok = neutra_core::RankedLists::ensure(&path, generation).is_ok();
+        let ok = neutra_core::BrowserIndex::ensure(&path, generation).is_ok();
         let _ = tx.send(Event::Ranked { generation, ok });
     });
 }
@@ -297,7 +354,7 @@ pub(crate) fn ensure_tree_summary(app: &mut NeutraApp) {
     });
 }
 
- fn fetch_tree_dirs(
+fn fetch_tree_dirs(
     missing: &[String],
     current: &str,
     compact_path: Option<std::path::PathBuf>,
@@ -319,8 +376,10 @@ pub(crate) fn ensure_tree_summary(app: &mut NeutraApp) {
             Some(listing) => listing,
             None => {
                 if opened.is_none() {
-                    let pair = CompactIndex::open_with_delta_snapshot_fast(&path)
-                        .map_err(|error| format!("cannot open index for disk hierarchy: {error}"))?;
+                    let pair =
+                        CompactIndex::open_with_delta_snapshot_fast(&path).map_err(|error| {
+                            format!("cannot open index for disk hierarchy: {error}")
+                        })?;
                     if pair.0.generation() != generation {
                         return Err("index replaced mid-fetch".into());
                     }

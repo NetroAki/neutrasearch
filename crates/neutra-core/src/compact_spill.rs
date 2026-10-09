@@ -43,6 +43,7 @@ pub(crate) fn read_framed(reader: &mut impl Read) -> io::Result<Option<FileRecor
 /// Ingest side: batches accumulate in RAM up to one chunk, then spill.
 pub struct SpillAccumulator {
     dir: Option<PathBuf>,
+    lock: Option<File>,
     chunks: Vec<PathBuf>,
     current: Vec<FileRecord>,
     count: u64,
@@ -59,12 +60,38 @@ impl SpillAccumulator {
             }
         }
         let dir = output.with_extension("spill");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = options.open(dir.with_extension("spill.lock"))?;
+        if !lock.metadata()?.is_file() {
+            return Err(invalid("spill lock is not a regular file"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = lock.metadata()?;
+            if metadata.nlink() != 1 || metadata.mode() & 0o077 != 0 {
+                return Err(invalid("spill lock must be private and single-linked"));
+            }
+        }
+        lock.try_lock_exclusive().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("index preparation is already running: {error}"),
+            )
+        })?;
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }
         std::fs::create_dir_all(&dir)?;
         Ok(Self {
             dir: Some(dir),
+            lock: Some(lock),
             chunks: Vec::new(),
             current: Vec::new(),
             count: 0,
@@ -127,6 +154,7 @@ impl SpillAccumulator {
         };
         Ok(SpillRuns {
             dir: Some(dir),
+            _lock: self.lock.take(),
             chunks: std::mem::take(&mut self.chunks),
             count: self.count,
         })
@@ -145,6 +173,7 @@ impl Drop for SpillAccumulator {
 /// the spill directory, so builds clean up on every path.
 pub struct SpillRuns {
     dir: Option<PathBuf>,
+    _lock: Option<File>,
     chunks: Vec<PathBuf>,
     count: u64,
 }
@@ -239,4 +268,29 @@ pub(crate) fn with_rebuild_lock<T>(
         Err(error) => return Err(error),
     }
     Ok(built)
+}
+
+#[cfg(test)]
+mod spill_lock_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_ingest_cannot_remove_an_active_spill() {
+        let output =
+            std::env::temp_dir().join(format!("neutra-spill-lock-{}.nsx", std::process::id()));
+        let first = SpillAccumulator::begin(&output).unwrap();
+        let sentinel = output.with_extension("spill").join("active.run");
+        std::fs::write(&sentinel, b"active build").unwrap();
+        assert!(
+            matches!(SpillAccumulator::begin(&output), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"active build");
+        let runs = first.finish().unwrap();
+        assert!(
+            matches!(SpillAccumulator::begin(&output), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        drop(runs);
+        drop(SpillAccumulator::begin(&output).unwrap());
+        std::fs::remove_file(output.with_extension("spill.lock")).unwrap();
+    }
 }

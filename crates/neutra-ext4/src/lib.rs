@@ -240,7 +240,7 @@ mod linux {
                 sink(FileRecord {
                     path: path.into_boxed_str(),
                     size: meta.size,
-                    disk: meta.disk,
+                    disk: FileRecord::allocated_bytes(meta.disk),
                     mtime: meta.mtime,
                     mode: meta.mode as u32,
                     kind: fk,

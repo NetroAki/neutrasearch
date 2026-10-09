@@ -40,7 +40,7 @@ pub enum MatchFields {
     Path,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Query {
     /// Substrings that must ALL match (location chosen by `match_fields`).
     /// Stored verbatim; case handling is `case_sensitive`.
@@ -58,6 +58,8 @@ pub struct Query {
     /// Security-sensitive callers use host filesystem case semantics for scopes.
     #[serde(default)]
     pub scope_case_sensitive: bool,
+    #[serde(default)]
+    pub exclude_roots: Vec<String>,
     /// When set, every term position is filled by one regular expression that
     /// must match the selected fields. Stored as a pattern string so the
     /// query stays wire-serializable; the engine compiles it once per search.
@@ -97,6 +99,7 @@ impl Default for Query {
             under: None,
             scope_roots: Vec::new(),
             scope_case_sensitive: false,
+            exclude_roots: Vec::new(),
             regex: None,
             case_sensitive: false,
             whole_word: false,
@@ -111,14 +114,33 @@ impl Default for Query {
 
 /// Shared file-type extension groups for kind preset buttons. Kept here so
 /// the GUI, MCP, and query CLI map presets identically.
-pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "aif", "aiff", "flac", "ogg", "oga", "opus", "m4a", "aac", "wma", "mid", "midi", "amr", "alac", "ape", "wv", "mka", "rx2", "rex", "dsf", "dff"];
-pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff", "heic", "heif", "avif", "jxl", "psd", "xcf", "raw", "cr2", "nef", "arw", "dng", "orf", "rw2"];
-pub const VIDEO_EXTS: &[&str] = &["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "3gp", "ts", "m2ts", "vob", "ogv"];
-pub const ARCHIVE_EXTS: &[&str] = &["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst", "lz4", "cab", "iso", "img", "dmg", "pkg", "deb", "rpm", "apk", "jar", "cbz", "cbr"];
-pub const DOC_EXTS: &[&str] = &["pdf", "doc", "docx", "odt", "rtf", "txt", "md", "markdown", "rst", "tex", "epub", "mobi", "azw", "fb2", "djvu", "xls", "xlsx", "ods", "csv", "tsv", "ppt", "pptx", "odp", "log", "org", "nfo"];
+pub const AUDIO_EXTS: &[&str] = &[
+    "mp3", "wav", "aif", "aiff", "flac", "ogg", "oga", "opus", "m4a", "aac", "wma", "mid", "midi",
+    "amr", "alac", "ape", "wv", "mka", "rx2", "rex", "dsf", "dff",
+];
+pub const IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff", "heic", "heif",
+    "avif", "jxl", "psd", "xcf", "raw", "cr2", "nef", "arw", "dng", "orf", "rw2",
+];
+pub const VIDEO_EXTS: &[&str] = &[
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "3gp", "ts", "m2ts",
+    "vob", "ogv",
+];
+pub const ARCHIVE_EXTS: &[&str] = &[
+    "zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst", "lz4", "cab", "iso", "img", "dmg", "pkg",
+    "deb", "rpm", "apk", "jar", "cbz", "cbr",
+];
+pub const DOC_EXTS: &[&str] = &[
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "md", "markdown", "rst", "tex", "epub", "mobi",
+    "azw", "fb2", "djvu", "xls", "xlsx", "ods", "csv", "tsv", "ppt", "pptx", "odp", "log", "org",
+    "nfo",
+];
 /// Program extensions. Records with an executable mode bit also pass (see
 /// `is_executable`), so extensionless `+x` binaries are not excluded.
-pub const EXEC_EXTS: &[&str] = &["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "sh", "bash", "zsh", "fish", "run", "bin", "appimage", "deb", "rpm", "apk", "jar", "msix", "app", "gadget"];
+pub const EXEC_EXTS: &[&str] = &[
+    "exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "sh", "bash", "zsh", "fish", "run",
+    "bin", "appimage", "deb", "rpm", "apk", "jar", "msix", "app", "gadget",
+];
 
 /// True for programs: executable mode bit set, or a program extension.
 /// NTFS records carry `mode == 0`, so they match by extension only.
@@ -127,7 +149,9 @@ pub fn is_executable(r: &FileRecord) -> bool {
         return true;
     }
     let ext = r.extension();
-    EXEC_EXTS.iter().any(|want| ext.len() == want.len() && ext.eq_ignore_ascii_case(want))
+    EXEC_EXTS
+        .iter()
+        .any(|want| ext.len() == want.len() && ext.eq_ignore_ascii_case(want))
 }
 
 impl Query {
@@ -206,12 +230,12 @@ impl Query {
             }
         }
         if let Some(min) = self.min_size {
-            if r.size < min {
+            if r.disk_bytes() < min {
                 return false;
             }
         }
         if let Some(max) = self.max_size {
-            if r.size > max {
+            if r.disk_bytes() > max {
                 return false;
             }
         }
@@ -229,6 +253,15 @@ impl Query {
                 }
             })
         {
+            return false;
+        }
+        if self.exclude_roots.iter().any(|root| {
+            if self.scope_case_sensitive {
+                path_is_under(&r.path, root)
+            } else {
+                path_is_under_ci(&r.path, root)
+            }
+        }) {
             return false;
         }
         true
@@ -503,11 +536,19 @@ mod tests {
         q.whole_word = true;
         // Name-only default in the GUI aside, the engine honors the flag:
         // "calling" is not a whole-word hit for "call".
-        assert!(q.matcher().unwrap().score(&rec("/m/the calling.wav", 1)).is_none());
-        assert!(q.matcher().unwrap().score(&rec("/m/the call.wav", 1)).is_some());
+        assert!(q
+            .matcher()
+            .unwrap()
+            .score(&rec("/m/the calling.wav", 1))
+            .is_none());
+        assert!(q
+            .matcher()
+            .unwrap()
+            .score(&rec("/m/the call.wav", 1))
+            .is_some());
         let mut exe = Query::parse("");
         exe.executable_only = true;
-        assert!(exe.passes_filters(&rec("/usr/bin/tool", 1)) == false);
+        assert!(!exe.passes_filters(&rec("/usr/bin/tool", 1)));
         assert!(exe.passes_filters(&rec("/opt/app/setup.exe", 1)));
     }
 }

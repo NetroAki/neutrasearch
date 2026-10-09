@@ -83,7 +83,7 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
         sink(FileRecord {
             path: path.into_boxed_str(),
             size: md.len(),
-            disk: md.blocks().saturating_mul(512),
+            disk: FileRecord::allocated_bytes(md.blocks().saturating_mul(512)),
             mtime: md.mtime(),
             mode: md.mode(),
             kind,
@@ -98,7 +98,6 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
     stats.detail = "Spotlight index (mdfind namespace + one metadata lookup per hit)".into();
     Ok(stats)
 }
-
 
 #[cfg(not(target_os = "macos"))]
 pub fn scan(_mount: &MountInfo, _sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {

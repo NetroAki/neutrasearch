@@ -15,8 +15,8 @@ mod linux {
     use super::*;
     mod parallel;
     pub mod sweep;
-     use std::collections::{HashMap, HashSet};
-     use std::time::Instant;
+    use std::collections::{HashMap, HashSet};
+    use std::time::Instant;
 
     const INODE_ITEM: u32 = 1;
     const INODE_REF: u32 = 12;
@@ -122,11 +122,9 @@ mod linux {
         | (0x94 << IOC_TYPESHIFT)
         | (17 << IOC_NRSHIFT)) as libc::c_ulong;
 
-
-
     pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
         let started = Instant::now();
-         let (nodes, names, batches) = parallel::scan_metadata(&mount.mountpoint)?;
+        let (nodes, names, batches) = parallel::scan_metadata(&mount.mountpoint)?;
         let mut stats = ScanStats::default();
         let prefix = mount
             .mountpoint
@@ -177,7 +175,7 @@ mod linux {
             sink(FileRecord {
                 path: path.into_boxed_str(),
                 size: meta.size,
-                disk: meta.disk,
+                disk: FileRecord::allocated_bytes(meta.disk),
                 mtime: meta.mtime,
                 mode: meta.mode,
                 kind,

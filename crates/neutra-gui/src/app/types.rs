@@ -32,6 +32,10 @@ pub(crate) enum Event {
         model: ui::Hierarchy,
     },
     TreeFailed(String),
+    MapFiles {
+        key: (String, u64, bool),
+        result: Result<Vec<neutra_core::FileRecord>, String>,
+    },
     SearchDone {
         id: u64,
         result: super::search_worker::SearchResult,

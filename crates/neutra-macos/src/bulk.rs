@@ -6,7 +6,10 @@
 use super::{FileRecord, MountInfo, ScanStats};
 use anyhow::{Context as _, Result};
 
-pub(super) fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
+pub(super) fn bulk_fallback(
+    mount: &MountInfo,
+    sink: &mut dyn FnMut(FileRecord),
+) -> Result<ScanStats> {
     use anyhow::Context as _;
     use neutra_core::FileKind;
     use std::collections::VecDeque;
@@ -169,7 +172,9 @@ pub(super) fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord))
                 sink(FileRecord {
                     path: path.to_string_lossy().into_owned().into_boxed_str(),
                     size: st.st_size.max(0) as u64,
-                    disk: (st.st_blocks.max(0) as u64).saturating_mul(512),
+                    disk: FileRecord::allocated_bytes(
+                        (st.st_blocks.max(0) as u64).saturating_mul(512),
+                    ),
                     mtime: st.st_mtime,
                     mode,
                     kind,
@@ -188,4 +193,3 @@ pub(super) fn bulk_fallback(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord))
         "fallback: getattrlistbulk bulk traversal (Spotlight disabled; never readdir)".into();
     Ok(stats)
 }
-

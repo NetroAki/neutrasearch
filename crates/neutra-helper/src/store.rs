@@ -3,11 +3,11 @@
 //! so the protocol loop stays separate from on-disk state.
 
 use anyhow::{Context, Result};
- use neutra_core::{
-     CompactIndex, DeltaChange, DeltaIndex, DirectorySummary, DirectorySummaryEntry,
-     DirectorySummaryOverlay, Query, SearchHit, SearchStats, SpillAccumulator,
-     DELTA_HEADER_BYTES,
- };
+use neutra_core::{
+    CompactIndex, DeltaChange, DeltaIndex, DirectorySummary, DirectorySummaryEntry,
+    DirectorySummaryOverlay, Query, SearchHit, SearchStats, SpillAccumulator, TreeSummary,
+    DELTA_HEADER_BYTES,
+};
 use std::io::{Read, Write};
 
 pub(crate) struct DurableStore {
@@ -45,6 +45,17 @@ impl DurableStore {
         let mut delta_path = path.clone();
         delta_path.set_extension("delta");
         let (base, delta) = open_durable_pair(&path, &delta_path, compact_at)?;
+        let covered = neutra_core::BrowserIndex::open(&path, delta.generation())
+            .ok()
+            .map(|browser| browser.covers_delta(&path))
+            .transpose()?
+            .unwrap_or(false);
+        if !covered {
+            neutra_core::BrowserIndex::apply_delta(&path, &delta)
+                .context("recover durable changes into browse orders")?;
+        }
+        neutra_core::BrowserIndex::mark_delta(&path, &delta)
+            .context("publish recovered browse cursor")?;
         Ok(Self {
             path,
             base: Some(base),
@@ -78,7 +89,7 @@ impl DurableStore {
             .context("compact base is unavailable after a failed replacement")?;
         let summary = DirectorySummary::open_for_compact(&self.path, base.generation())
             .context("open directory summary sidecar")?;
-        if self.delta.change_count() == 0 {
+        if self.delta.change_count()? == 0 {
             return Ok(summary.get(source, path).cloned());
         }
         let overlay = DirectorySummaryOverlay::from_delta(summary, base, &self.delta)?;
@@ -86,25 +97,42 @@ impl DurableStore {
     }
 
     pub(crate) fn apply(&mut self, changes: Vec<DeltaChange>) -> Result<(u32, u64, bool)> {
-        let count = self.delta.apply_batch(changes)?;
+        let count = self.delta.apply_batch(changes.iter().cloned())?;
         self.delta.sync()?;
+        neutra_core::BrowserIndex::apply_changes(&self.path, self.delta.generation(), &changes)
+            .context("commit live changes into browse orders; durable delta retained")?;
+        neutra_core::BrowserIndex::mark_delta(&self.path, &self.delta)
+            .context("publish live browse cursor")?;
         Ok((count, self.delta.wal_bytes(), self.delta.needs_compaction()))
     }
 
     pub(crate) fn apply_bounded(&mut self, changes: Vec<DeltaChange>) -> Result<ApplyResult> {
-        let mut compacted = None;
-        if self.delta.needs_compaction() {
-            compacted = Some(self.compact()?);
-        }
-        let (changes, _, needs_compaction) = self.apply(changes)?;
-        if needs_compaction {
-            compacted = Some(self.compact()?);
+        let mut compacted = self.settle_delta()?;
+        let (changes, _, _) = self.apply(changes)?;
+        if let Some(result) = self.settle_delta()? {
+            compacted = Some(result);
         }
         Ok(ApplyResult {
             changes,
             wal_bytes: self.delta.wal_bytes(),
             compacted,
         })
+    }
+
+    fn settle_delta(&mut self) -> Result<Option<CompactionResult>> {
+        if !self.delta.needs_compaction() {
+            return Ok(None);
+        }
+        #[cfg(unix)]
+        if neutra_core::BrowserIndex::is_current(&self.path, self.delta.generation()) {
+            self.delta.checkpoint()?;
+            neutra_core::BrowserIndex::mark_delta(&self.path, &self.delta)?;
+            return Ok(None);
+        }
+        if neutra_core::BrowserIndex::is_building(&self.path) {
+            return Ok(None);
+        }
+        self.compact().map(Some)
     }
 
     /// Merge base+delta into a replacement base and reset the WAL. The caller
@@ -114,17 +142,19 @@ impl DurableStore {
             .base
             .as_ref()
             .context("compact base is unavailable after a failed replacement")?;
-         // Stream the merge through a spill: materializing it peaked past
-         // 25 GiB on large hosts. The spill merge restores global order.
-         self.delta.sync().context("sync delta before compaction")?;
-         let staged = compaction_stage(&self.path);
-         let marker = compaction_marker(&self.path);
-         let mut spill =
-             SpillAccumulator::begin(&staged).context("spill base for compaction")?;
-         CompactIndex::spill_compacted_base(base, &self.delta, &mut spill)
-             .context("spill merged base for compaction")?;
-         let built = CompactIndex::rebuild_streamed(spill.finish()?, &staged)
-             .context("build staged replacement compact base")?;
+        // Stream the merge through a spill: materializing it peaked past
+        // 25 GiB on large hosts. The spill merge restores global order.
+        self.delta.sync().context("sync delta before compaction")?;
+        let previous_generation = base.generation();
+        neutra_core::BrowserIndex::apply_delta(&self.path, &self.delta)
+            .context("commit browse changes before compaction")?;
+        let staged = compaction_stage(&self.path);
+        let marker = compaction_marker(&self.path);
+        let mut spill = SpillAccumulator::begin(&staged).context("spill base for compaction")?;
+        CompactIndex::spill_compacted_base(base, &self.delta, &mut spill)
+            .context("spill merged base for compaction")?;
+        let built = CompactIndex::rebuild_streamed(spill.finish()?, &staged)
+            .context("build staged replacement compact base")?;
         write_compaction_marker(&marker, built.generation)?;
         self.delta
             .reset(built.generation)
@@ -132,6 +162,12 @@ impl DurableStore {
         // Windows does not permit replacing a file while our old mmap is live.
         drop(self.base.take());
         CompactIndex::publish(&staged, &self.path).context("publish replacement compact base")?;
+        neutra_core::BrowserIndex::advance_generation(
+            &self.path,
+            previous_generation,
+            built.generation,
+        )
+        .context("keep browse orders across compact publication")?;
         let base = CompactIndex::open(&self.path).context("open replacement compact base")?;
         if base.generation() != built.generation {
             anyhow::bail!("published compact base generation changed unexpectedly");
@@ -184,9 +220,16 @@ pub(crate) fn open_durable_pair(
                     }
                 };
                 drop(staged);
+                let previous_generation = base.generation();
                 drop(base);
                 CompactIndex::publish(&staged_path, base_path)
                     .context("recover marker-lost base publication")?;
+                neutra_core::BrowserIndex::advance_generation(
+                    base_path,
+                    previous_generation,
+                    generation,
+                )
+                .context("advance browse generation after marker-lost publication")?;
                 let base =
                     CompactIndex::open(base_path).context("open marker-lost recovered base")?;
                 if base.generation() != generation {
@@ -199,9 +242,14 @@ pub(crate) fn open_durable_pair(
                     .with_context(|| format!("open delta index {}", delta_path.display()));
             }
         };
+        // Marker-lost publication above went through CompactIndex::publish,
+        // which already publishes the generation-bound directory and tree
+        // sidecars. Only remove staged leftovers here; the browse
+        // generation was advanced on the publish branch itself.
         for stale in [
             append_suffix(&staged_path, ".new"),
             DirectorySummary::path_for(&staged_path),
+            TreeSummary::path_for(&staged_path),
             staged_path,
             compaction_marker_temp(base_path),
         ] {
@@ -225,10 +273,11 @@ pub(crate) fn open_durable_pair(
         };
         if staged_path.is_file() {
             DirectorySummary::publish(&staged_path, base_path, expected_generation)?;
+            TreeSummary::publish(&staged_path, base_path, expected_generation)?;
             let _ = std::fs::remove_file(&staged_path);
-        } else {
-            let _ = std::fs::remove_file(DirectorySummary::path_for(base_path));
         }
+        neutra_core::BrowserIndex::recover_generation(base_path, expected_generation)
+            .context("finish browse generation after completed publication")?;
         remove_compaction_marker(&marker)?;
         return Ok((base, delta));
     }
@@ -274,8 +323,15 @@ pub(crate) fn open_durable_pair(
         }
     };
     delta.sync()?;
+    let previous_generation = base.generation();
     drop(base);
     CompactIndex::publish(&staged_path, base_path).context("finish staged base publication")?;
+    neutra_core::BrowserIndex::advance_generation(
+        base_path,
+        previous_generation,
+        expected_generation,
+    )
+    .context("advance browse generation after recovered publication")?;
     let base = CompactIndex::open(base_path).context("open recovered compact base")?;
     if base.generation() != expected_generation {
         anyhow::bail!("recovered compact base generation changed unexpectedly");
@@ -337,6 +393,24 @@ pub(crate) fn stale_marker(base: &std::path::Path) -> std::path::PathBuf {
     append_suffix(base, ".stale")
 }
 
+pub(crate) fn write_watch_status(base: &std::path::Path, text: &str) -> Result<()> {
+    let path = append_suffix(base, ".watch-status");
+    let temp = append_suffix(&path, ".new");
+    let _ = std::fs::remove_file(&temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&temp)?;
+    file.write_all(text.as_bytes())?;
+    drop(file);
+    std::fs::rename(temp, path)?;
+    Ok(())
+}
+
 pub(crate) fn write_stale_marker(base: &std::path::Path, reason: &str) -> Result<()> {
     let marker = stale_marker(base);
     if marker.is_file() {
@@ -368,7 +442,9 @@ pub(crate) fn write_stale_marker(base: &std::path::Path, reason: &str) -> Result
     sync_parent(&marker)
 }
 
-pub(crate) fn acquire_rebuild_lock(base: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+pub(crate) fn acquire_rebuild_lock(
+    base: &std::path::Path,
+) -> Result<(std::fs::File, std::path::PathBuf)> {
     let mut delta = base.to_path_buf();
     delta.set_extension("delta");
     let lock_path = append_suffix(&delta, ".lock");

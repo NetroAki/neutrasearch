@@ -166,13 +166,14 @@ fn source_unescape(s: &str) -> String {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn parses_mixed_mountinfo() {
         let raw = "\
 22 1 8:2 / / rw,relatime - ext4 /dev/sda2 rw
 30 22 0:25 / /proc rw - proc proc rw
-31 22 259:3 / /home rw,relatime - btrfs /dev/nvme0n1p3 rw,space_cache=v2
+31 22 259:3 /subvol/home /home rw,relatime - btrfs /dev/nvme0n1p3 rw,space_cache=v2
 40 31 0:40 / /mnt/win rw - cifs //192.168.1.50/share rw
 41 31 0:41 / /mnt/data rw - nfs4 nas:/export/data rw
 42 22 0:42 / /mnt/ntfs rw - ntfs3 /dev/sdb1 rw
@@ -197,5 +198,29 @@ mod tests {
             .find(|m| m.fs == FsKind::Network("nfs4".into()))
             .unwrap();
         assert_eq!(nfs.network_host().as_deref(), Some("nas"));
+        let home = mounts
+            .iter()
+            .find(|m| m.mountpoint == std::path::Path::new("/home"))
+            .unwrap();
+        assert_eq!(
+            mount_root(raw, &home.mountpoint).as_deref(),
+            Some("/subvol/home")
+        );
+        assert_eq!(
+            mount_root("31 22 259:3 / /data rw - btrfs dev rw", Path::new("/data")).as_deref(),
+            Some("/")
+        );
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn mount_root(raw: &str, mountpoint: &std::path::Path) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let (pre, _) = line.split_once(" - ")?;
+        let fields: Vec<_> = pre.split_whitespace().collect();
+        let (Some(root), Some(point)) = (fields.get(3), fields.get(4)) else {
+            return None;
+        };
+        (source_unescape(point) == mountpoint.to_string_lossy()).then(|| source_unescape(root))
+    })
 }

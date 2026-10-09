@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Neutrasearch Quick Search
+Comment=Find and open indexed files
+Exec=/usr/local/bin/neutrasearch --spotlight
+Icon=neutrasearch
+Terminal=false
+Categories=Utility;FileTools;
+StartupNotify=true
+X-KDE-Shortcuts=Ctrl+K
