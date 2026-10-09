@@ -2,198 +2,65 @@
 
 All notable changes are documented here. Neutrasearch follows semantic versioning; pre-1.0 releases may contain intentional compatibility breaks described in the release notes.
 
- ## [Unreleased]
+## [Unreleased]
 
+### Index and search
 
-### Added
+- Add a disk-backed catalog covering both directions of Name, Path, Size and
+  Modified sorting, with cursor paging through the complete result set.
+  The prepared 70M-record index returns the first 1,000 ordinary rows in
+  under 0.3 seconds on the development machine; cold preparation and typed
+  searches have separate costs.
+- Store the resolved live delta in a bounded SQLite cache instead of keeping
+  every changed path in RAM. Preserve changes through checkpoints and restarts,
+  recover older caches from the WAL, and never reuse a missing WAL's old rows.
+- Index supported mounted filesystems from native metadata. Remove all directory
+  walking and periodic full-reindex fallback paths. A failed or unsupported
+  native lane reports an error instead of silently enumerating folders.
+- Use closed-write events and Btrfs transaction deltas for ongoing updates.
+  Bound continuous event bursts, fail closed on overflow, and isolate mount
+  event descriptors from the writer's SQLite locks.
+- Attach native readers and capture Btrfs cursors before index recovery. Report
+  service readiness only after all accounts' readers and stores are ready;
+  verify that saves queued during blocked recovery are preserved.
+- Reuse decoded sibling blocks and release mapped data/descriptor windows after
+  reads. Complete catalog rows are searchable without replaying the whole live
+  delta for each ordinary listing.
+- Use allocated disk bytes for sizes and map totals, including sparse files.
+  Keep filename matching as the default; expose path matching, whole words,
+  capitalisation, accents and regular expressions through the shared engine.
 
-- Btrfs transaction sweeps: every 20 seconds the helper asks each Btrfs subvolume what changed since its last transaction id and reconciles those folders against the index, so deleted files and folders, renames, new folders and the other subvolumes follow the disk without any directory walk. Directory children can now be listed from the index by skipping subtrees (`CompactIndex::directory_children`), and busy directories back off automatically.
-- Live updates on Btrfs subvolume mounts: a mount-mark watcher follows closed writes, so a saved file appears in the newest-first listing within a couple of seconds. The GUI checks the delta file about every two seconds and refreshes the empty-search listing when it changes.
-- `neutrasearch index` also writes the sorted leader lists, so the first screen is instant after the weekly rebuild.
-- Sorted leader lists: one pass per index generation stores the newest 20,000 and largest 20,000 records in `<index>.rank`. Empty-search listings, the Modified sort and the Size sort read that file and merge the live delta, so they answer in milliseconds without decoding the index. A page the file cannot prove exact (a heavy filter, a text query, another sort) falls back to the full search.
-- One-time elevation on single-user machines: `packaging/linux/49-neutrasearch.rules`
-  approves the indexing helper for the local active session, so scans never
-  prompt for a password again after it is installed.
-- The live watch no longer crash-loops on btrfs-subvolume layouts: `neutrasearch-watch-all`
-  skips subvolume mounts (filesystem fanotify marks return EXDEV there since kernel 6.8)
-  and exits quietly when nothing is markable, and the unit only restarts on failure.
-  The weekly reindex plus the GUI rescan on launch stay the safety net there.
+### Desktop
 
-- Wire the directory-summary overlay end to end: the helper protocol gained a `DirectorySummary` request served from the live base + delta pair (protocol version 8), the MCP server gained a `neutra_directory` tool, and the GUI treemap projects live totals from the overlay whenever a watch helper has pending WAL changes instead of showing the last-published sidecar.
+- Add custom window controls, a drive/folder scope picker including NVMe-only
+  scope, and an icon/name category strip with vertical separators. All is the
+  default filter at launch. The footer links to https://neutra.software.
+- Run searches off the UI thread with cancellation and typing debounce. Preserve
+  the last results while a replacement arrives and report invalid expressions.
+- Restore display frame pacing instead of allowing uncapped Glow rendering.
+- Add KDE Ctrl+K quick search with singleton focus handoff, plus an application
+  menu entry for other desktops. Install the live-watch supervisor and retire
+  the old scheduled-reindex unit and refresh script.
+- Share Explorer menus between results, indexed-space rows, folder maps and
+  graphs. Support rename, Open With, clipboard transfer, trash and Ctrl+Z restore;
+  refuse overwriting an existing destination. External drag-out and multiple
+  selection remain unfinished.
+- Add bounded largest/smallest file-format maps and a hierarchy ball view.
+  Show their sample limits explicitly. Keep dialogs resizable, constrain long
+  breadcrumbs, and display future modification dates as dates rather than
+  “Just now”.
 
-### Internal
+### Verification and remaining work
 
-- Split the mixed-concern modules flagged by the code-quality pre-scan (complete): every source file in the workspace is now under 1,000 lines and every function under 120: `neutra-query` (argument parsing vs NDJSON service), `neutra-mcp` (server vs index store vs scope policy vs tool surface), `neutra-ntfs` (orchestration vs byte-level geometry vs record interpretation), `neutra-helper` (entry points vs protocol loop vs scan orchestration vs durable store), `neutra-gui` (app state vs out-of-process transport), and `neutra-macos` (Spotlight selection vs getattrlistbulk fallback). No behavior change.
-- Ship a Linux polkit policy (`packaging/linux/com.neutrasearch.helper.policy`, `auth_admin_keep`) so elevated scans prompt for the password once per five minutes instead of on every scan, with packaging instructions.
-
-### Search
-
-- The shell follows the second mock: text filter tabs, amber access banner
-  with Review/elevated actions, tabbed sidebar (Locations, Index, Network,
-  Maintenance) with per-location status dots, real progress percentages
-  from previous per-mount totals, and a status bar with index state.
-- The Locations-and-index dialog is a docked sidebar with tabs (Search
-  Locations, Index Status, Scanner Details, Index Maintenance, Network
-  Folders); the filter row uses icon pills and the toolbar shows search
-  time, list/grid shortcuts, and per-row menus.
-- The file-type filter always resets to All on launch, and is no longer
-  persisted: a leftover Audio or Images preset silently hid most results.
-- The first-index view names every drive with its live state (indexing path
-  or finished object count), so scan progress is visible per drive.
-- Search matches file/folder names by default; folder paths only match when
-  asked (Search > Match: file names only / names + folder paths / paths only).
-- A filter row under the search box offers All, Audio, Images, Video,
-  Programs, Compressed, Documents, and Folders presets (extension groups
-  shared by every client; Programs also matches `+x` binaries).
-- New match options: whole words only, and ignore accents (café = cafe).
-  Capitalisation matching keeps its plain-language label.
-  Capitalisation matching keeps its plain-language label.
-- Move regex, case sensitivity, and name/path matching scope into the query engine so every client (GUI, CLI, MCP) matches identically; the GUI no longer re-filters engine results, which previously broke the `ext:`/`kind:`/`size:`/`under:` syntax and silently discarded engine matches.
-- Highlight the matched part of file names in Details and List views using the same compiled matcher as the engine.
-- Clicking an active sort header flips its direction (name, path, modified, size); the engine gained the matching descending/ascending sort keys.
-- Default the GUI to relevance ranking while searching (name-prefix and exact-name matches rank first) instead of interleaving matches by modification time.
-- Show the full matched count when results are capped ("1,000 of 40,312 results") instead of an unqualified count.
-- Report invalid regular expressions in the empty state instead of silently showing stale results.
-
-### ZFS
-
-- The opt-in ZFS enumeration is now first-class: `neutrasearch index --zfs-enumerate` requests it as an authenticated scan parameter (protocol v9), so it works through pkexec elevation where environment variables are stripped. `neutrasearch-helper --zfs-probe` reports which ZFS lanes a machine supports.
-- The ZFS lane now works: an explicit, documented single-pass enumeration (`NEUTRASEARCH_ZFS_ALLOW_WALK=1`) indexes a dataset with one sequential openat/getdents64/fstatat sweep that never follows symlinks and never crosses filesystem boundaries. Without the flag the lane still refuses, with the remedy in the message. The tested `zfs diff` parser and snapshot command builders remain the update story, and the `zfs-libzpool` feature remains the intended native lane.
-
-### Fixed
-
-- Scan progress names every drive with its live state, and scans can be
-  cancelled mid-run (Unix): staged batches are discarded and the previous
-  index stays searchable.
-- Startup no longer burns minutes and gigabytes before showing a window:
-  the compact search splits candidates into a fixed set of groups that
-  stream with pruned top-N lists (a 51M-record empty query runs ~2 s wall),
-  and fully-free pages are handed back after big searches. Residential
-  anonymous memory on that index went ~15 GB to ~300 MB, the rest being
-  reclaimable mapped file pages.
-- Diagnostics rows truncate earlier so long lane statuses cannot force the
-  dialog wider than its default size; the About window is resizable.
-- The NTFS lane never walks: an unreadable raw volume hard-fails instead of
-  grinding the mounted tree (slow, hammers the drive). Unreadable means the
-  setup is wrong (elevation, versions), never the drive.
- - Fetch tree folders on demand from the base with pages released as the
-   scan advances: browsing holds tens of megabytes under a 48 MB cache
-   instead of materializing tens of gigabytes (a 14M-file listing completes
-   under a 70 MB cgroup cap). In-RAM index builders are now test-only;
-   production compaction and single-mount builds stream through spills.
-   Removed the btrfs serial scan path and its debug flags, GUI reference
-   mode, legacy env-var twins, NTFS/btrfs progress prints, and the orphaned
-   WAL-frame and sidecar-stream readers left behind by the fetch rewrite.
-
- - Stream the tree model straight from sidecar frames and move entry strings
-   instead of cloning them: opening the disk map no longer materializes the
-   full entry set or duplicates every path, cutting tree-open memory by an
-   order of magnitude on large indexes. Record fallbacks feed the same
-   shared aggregation block by block instead of decoding the whole base.
-
-- Uppercase non-ASCII search terms ("CAFÉ") never matched lowercase file names: term needles were not case-folded before the Unicode comparison path. Needles are now folded once per query and the haystack comparison is allocation-free.
- - Follow the NTFS $MFT runlist continuation through $ATTRIBUTE_LIST extension records: heavily fragmented volumes (80+ runs overflowing the base record) previously failed closed partway through the $MFT, leaving ~7% of records unindexed. Nameless list entries are decoded at their real 32-byte stride, continuations are matched by attribute id and sequence, and extension runs are rebased and contiguity-checked before use.
- - Repair the Btrfs parallel-scan arity breakage (callee gained a tree-id parameter, caller not updated) so the workspace builds again; the default path searches the tree of the opened mount exactly like the serial path.
-
- - The GUI no longer asks which folders to scan: it indexes everything by default on first run. Launching no longer re-scans: the weekly timer and the live watcher keep the index current, and Scan stays available on demand.
- - The tree view builds its model without per-file string expansion (names and extensions derive when rows paint), holds folders in a hash map, virtualizes rows so only visible ones paint, and ranks treemap tiles with a top-256 partial selection instead of sorting every child.
-- Ship a Linux background refresh (`neutrasearch-index.timer`, 15 min after boot then daily): a root oneshot service re-indexes every interactive user machine index in place, so results stay fresh while the GUI is closed. Failed or empty builds keep the previous index.
- - Stream full-machine builds through disk spill (sorted runs, external postings sort) instead of staging every record in RAM: 90M-record hosts previously peaked past 25 GiB and tripped the OOM killer. Output layout is unchanged and covered by a parity test; scans and the GUI adopt the published base without a resident copy.
-
- - Track on-disk bytes alongside apparent size: every lane records physical
-   usage (btrfs extent bytes, ext4 block counts, NTFS allocated size,
-   `st_blocks` for walks), folder totals and treemap tiles use it, and sparse
-   files such as multi-terabyte Docker raw images no longer report their
-   apparent size as disk usage. File search results still show apparent size.
- - Version every on-disk and on-wire record layout explicitly instead of
-   probing bytes: the compact base moves to v4 (v3 stays readable with disk
-   falling back to size), the directory sidecar to v2 (v1 stays readable),
-   the delta WAL to a new magic (old logs replay then migrate on writer
-   open), legacy snapshots gain an envelope, and the helper protocol moves
-   to v10 so mixed-version peers fail the handshake instead of shifting
-   fields. Upgrades keep existing indexes; new scans write new layouts.
- - Repair the streamed sidecar writer hashing the header into the checksum
-   readers exclude, which made every streamed sidecar fail verification and
-   forced the tree onto the slow full-record fallback. Raise the sidecar
-   size caps to host scale (2 GiB compressed, 32 GiB streamed payload) so a
-   100M-record sidecar opens instead of being rejected.
-
-### Performance
-
-- Parallelize compact-index block encoding and trigram posting during builds, and parallelize compact search block decoding; compaction holds the store write lock for a much shorter time.
-- Open indexes without hashing the whole payload on read paths (GUI startup, MCP, CLI, persistent query); full checksum verification stays on write paths and `CompactIndex::open`.
-- Resolve delta paths in the directory-summary overlay by binary search instead of a full index scan, making overlay construction proportional to the change set rather than the whole index.
-- Virtualize the List and Grid result views and cap the home view at 10,000 entries, removing per-frame widget construction for every hit on large indexes.
-- Coalesce watched filesystem events with a 250 ms quiet window and one WAL flush per batch instead of a flush and fsync per event.
-- Remove per-record path normalization and `PathBuf` joins from the scan hot loop; root and exclusion prefixes are computed once per scan.
-- Compare names case-insensitively without per-comparison allocations in sort paths.
-- Size Btrfs scan preallocations and shard counts to the machine instead of reserving for 13 million records and 17 fixed threads.
-- Precompute canonical path keys for directory-summary overlays and share one sort comparator and path-safety predicate across engines instead of per-module copies.
-
-### Reliability
-
-- Treat directory renames, unpaired moves, and watch-queue overflows as degraded (log once, keep serving) instead of disabling every search until a full reindex; hard watcher failures still fail closed.
-- Stop routing non-scanner errors (failed file open, settings write) to the "retry as administrator" banner; only scanner and index failures do.
-- Persist GUI view, filter, sort, and search-option choices across launches.
-
-### UI
-
-- Enter or Down now leaves the search box into the results and opens the selection (Everything-style); Escape clears the search; keyboard selections scroll into view.
-- Remove the inert "Run in background" banner button and decorative row dots.
-- Document the search filter syntax in `neutrasearch help` and `neutrasearch search --help`.
-- `neutrasearch search --no-build` fails with an actionable message instead of silently starting a full privileged index build.
-- A missing helper binary now suggests installing it beside the executable or setting `NEUTRASEARCH_HELPER`.
-- Diagnostics shows when the index was last updated (from the index file's publish time).
-- Treemap views say "Indexed space" instead of "Local disk" so indexed network shares are not mislabeled.
-- The Locations & Index panel stays hidden until asked for (File > Locations and
-  index, the Index details button, or the access-banner Review link); the old
-  modal dialog survives only for first-run setup.
-- The GUI now looks like the Neutraudio plugins and shell (`DESIGN.md`, from the
-  Neutraudio §36 spec, its shell tokens, and its mockup): a slate-950 canvas
-  with slate-900 panels, red as the single active accent, Inter and Roboto Mono,
-  pill filter chips with a red active state, tracked uppercase table headers and
-  panel titles, a red selection bar, recessed wells for the location list, a
-  bordered search field with the magnifier inside, 10px scrollbars, and a 2px
-  red focus ring. File-type badges are outlined by kind (audio violet, images
-  and video green, folders and archives amber, PDF red).
-- Text that used the low-contrast muted grey now uses surface-400, accent text
-  uses a lighter red so it clears 4.5:1 on every surface, and violet appears only
-  as outlines and dots.
-- Escape clears the search box again (the text edit gave up focus before the
-  handler ran), the empty-results view fills the window instead of pulling the
-  status bar up, filter chips show a keyboard focus ring, the per-location
-  "..." button opens its menu on click, and Escape closes the About window.
-- Status text, empty-value placeholders, and CLI help no longer use em dashes.
-- Typing in the search box no longer freezes the window: searches run on a
-  background worker that keeps only the newest query, the toolbar shows
-  "Searching..." and the previous results stay up until the new ones land.
-- The folder view opens instantly. A small summary of the top three folder
-  levels (sizes, counts, subfolders) is built once per index update in the
-  background from the existing directory-summary file, and deeper folders load
-  just their own subtree on demand. On a 61M-record index the switch went from
-  more than five seconds to under a quarter of a second.
-- The folder tree is a details tree with Name, Share, Size and Items columns,
-  each folder's biggest files under it, and arrow-key navigation. A click opens
-  a folder, a double-click, the chevron, or the arrow keys expand it, and a
-  click no longer expands and navigates at once; a folder that was still
-  loading no longer bounces the view back to the root.
-- The menu bar, toolbar dropdowns, and view toggle share one style: transparent
-  menu items, outlined ghost dropdowns, a joined list/grid toggle, a tracked
-  wordmark, and 8px margins on every row. Map tiles are dark tinted blocks with
-  a type-coloured outline instead of solid orange.
-- Result paths show the tail with a leading ellipsis and fit their column;
-  inactive sort headers no longer show arrows.
-- The results canvas moved to the reference blue-slate tone and the kind tabs
-  gained spacing and size to match the UI mock.
-
-### Size
-
-- Ship embedded fonts zstd-compressed (about 21.5 MB to 12 MB), roughly halving the GUI binary; decompression is a one-time startup cost.
-- Strip release binaries.
-
-### Removed
-
-- Dead treemap `file:` index-selection parsing and the decorative details-row hover dots.
+- Repair this machine's live delta from its synchronized catalog and test
+  repeated checkpoints, stale caches, generation changes and process isolation.
+- Linux workspace tests, focused regression suites, Clippy with warnings denied,
+  installer checks and owned virtual-desktop checks pass. Measurements, QA
+  captures and incomplete UI delivery gates are recorded in
+  `docs/feedback/production-readiness-validation-2026-10-09.md`.
+- The 100 MB ceiling, full Explorer parity, NTFS/FUSE rename/delete journals,
+  first-ingest watcher generation binding and complete accessibility remain
+  unfinished. See `current-Debt.md`; this update is not a production sign-off.
 
 ## [0.1.24] - 2026-08-14
 

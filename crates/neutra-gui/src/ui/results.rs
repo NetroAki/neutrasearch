@@ -42,15 +42,26 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
             }
             for visible_row in range {
                 let record = &app.hits[visible_row].record;
+                super::script_fonts::ensure(ui.ctx(), &record.path);
                 let ranges = app
                     .matcher
                     .as_ref()
                     .map_or(Vec::new(), |matcher| matcher.name_match_ranges(record));
                 let path = record.path.to_string();
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), row_h),
+                    Sense::click_and_drag(),
+                );
                 let selected = app.selected.as_deref() == Some(record.path.as_ref());
                 paint_details_row(ui, rect, record, selected, &ranges);
+                if let Some(action) = super::file_interactions::interact(
+                    ui,
+                    &response,
+                    &path,
+                    record.kind == FileKind::Dir,
+                ) {
+                    app.file_operations.dispatch(action);
+                }
                 if response.clicked() {
                     app.selected = Some(path.clone());
                     surrender_widget_focus(ui);
@@ -58,7 +69,7 @@ pub(super) fn details_view(app: &mut NeutraApp, ui: &mut Ui) {
                 if response.double_clicked() {
                     open_path = Some(path.clone());
                 }
-                result_context_menu(&response, ui, &path, &mut open_path);
+                result_context_menu(app, &response, &path);
             }
         });
     if let Some(path) = open_path {
@@ -114,10 +125,18 @@ fn sort_header(
         let reversed = app.sort_reversed;
         match mode {
             SortMode::Name | SortMode::Path => {
-                if reversed { "  ↓" } else { "  ↑" }
+                if reversed {
+                    "  ↓"
+                } else {
+                    "  ↑"
+                }
             }
             SortMode::Modified | SortMode::Size => {
-                if reversed { "  ↑" } else { "  ↓" }
+                if reversed {
+                    "  ↑"
+                } else {
+                    "  ↓"
+                }
             }
             SortMode::Relevance => "",
         }
@@ -268,9 +287,14 @@ fn paint_details_row(
         CANVAS
     };
     ui.painter().rect_filled(rect, 0.0, fill);
-    ui.painter().hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, LINE));
+    ui.painter()
+        .hline(rect.x_range(), rect.bottom(), Stroke::new(1.0_f32, LINE));
     if selected {
-        ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, ACID_STRONG);
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+            0.0,
+            ACID_STRONG,
+        );
     }
     let columns = detail_columns(rect);
     let badge = Rect::from_center_size(
@@ -307,17 +331,16 @@ fn paint_details_row(
             highlight: ACID,
         },
     );
-    let metadata = if selected {
-        TEXT
-    } else {
-        MUTED
-    };
+    let metadata = if selected { TEXT } else { MUTED };
     ui.painter()
         .with_clip_rect(columns.path.shrink2(Vec2::new(7.0, 0.0)))
         .text(
             columns.path.left_center() + Vec2::new(7.0, 0.0),
             Align2::LEFT_CENTER,
-            shorten(&parent_path(&record.path), (((columns.path.width() - 20.0) / 6.6) as usize).max(16)),
+            shorten(
+                &parent_path(&record.path),
+                (((columns.path.width() - 20.0) / 6.6) as usize).max(16),
+            ),
             mono(CAPTION),
             metadata,
         );
@@ -331,7 +354,7 @@ fn paint_details_row(
     ui.painter().text(
         columns.size.right_center() - Vec2::new(7.0, 0.0),
         Align2::RIGHT_CENTER,
-        format_size(record.size),
+        format_size(record.disk_bytes()),
         mono(CAPTION),
         metadata,
     );
@@ -362,8 +385,8 @@ pub(super) fn list_view(app: &mut NeutraApp, ui: &mut Ui) {
                 return;
             }
             let first_col = (((clip.left() - canvas.left()) / col_w).floor().max(0.0)) as usize;
-            let last_col = (((clip.right() - canvas.left()) / col_w).ceil().max(1.0) as usize)
-                .min(columns);
+            let last_col =
+                (((clip.right() - canvas.left()) / col_w).ceil().max(1.0) as usize).min(columns);
             let first_row = (((clip.top() - canvas.top()) / row_h).floor().max(0.0)) as usize;
             let last_row =
                 (((clip.bottom() - canvas.top()) / row_h).ceil().max(1.0) as usize).min(rows);
@@ -402,8 +425,14 @@ fn draw_list_row(
     ranges: &[std::ops::Range<usize>],
     open_path: &mut Option<String>,
 ) {
+    super::script_fonts::ensure(ui.ctx(), &record.path);
     let path = record.path.to_string();
-    let response = ui.interact(rect, Id::new(("list-row", &path)), Sense::click());
+    let response = ui.interact(rect, Id::new(("list-row", &path)), Sense::click_and_drag());
+    if let Some(action) =
+        super::file_interactions::interact(ui, &response, &path, record.kind == FileKind::Dir)
+    {
+        app.file_operations.dispatch(action);
+    }
     let selected = app.selected.as_deref() == Some(record.path.as_ref());
     ui.painter().rect_filled(
         rect,
@@ -428,8 +457,12 @@ fn draw_list_row(
         rect.left_center() + Vec2::new(17.0, 0.0),
         Vec2::new(21.0, 18.0),
     );
-    ui.painter()
-        .rect_stroke(badge, 1.0, Stroke::new(1.0_f32, type_color(record)), StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        badge,
+        1.0,
+        Stroke::new(1.0_f32, type_color(record)),
+        StrokeKind::Inside,
+    );
     ui.painter().text(
         badge.center(),
         Align2::CENTER_CENTER,
@@ -440,10 +473,7 @@ fn draw_list_row(
     paint_highlighted(
         ui,
         egui::pos2(badge.right() + 6.0, rect.center().y),
-        Rect::from_min_max(
-            egui::pos2(badge.right() + 6.0, rect.top()),
-            rect.max,
-        ),
+        Rect::from_min_max(egui::pos2(badge.right() + 6.0, rect.top()), rect.max),
         record.name(),
         ranges,
         &NameStyle {
@@ -459,7 +489,7 @@ fn draw_list_row(
     if response.double_clicked() {
         *open_path = Some(path.clone());
     }
-    result_context_menu(&response, ui, &path, open_path);
+    result_context_menu(app, &response, &path);
 }
 
 pub(super) fn grid_view(app: &mut NeutraApp, ui: &mut Ui) {
@@ -519,8 +549,14 @@ fn draw_grid_tile(
     rect: Rect,
     open_path: &mut Option<String>,
 ) {
+    super::script_fonts::ensure(ui.ctx(), &record.path);
     let path = record.path.to_string();
-    let response = ui.interact(rect, Id::new(("grid-item", &path)), Sense::click());
+    let response = ui.interact(rect, Id::new(("grid-item", &path)), Sense::click_and_drag());
+    if let Some(action) =
+        super::file_interactions::interact(ui, &response, &path, record.kind == FileKind::Dir)
+    {
+        app.file_operations.dispatch(action);
+    }
     let selected = app.selected.as_deref() == Some(record.path.as_ref());
     ui.painter().rect_filled(
         rect,
@@ -557,7 +593,7 @@ fn draw_grid_tile(
     ui.painter().text(
         rect.center_bottom() - Vec2::new(0.0, 6.0),
         Align2::CENTER_BOTTOM,
-        format_size(record.size),
+        format_size(record.disk_bytes()),
         mono(CAPTION),
         MUTED,
     );
@@ -568,7 +604,7 @@ fn draw_grid_tile(
     if response.double_clicked() {
         *open_path = Some(path.clone());
     }
-    result_context_menu(&response, ui, &path, open_path);
+    result_context_menu(app, &response, &path);
 }
 
 fn paint_large_file_icon(ui: &Ui, center: egui::Pos2, record: &neutra_core::FileRecord) {
@@ -599,7 +635,13 @@ fn paint_large_file_icon(ui: &Ui, center: egui::Pos2, record: &neutra_core::File
 }
 
 fn empty_results(app: &mut NeutraApp, ui: &mut Ui) {
-    if app.searching || (app.search_seq == 0 && app.query.is_empty()) { return if app.searching { icons::searching_placeholder(ui) } else { icons::idle_placeholder(ui, app.index_len()) }; }
+    if app.searching || (app.search_seq == 0 && app.query.is_empty()) {
+        return if app.searching {
+            icons::searching_placeholder(ui)
+        } else {
+            icons::idle_placeholder(ui, app.index_len())
+        };
+    }
     let invalid_regex = app.regex_mode
         && !app.query.is_empty()
         && RegexBuilder::new(&app.query)
@@ -671,11 +713,7 @@ pub(super) fn surrender_widget_focus(ui: &Ui) {
 
 /// Apply arrow/Enter selection. Returns true when the selection moved this
 /// frame so the views can scroll it into view.
-fn keyboard_selection(
-    app: &mut NeutraApp,
-    ui: &Ui,
-    open_path: &mut Option<String>,
-) -> bool {
+fn keyboard_selection(app: &mut NeutraApp, ui: &Ui, open_path: &mut Option<String>) -> bool {
     if app.hits.is_empty() {
         return false;
     }
@@ -728,47 +766,14 @@ fn scroll_selection_into_view(app: &NeutraApp, ui: &Ui, row_h: f32, rows: usize,
     );
 }
 
-fn result_context_menu(
-    response: &egui::Response,
-    ui: &Ui,
-    path: &str,
-    open_path: &mut Option<String>,
-) {
-    response.context_menu(|menu| file_menu(menu, ui, path, open_path));
-}
-
-/// Shared Open/Reveal/Copy menu behind right-click and row overflow buttons.
-pub(super) fn file_menu(menu: &mut Ui, ui: &Ui, path: &str, open_path: &mut Option<String>) {
-    if menu.button("Open").clicked() {
-        *open_path = Some(path.to_owned());
-        menu.close();
-    }
-    if menu.button("Reveal in file manager").clicked() {
-        let _ = launch_file_action(FileAction::Reveal(PathBuf::from(path)));
-        menu.close();
-    }
-    if menu.button("Copy full path    Ctrl+Insert").clicked() {
-        copy_to_clipboard(ui, path);
-        menu.close();
+fn result_context_menu(app: &mut NeutraApp, response: &egui::Response, path: &str) {
+    let mut action = None;
+    response.context_menu(|menu| super::file_actions::context_menu(menu, path, &mut action));
+    if let Some(action) = action {
+        app.file_operations.dispatch(action);
     }
 }
 
 pub(super) fn perform_file_action(app: &mut NeutraApp, action: FileAction) {
-    let description = match &action {
-        FileAction::Open(path) => format!("open {}", path.display()),
-        FileAction::Reveal(path) => format!("reveal {}", path.display()),
-    };
-    let result = launch_file_action(action);
-    app.lanes.insert(
-        "file-action".into(),
-        LaneState {
-            label: "FILE ACTION".into(),
-            status: match &result {
-                Ok(()) => description,
-                Err(error) => format!("{description}: {error}"),
-            },
-            error: result.is_err(),
-            ..Default::default()
-        },
-    );
+    app.file_operations.dispatch(action);
 }

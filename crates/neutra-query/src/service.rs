@@ -125,4 +125,3 @@ pub(crate) fn delta_path(base: &std::path::Path) -> PathBuf {
     path.set_extension("delta");
     path
 }
-

@@ -14,10 +14,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub(crate) enum FileAction {
-    Open(PathBuf),
-    Reveal(PathBuf),
-}
+pub(crate) use file_actions::Action as FileAction;
+
+#[path = "transport/file_actions/mod.rs"]
+pub(crate) mod file_actions;
 
 #[cfg(target_os = "windows")]
 fn request_elevated_restart() -> Result<(), String> {
@@ -67,50 +67,9 @@ fn request_elevated_restart() -> Result<(), String> {
 }
 
 pub(crate) fn launch_file_action(action: FileAction) -> std::io::Result<()> {
-    let mut command = match action {
-        FileAction::Open(path) => {
-            #[cfg(target_os = "windows")]
-            {
-                let mut command = Command::new("explorer.exe");
-                command.arg(path);
-                command
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let mut command = Command::new("open");
-                command.arg(path);
-                command
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                let mut command = Command::new("xdg-open");
-                command.arg(path);
-                command
-            }
-        }
-        FileAction::Reveal(path) => {
-            #[cfg(target_os = "windows")]
-            {
-                let mut command = Command::new("explorer.exe");
-                command.arg(format!("/select,{}", path.display()));
-                command
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let mut command = Command::new("open");
-                command.arg("-R").arg(path);
-                command
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                let mut command = Command::new("xdg-open");
-                command.arg(path.parent().unwrap_or(&path));
-                command
-            }
-        }
-    };
-    command.spawn()?;
-    Ok(())
+    file_actions::execute(action)
+        .map(|_| ())
+        .map_err(std::io::Error::other)
 }
 
 pub(crate) fn select_helper(
@@ -227,9 +186,9 @@ pub(crate) fn spawn_local_helper(
             }
         }
 
-         let configured = std::env::var_os("NEUTRASEARCH_HELPER").map(PathBuf::from);
-         let elevated = cfg!(target_os = "linux")
-             && (elevated_requested || std::env::var_os("NEUTRASEARCH_PKEXEC").is_some());
+        let configured = std::env::var_os("NEUTRASEARCH_HELPER").map(PathBuf::from);
+        let elevated = cfg!(target_os = "linux")
+            && (elevated_requested || std::env::var_os("NEUTRASEARCH_PKEXEC").is_some());
         let helper = match select_helper(configured, std::env::current_exe().ok(), elevated) {
             Ok(helper) => helper,
             Err(error) => {
@@ -237,7 +196,11 @@ pub(crate) fn spawn_local_helper(
                 return;
             }
         };
-        let mut cmd = if elevated {
+        #[cfg(unix)]
+        let already_root = unsafe { libc::geteuid() } == 0;
+        #[cfg(not(unix))]
+        let already_root = false;
+        let mut cmd = if elevated && !already_root {
             let mut command = Command::new("pkexec");
             command.arg(helper);
             command
@@ -473,13 +436,13 @@ fn scan_via_windows_service(
 
     eprintln!("neutrasearch: service Scan write");
     if let Err(error) = write_frame(
-            &mut input,
-            &ClientMsg::Scan {
-                mounts,
-                roots,
-                allow_zfs_enumerate: false,
-            },
-        ) {
+        &mut input,
+        &ClientMsg::Scan {
+            mounts,
+            roots,
+            allow_zfs_enumerate: false,
+        },
+    ) {
         let _ = write_frame(&mut input, &ClientMsg::Shutdown);
         return Err(format!(
             "cannot send locations to the scanner service: {error}"

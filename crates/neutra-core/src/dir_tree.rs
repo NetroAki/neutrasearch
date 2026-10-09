@@ -3,12 +3,12 @@
 //! streaming pass over the directory-summary sidecar and is bound to the same
 //! compact-index generation, so a stale file is never served.
 
-use crate::dir_summary::{directory_summary_path, open_private_file, walk_frames};
+use crate::dir_summary::{directory_summary_path, open_private_file, walk_file_frames};
 use crate::{DirFile, DirListing, DirSubdir, FileKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{self, Write};
 use std::io::Read;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"NEUTREE1";
@@ -59,6 +59,30 @@ pub struct TreeSummary {
 }
 
 impl TreeSummary {
+    pub fn publish(staged: &Path, destination: &Path, generation: u64) -> io::Result<()> {
+        match Self::ensure(staged, generation) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match std::fs::remove_file(Self::path_for(destination)) {
+                    Ok(()) => return Ok(()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        let target = Self::path_for(destination);
+        let temporary = crate::compact_build::temp_path(&target);
+        let mut source = std::fs::File::open(Self::path_for(staged))?;
+        let mut output = crate::compact_build::open_private(&temporary)?;
+        std::io::copy(&mut source, &mut output)?;
+        output.flush()?;
+        output.get_ref().sync_all()?;
+        drop(output);
+        crate::compact_build::replace_file(&temporary, &target)?;
+        crate::compact_build::sync_parent(&target)
+    }
+
     pub fn path_for(index_path: &Path) -> PathBuf {
         let mut value = index_path.as_os_str().to_os_string();
         value.push(".tree");
@@ -67,7 +91,10 @@ impl TreeSummary {
 
     fn header_generation(bytes: &[u8]) -> io::Result<u64> {
         if bytes.len() < PREFIX || &bytes[..8] != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a tree summary"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a tree summary",
+            ));
         }
         Ok(u64::from_le_bytes(bytes[8..16].try_into().unwrap()))
     }
@@ -88,7 +115,10 @@ impl TreeSummary {
     pub fn open_for_compact(index_path: &Path, generation: u64) -> io::Result<Self> {
         let bytes = std::fs::read(Self::path_for(index_path))?;
         if Self::header_generation(&bytes)? != generation {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "tree summary is stale"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tree summary is stale",
+            ));
         }
         let raw = zstd::stream::decode_all(&bytes[PREFIX..])?;
         let folders: Vec<Folder> = bincode::deserialize(&raw)
@@ -101,7 +131,11 @@ impl TreeSummary {
     /// The folder as a `DirListing`, or `None` when it is deeper than the
     /// summary covers.
     pub fn listing(&self, dir: &str) -> Option<DirListing> {
-        let key = if dir == "/" { dir } else { dir.trim_end_matches('/') };
+        let key = if dir == "/" {
+            dir
+        } else {
+            dir.trim_end_matches('/')
+        };
         let folder = self.folders.get(key)?;
         Some(DirListing {
             files: folder
@@ -132,15 +166,16 @@ impl TreeSummary {
     }
 
     fn build(index_path: &Path, generation: u64) -> io::Result<()> {
-        let file = std::fs::File::open(directory_summary_path(index_path))?;
-        // SAFETY: read-only mapping of a file that is only ever replaced
-        // atomically by rename.
-        let map = unsafe { memmap2::Mmap::map(&file)? };
-        let legacy = map.get(8..12).is_some_and(|v| u32::from_le_bytes(v.try_into().unwrap()) == 1);
+        let mut file = std::fs::File::open(directory_summary_path(index_path))?;
+        let mut header = [0u8; 12];
+        file.read_exact(&mut header)?;
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0))?;
+        let legacy = u32::from_le_bytes(header[8..12].try_into().unwrap()) == 1;
         // Version 1 sidecars carry no on-disk totals; fall back to apparent size.
         let size_of = |physical: u64, logical: u64| if legacy { logical } else { physical };
         let mut accs: HashMap<String, Acc> = HashMap::new();
-        walk_frames(&map, &mut |entry| {
+        let (_, found_generation) = walk_file_frames(&mut file, &mut |entry| {
             if depth(&entry.path) > MAX_DEPTH {
                 return Ok(());
             }
@@ -157,7 +192,12 @@ impl TreeSummary {
                     sub.1 += child.logical_bytes;
                     sub.2 += child.file_count;
                 } else {
-                    acc.rows.push(Row { name, size, logical: child.logical_bytes, kind: child.kind });
+                    acc.rows.push(Row {
+                        name,
+                        size,
+                        logical: child.logical_bytes,
+                        kind: child.kind,
+                    });
                     if acc.rows.len() >= MAX_FILE_ROWS * 2 {
                         trim_rows(acc);
                     }
@@ -165,6 +205,12 @@ impl TreeSummary {
             }
             Ok(())
         })?;
+        if found_generation != generation {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory summary generation changed while preparing the tree",
+            ));
+        }
         let mut folders: Vec<Folder> = accs
             .into_iter()
             .map(|(path, mut acc)| {
@@ -172,7 +218,12 @@ impl TreeSummary {
                 let mut subdirs: Vec<Sub> = acc
                     .subs
                     .into_iter()
-                    .map(|(name, (size, logical, files))| Sub { name, size, logical, files })
+                    .map(|(name, (size, logical, files))| Sub {
+                        name,
+                        size,
+                        logical,
+                        files,
+                    })
                     .collect();
                 subdirs.sort_unstable_by_key(|sub| std::cmp::Reverse(sub.size));
                 Folder {
@@ -210,11 +261,13 @@ fn depth(path: &str) -> usize {
 /// Keep the largest direct files; the rest are only counted in the totals.
 fn trim_rows(acc: &mut Acc) {
     if acc.rows.len() > MAX_FILE_ROWS {
-        acc.rows.sort_unstable_by_key(|row| std::cmp::Reverse(row.size));
+        acc.rows
+            .sort_unstable_by_key(|row| std::cmp::Reverse(row.size));
         acc.rows.truncate(MAX_FILE_ROWS);
         acc.truncated = true;
     } else {
-        acc.rows.sort_unstable_by_key(|row| std::cmp::Reverse(row.size));
+        acc.rows
+            .sort_unstable_by_key(|row| std::cmp::Reverse(row.size));
     }
 }
 
@@ -255,6 +308,7 @@ mod tests {
         let generation = index.generation();
         DirectorySummary::build(&records, &path, generation).unwrap();
         TreeSummary::ensure(&path, generation).unwrap();
+        assert!(TreeSummary::ensure(&path, generation + 1).is_err());
         let tree = TreeSummary::open_for_compact(&path, generation).unwrap();
         let shape = |listing: &DirListing| {
             let mut subs: Vec<_> = listing
@@ -269,7 +323,13 @@ mod tests {
                 .map(|f| (f.name.to_string(), f.size, f.logical))
                 .collect();
             files.sort();
-            (listing.total_size, listing.total_logical, listing.total_count, subs, files)
+            (
+                listing.total_size,
+                listing.total_logical,
+                listing.total_count,
+                subs,
+                files,
+            )
         };
         for dir in ["/", "/mnt", "/home", "/home/u", "/mnt/keep"] {
             let want = index.list_directory(dir, None, None).unwrap();

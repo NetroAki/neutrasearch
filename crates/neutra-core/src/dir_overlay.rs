@@ -3,8 +3,8 @@
 //! from the sidecar format so reading/writing stays separate from deltas.
 
 use crate::dir_summary::{
-    ancestor_paths, canonical_path, compare_paths, entry_key, invalid, normalize_path,
-    parent_path, ChildKindRank, DirectoryChild, DirectorySummary, DirectorySummaryEntry, Key,
+    ancestor_paths, canonical_path, compare_paths, entry_key, invalid, normalize_path, parent_path,
+    ChildKindRank, DirectoryChild, DirectorySummary, DirectorySummaryEntry, Key,
 };
 use crate::{CompactIndex, DeltaChange, DeltaIndex, FileKind, FileRecord};
 use std::collections::HashMap;
@@ -37,16 +37,18 @@ impl DirectorySummaryOverlay {
             adjustments: HashMap::new(),
             child_changes: HashMap::new(),
         };
-        for record in delta.upserts() {
+        delta.for_each_upsert(|record| {
             let previous = compact.records_by_path(record.path.as_ref())?;
             overlay.apply_change(&DeltaChange::Upsert(record.clone()), &previous)?;
-        }
-        for path in delta.removed() {
-            let previous = compact.records_by_path(path)?;
+            Ok(())
+        })?;
+        delta.for_each_removed(|path| {
+            let previous = compact.records_by_path(&path)?;
             if !previous.is_empty() {
                 overlay.apply_change(&DeltaChange::Remove(path.clone()), &previous)?;
             }
-        }
+            Ok(())
+        })?;
         Ok(overlay)
     }
 
@@ -419,7 +421,11 @@ mod tests {
         delta_path.set_extension("delta");
         let mut delta = DeltaIndex::open(&delta_path, compact.generation()).unwrap();
         delta
-            .apply(DeltaChange::Upsert(record("/docs/b.txt", 5, FileKind::File)))
+            .apply(DeltaChange::Upsert(record(
+                "/docs/b.txt",
+                5,
+                FileKind::File,
+            )))
             .unwrap();
         delta.sync().unwrap();
         let overlay = DirectorySummaryOverlay::from_delta(summary, &compact, &delta).unwrap();

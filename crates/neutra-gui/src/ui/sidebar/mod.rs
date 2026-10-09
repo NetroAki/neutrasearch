@@ -4,7 +4,7 @@ pub(crate) mod banner;
 pub(crate) mod card;
 pub(crate) mod sections;
 
-use super::widgets::{LINE_STRONG, MUTED, SURFACE, TEXT, fmt_count, sans, tracked};
+use super::widgets::{fmt_count, sans, tracked, LINE_STRONG, MUTED, SURFACE, TEXT};
 use crate::NeutraApp;
 use egui::{Align, Layout, Margin, RichText, Stroke};
 
@@ -57,12 +57,22 @@ pub(super) fn side_panel(app: &mut NeutraApp, ui: &mut egui::Ui) {
 
 /// Tracked uppercase section title.
 pub(super) fn overline(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(tracked(text)).font(sans(10.0)).color(MUTED).strong());
+    ui.label(
+        RichText::new(tracked(text))
+            .font(sans(10.0))
+            .color(MUTED)
+            .strong(),
+    );
 }
 
 fn panel_header(app: &mut NeutraApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(tracked("Locations & Index")).font(sans(11.0)).color(TEXT).strong());
+        ui.label(
+            RichText::new(tracked("Locations & Index"))
+                .font(sans(11.0))
+                .color(TEXT)
+                .strong(),
+        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.small_button("\u{d7}").clicked() {
                 app.diagnostics_open = false;
@@ -114,7 +124,12 @@ pub(super) fn status_bar(app: &NeutraApp, ui: &mut egui::Ui) {
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(8.0);
-            ui.label(RichText::new("Neutra Software").font(sans(11.0)).color(MUTED));
+            ui.hyperlink_to(
+                RichText::new("Neutra Software")
+                    .font(sans(11.0))
+                    .color(MUTED),
+                "https://neutra.software",
+            );
             ui.add_space(16.0);
             status_dot(app, ui);
         });
@@ -126,10 +141,16 @@ fn status_dot(app: &NeutraApp, ui: &mut egui::Ui) {
     use super::widgets::VIOLET;
     let (text, color) = if app.scanning || app.building_cache {
         ("Indexing\u{2026}", VIOLET)
-    } else if app.lanes.values().any(|lane| lane.error) {
+    } else if app
+        .lanes
+        .iter()
+        .any(|(name, lane)| name != "watch" && lane.error)
+    {
         ("Some locations unavailable", super::widgets::ERROR)
+    } else if app.lanes.get("watch").is_some_and(|lane| lane.error) {
+        ("Live updates limited", super::widgets::WARN)
     } else {
-        ("Index up to date", GREEN)
+        ("Index ready", GREEN)
     };
     ui.label(RichText::new(text).font(sans(11.0)).color(MUTED));
     let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), egui::Sense::hover());

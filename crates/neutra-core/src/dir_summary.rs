@@ -13,26 +13,26 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
- use std::io::{self, Read, Write};
- #[cfg(test)]
- use std::io::BufWriter;
+#[cfg(test)]
+use std::io::BufWriter;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub(crate) const MAGIC: &[u8; 8] = b"NEUDIR01";
- pub(crate) const VERSION: u32 = 2;
- /// Oldest readable sidecar layout. Version 1 entries lack on-disk totals;
- /// they decode through the frozen layout with physical bytes unset.
- pub(crate) const MIN_READABLE_VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
+/// Oldest readable sidecar layout. Version 1 entries lack on-disk totals;
+/// they decode through the frozen layout with physical bytes unset.
+pub(crate) const MIN_READABLE_VERSION: u32 = 1;
 const PREFIX_BYTES: usize = 20;
 const TRAILER_BYTES: usize = 12;
-  /// Upper bound for the compressed sidecar file. A 100M-record host writes a
-  /// ~1 GiB sidecar, so the cap must admit real files; corrupt input stays
-  /// contained by the compressed-bytes checksum plus the stream bound below.
-  const MAX_SIDECAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
- /// Decompressed payload bound. A 100M-record host holds ~20 GiB of
- /// directory entries. Decoding streams without upfront allocation, so the
- /// bound only caps how much a corrupt stream may yield.
- const MAX_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+/// Upper bound for the compressed sidecar file. A 100M-record host writes a
+/// ~1 GiB sidecar, so the cap must admit real files; corrupt input stays
+/// contained by the compressed-bytes checksum plus the stream bound below.
+const MAX_SIDECAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Decompressed payload bound. A 100M-record host holds ~20 GiB of
+/// directory entries. Decoding streams without upfront allocation, so the
+/// bound only caps how much a corrupt stream may yield.
+const MAX_UNCOMPRESSED_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PathKey {
@@ -94,17 +94,17 @@ pub struct DirectorySummary {
 }
 
 impl DirectorySummary {
-     /// Build and atomically publish the sidecar next to `index_path`.
-     /// Test-only: production builds stream through the spill.
-     #[cfg(test)]
-     pub fn build(records: &[FileRecord], index_path: &Path, generation: u64) -> io::Result<Self> {
+    /// Build and atomically publish the sidecar next to `index_path`.
+    /// Test-only: production builds stream through the spill.
+    #[cfg(test)]
+    pub fn build(records: &[FileRecord], index_path: &Path, generation: u64) -> io::Result<Self> {
         let order = summary_order(records)?;
         write_sidecar_from_order(records, &order, index_path, generation)?;
         Self::open_for_compact(index_path, generation)
     }
 
-     #[cfg(test)]
-     pub(crate) fn build_sidecar_ordered(
+    #[cfg(test)]
+    pub(crate) fn build_sidecar_ordered(
         records: &[FileRecord],
         order: &[u32],
         index_path: &Path,
@@ -193,17 +193,17 @@ impl DirectorySummary {
         Some(children)
     }
 
-     #[cfg(test)]
-     fn from_records(records: &[FileRecord], generation: u64) -> io::Result<Self> {
-         let mut entries = aggregate_records(records)?;
-         entries.sort_unstable_by(|left, right| {
-             compare_key(left.source, &left.path, right.source, &right.path)
-         });
-         Ok(Self {
-             generation,
-             entries,
-         })
-     }
+    #[cfg(test)]
+    fn from_records(records: &[FileRecord], generation: u64) -> io::Result<Self> {
+        let mut entries = aggregate_records(records)?;
+        entries.sort_unstable_by(|left, right| {
+            compare_key(left.source, &left.path, right.source, &right.path)
+        });
+        Ok(Self {
+            generation,
+            entries,
+        })
+    }
 }
 
 fn emit_records<F>(records: &[FileRecord], order: &[u32], mut emit: F) -> io::Result<()>
@@ -318,7 +318,11 @@ pub(crate) fn open_entry(stack: &mut Vec<OpenEntry>, source: u32, path: &str) {
     });
 }
 
-pub(crate) fn close_stack<F>(stack: &mut Vec<OpenEntry>, keep: usize, emit: &mut F) -> io::Result<()>
+pub(crate) fn close_stack<F>(
+    stack: &mut Vec<OpenEntry>,
+    keep: usize,
+    emit: &mut F,
+) -> io::Result<()>
 where
     F: FnMut(DirectorySummaryEntry) -> io::Result<()>,
 {
@@ -359,8 +363,8 @@ pub(crate) fn summary_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
     Ok(order)
 }
 
- #[cfg(test)]
- fn write_sidecar_from_order(
+#[cfg(test)]
+fn write_sidecar_from_order(
     records: &[FileRecord],
     order: &[u32],
     index_path: &Path,
@@ -427,8 +431,6 @@ impl<W: Write> Write for HashingWriter<W> {
         self.inner.flush()
     }
 }
-
-
 
 pub(crate) fn entry_key(source: u32, path: &str) -> Key {
     PathKey {
@@ -637,18 +639,18 @@ fn sidecar_generation(bytes: &[u8]) -> io::Result<u64> {
     Ok(generation)
 }
 
- /// Read one sidecar frame in the layout selected by the file version.
- /// Version comes from the sidecar header, never from probing the frame:
- /// old and new frames share a bincode prefix, so sniffing misdecodes.
- fn decode_entry(version: u32, frame: &[u8]) -> bincode::Result<DirectorySummaryEntry> {
-     if version == VERSION {
-         bincode::deserialize(frame)
-     } else {
-         Ok(DirectorySummaryEntry::from(
-             bincode::deserialize::<OldSummaryEntry>(frame)?,
-         ))
-     }
- }
+/// Read one sidecar frame in the layout selected by the file version.
+/// Version comes from the sidecar header, never from probing the frame:
+/// old and new frames share a bincode prefix, so sniffing misdecodes.
+fn decode_entry(version: u32, frame: &[u8]) -> bincode::Result<DirectorySummaryEntry> {
+    if version == VERSION {
+        bincode::deserialize(frame)
+    } else {
+        Ok(DirectorySummaryEntry::from(bincode::deserialize::<
+            OldSummaryEntry,
+        >(frame)?))
+    }
+}
 
 /// Frozen pre-physical entry layout, for sidecars written by older binaries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -697,96 +699,147 @@ impl From<OldSummaryChild> for DirectoryChild {
     }
 }
 
- /// Aggregate records into summary entries in file order, unsorted. The tree
- /// builds straight from these; callers needing binary search sort them.
- pub fn aggregate_records(
-     records: &[FileRecord],
- ) -> io::Result<Vec<DirectorySummaryEntry>> {
-     let order = summary_order(records)?;
-     let mut entries = Vec::new();
-     emit_records(records, &order, |entry| {
-         entries.push(entry);
-         Ok(())
-     })?;
-     Ok(entries)
- }
+/// Aggregate records into summary entries in file order, unsorted. The tree
+/// builds straight from these; callers needing binary search sort them.
+pub fn aggregate_records(records: &[FileRecord]) -> io::Result<Vec<DirectorySummaryEntry>> {
+    let order = summary_order(records)?;
+    let mut entries = Vec::new();
+    emit_records(records, &order, |entry| {
+        entries.push(entry);
+        Ok(())
+    })?;
+    Ok(entries)
+}
 
- /// Walk validated frames in file order, emitting each entry without
- /// retaining the payload. Skips the entry sort and cross-entry validation
- /// of decode_sidecar: consumers that need binary search or parent/child
- /// consistency use decode_sidecar. Returns the file layout version and
- /// base generation from the header.
- pub(crate) fn walk_frames(
-     bytes: &[u8],
-     emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
- ) -> io::Result<(u32, u64)> {
-     if bytes.len() < PREFIX_BYTES + TRAILER_BYTES || &bytes[..8] != MAGIC {
-         return Err(invalid("not a Neutrasearch directory summary"));
-     }
-     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-     if version != VERSION && version != MIN_READABLE_VERSION {
-         return Err(invalid("unsupported directory summary version"));
-     }
-     let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
-     let trailer = bytes.len() - TRAILER_BYTES;
-     let uncompressed = u64::from_le_bytes(bytes[trailer..trailer + 8].try_into().unwrap());
-     if generation == 0 || uncompressed > MAX_UNCOMPRESSED_BYTES {
-         return Err(invalid("invalid directory summary header"));
-     }
-     let expected_crc = u32::from_le_bytes(bytes[trailer + 8..].try_into().unwrap());
-     let compressed = &bytes[PREFIX_BYTES..trailer];
-     if crc32fast::hash(compressed) != expected_crc {
-         return Err(invalid("directory summary checksum mismatch"));
-     }
-     // Parse length-prefixed frames incrementally: buffering the whole
-     // payload would pin ~20 GiB on a 100M-record host. Only complete
-     // frames plus one read chunk are retained.
-     let decoder = zstd::stream::Decoder::new(compressed).map_err(codec)?;
-     let mut decoder = decoder;
-     let mut buf = Vec::new();
-     let mut chunk = vec![0u8; 1024 * 1024];
-     loop {
-         let mut cursor = 0usize;
-         loop {
-             if buf.len() - cursor < 4 {
-                 break;
-             }
-             let length = u32::from_le_bytes(
-                 buf[cursor..cursor + 4].try_into().unwrap(),
-             ) as usize;
-             let frame_end = cursor
-                 .checked_add(4)
-                 .and_then(|start| start.checked_add(length))
-                 .ok_or_else(|| invalid("directory summary frame length overflow"))?;
-             if frame_end > buf.len() {
-                 break;
-             }
-             emit(decode_entry(version, &buf[cursor + 4..frame_end]).map_err(codec)?)?;
-             cursor = frame_end;
-         }
-         buf.drain(..cursor);
-         let read = decoder.read(&mut chunk).map_err(codec)?;
-         if read == 0 {
-             if !buf.is_empty() {
-                 return Err(invalid("truncated directory summary frame"));
-             }
-             break;
-         }
-         buf.extend_from_slice(&chunk[..read]);
-         if buf.len() as u64 > MAX_UNCOMPRESSED_BYTES + 1 {
-             return Err(invalid("directory summary payload exceeds safety cap"));
-         }
-     }
-     Ok((version, generation))
- }
+/// Walk validated frames in file order, emitting each entry without
+/// retaining the payload. Skips the entry sort and cross-entry validation
+/// of decode_sidecar: consumers that need binary search or parent/child
+/// consistency use decode_sidecar. Returns the file layout version and
+/// base generation from the header.
+pub(crate) fn walk_frames(
+    bytes: &[u8],
+    emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
+) -> io::Result<(u32, u64)> {
+    if bytes.len() < PREFIX_BYTES + TRAILER_BYTES || &bytes[..8] != MAGIC {
+        return Err(invalid("not a Neutrasearch directory summary"));
+    }
+    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    if version != VERSION && version != MIN_READABLE_VERSION {
+        return Err(invalid("unsupported directory summary version"));
+    }
+    let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+    let trailer = bytes.len() - TRAILER_BYTES;
+    let uncompressed = u64::from_le_bytes(bytes[trailer..trailer + 8].try_into().unwrap());
+    if generation == 0 || uncompressed > MAX_UNCOMPRESSED_BYTES {
+        return Err(invalid("invalid directory summary header"));
+    }
+    let expected_crc = u32::from_le_bytes(bytes[trailer + 8..].try_into().unwrap());
+    let compressed = &bytes[PREFIX_BYTES..trailer];
+    if crc32fast::hash(compressed) != expected_crc {
+        return Err(invalid("directory summary checksum mismatch"));
+    }
+    // Parse length-prefixed frames incrementally: buffering the whole
+    // payload would pin ~20 GiB on a 100M-record host. Only complete
+    // frames plus one read chunk are retained.
+    let decoder = zstd::stream::Decoder::new(compressed).map_err(codec)?;
+    walk_decoded_frames(decoder, version, emit)?;
+    Ok((version, generation))
+}
 
- fn decode_sidecar(bytes: &[u8]) -> io::Result<(u64, Vec<DirectorySummaryEntry>)> {
-     let mut entries = Vec::new();
-     let (_, generation) = walk_frames(bytes, &mut |entry| {
-         entries.push(entry);
-         Ok(())
-     })?;
-     validate_entries(&entries)?;
+pub(crate) fn walk_file_frames(
+    file: &mut File,
+    emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
+) -> io::Result<(u32, u64)> {
+    use std::io::{Seek, SeekFrom};
+    let length = file.metadata()?.len();
+    if length < (PREFIX_BYTES + TRAILER_BYTES) as u64 {
+        return Err(invalid("truncated directory summary"));
+    }
+    let mut header = [0u8; PREFIX_BYTES];
+    file.read_exact(&mut header)?;
+    if &header[..8] != MAGIC {
+        return Err(invalid("not a Neutrasearch directory summary"));
+    }
+    let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    let generation = u64::from_le_bytes(header[12..20].try_into().unwrap());
+    if (version != VERSION && version != MIN_READABLE_VERSION) || generation == 0 {
+        return Err(invalid("invalid directory summary header"));
+    }
+    let trailer = length - TRAILER_BYTES as u64;
+    file.seek(SeekFrom::Start(trailer))?;
+    let mut tail = [0u8; TRAILER_BYTES];
+    file.read_exact(&mut tail)?;
+    if u64::from_le_bytes(tail[..8].try_into().unwrap()) > MAX_UNCOMPRESSED_BYTES {
+        return Err(invalid("directory summary payload exceeds safety cap"));
+    }
+    file.seek(SeekFrom::Start(PREFIX_BYTES as u64))?;
+    let compressed_bytes = trailer - PREFIX_BYTES as u64;
+    let mut hasher = crc32fast::Hasher::new();
+    let mut buffer = [0u8; 65536];
+    let mut limited = (&mut *file).take(compressed_bytes);
+    loop {
+        let n = limited.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    if hasher.finalize() != u32::from_le_bytes(tail[8..].try_into().unwrap()) {
+        return Err(invalid("directory summary checksum mismatch"));
+    }
+    file.seek(SeekFrom::Start(PREFIX_BYTES as u64))?;
+    let decoder = zstd::stream::Decoder::new(file.take(compressed_bytes)).map_err(codec)?;
+    walk_decoded_frames(decoder, version, emit)?;
+    Ok((version, generation))
+}
+
+fn walk_decoded_frames(
+    mut decoder: impl Read,
+    version: u32,
+    emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 1024 * 1024];
+    loop {
+        let mut cursor = 0usize;
+        loop {
+            if buf.len() - cursor < 4 {
+                break;
+            }
+            let length = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let frame_end = cursor
+                .checked_add(4)
+                .and_then(|start| start.checked_add(length))
+                .ok_or_else(|| invalid("directory summary frame length overflow"))?;
+            if frame_end > buf.len() {
+                break;
+            }
+            emit(decode_entry(version, &buf[cursor + 4..frame_end]).map_err(codec)?)?;
+            cursor = frame_end;
+        }
+        buf.drain(..cursor);
+        let read = decoder.read(&mut chunk).map_err(codec)?;
+        if read == 0 {
+            if !buf.is_empty() {
+                return Err(invalid("truncated directory summary frame"));
+            }
+            break;
+        }
+        buf.extend_from_slice(&chunk[..read]);
+        if buf.len() as u64 > MAX_UNCOMPRESSED_BYTES + 1 {
+            return Err(invalid("directory summary payload exceeds safety cap"));
+        }
+    }
+    Ok(())
+}
+
+fn decode_sidecar(bytes: &[u8]) -> io::Result<(u64, Vec<DirectorySummaryEntry>)> {
+    let mut entries = Vec::new();
+    let (_, generation) = walk_frames(bytes, &mut |entry| {
+        entries.push(entry);
+        Ok(())
+    })?;
+    validate_entries(&entries)?;
     entries.sort_unstable_by(|left, right| {
         compare_key(left.source, &left.path, right.source, &right.path)
     });

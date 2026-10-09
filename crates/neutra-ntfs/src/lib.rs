@@ -13,7 +13,7 @@ mod geometry;
 mod records;
 
 use anyhow::{bail, Context, Result};
-use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, Run, u16le, u64le};
+use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, u16le, u64le, Run};
 use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
 use records::{append_component, ensure_dir_path, parse_record, Alias, Entry};
 use std::collections::HashMap;
@@ -61,21 +61,10 @@ pub fn scan_reader<R: Read + Seek>(
     if runs.is_empty() {
         bail!("$MFT has no non-resident unnamed $DATA runs");
     }
-    let runs = attr_list::complete_mft_runs(
-        &mut r,
-        &rec0,
-        g.cluster,
-        g.record,
-        g.sector,
-        runs,
-    )?;
+    let runs = attr_list::complete_mft_runs(&mut r, &rec0, g.cluster, g.record, g.sector, runs)?;
     let covered: u64 = runs.iter().map(|run| run.len).sum();
     if covered < mft_size {
-        bail!(
-            "$MFT runs cover {} of {} declared bytes",
-            covered,
-            mft_size
-        );
+        bail!("$MFT runs cover {} of {} declared bytes", covered, mft_size);
     }
     let record_count = mft_size / g.record;
     if record_count > 100_000_000 {
@@ -83,15 +72,15 @@ pub fn scan_reader<R: Read + Seek>(
     }
 
     let mut entries = HashMap::<u64, Entry>::with_capacity(record_count.min(4_000_000) as usize);
-     let mut aliases = HashMap::<u64, Vec<Alias>>::new();
-     let mut skipped_attr_list = 0u64;
+    let mut aliases = HashMap::<u64, Vec<Alias>>::new();
+    let mut skipped_attr_list = 0u64;
     let mut buf = vec![0u8; g.record as usize];
     let mut run_cursor = RunCursor::default();
     for n in 0..record_count {
         run_cursor
             .read(&mut r, &runs, n * g.record, &mut buf)
             .with_context(|| format!("read $MFT record {n}"))?;
-         if &buf[..4] != b"FILE" {
+        if &buf[..4] != b"FILE" {
             continue;
         }
         let flags = u16le(&buf, 22).unwrap_or(0);
@@ -146,7 +135,7 @@ pub fn scan_reader<R: Read + Seek>(
         }
     }
 
-     let mut stats = ScanStats::default();
+    let mut stats = ScanStats::default();
     // Store one portable path spelling in the index. Windows volume roots arrive
     // as `C:\\`; trimming both separators avoids producing `C:\\/name`.
     let prefix = prefix.trim_end_matches(['/', '\\']);
@@ -195,7 +184,7 @@ pub fn scan_reader<R: Read + Seek>(
         sink(FileRecord {
             path: full.into_boxed_str(),
             size: entry.size,
-            disk: entry.alloc,
+            disk: FileRecord::allocated_bytes(entry.alloc),
             mtime: entry.mtime,
             mode: 0,
             kind,
@@ -235,7 +224,7 @@ pub fn scan_reader<R: Read + Seek>(
             sink(FileRecord {
                 path: full.into_boxed_str(),
                 size: entry.size,
-            disk: entry.alloc,
+                disk: FileRecord::allocated_bytes(entry.alloc),
                 mtime: entry.mtime,
                 mode: 0,
                 kind: FileKind::File,

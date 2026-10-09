@@ -2,12 +2,12 @@
 //! the previous scan left per-mount totals (native lanes never know the
 //! total upfront), per-location details, cancel state.
 
+use super::super::icons::GREEN;
 use super::super::icons::{paint_db_icon, paint_drive_icon};
 use super::super::widgets::{
-    ACID_STRONG, VIOLET, ERROR, HOVER, LINE_STRONG, MUTED, TEXT, fmt_count, mono, sans,
-    secondary_button, shorten,
+    fmt_count, mono, sans, secondary_button, shorten, ACID_STRONG, ERROR, HOVER, LINE_STRONG,
+    MUTED, TEXT, VIOLET,
 };
-use super::super::icons::GREEN;
 use super::SidebarTab;
 use crate::{LaneState, NeutraApp};
 use egui::{Align, Color32, Layout, RichText, Stroke, Vec2};
@@ -37,9 +37,11 @@ pub(crate) fn indexing_card(app: &mut NeutraApp, ui: &mut egui::Ui) {
     progress_bar(ui, overall);
     ui.add_space(6.0);
     ui.label(
-        RichText::new("Reachable locations are published together; unavailable locations are skipped.")
-            .font(sans(11.0))
-            .color(MUTED),
+        RichText::new(
+            "Reachable locations are published together; unavailable locations are skipped.",
+        )
+        .font(sans(11.0))
+        .color(MUTED),
     );
     ui.add_space(8.0);
     super::overline(ui, "Per-location details");
@@ -89,7 +91,12 @@ fn overall_fraction(app: &NeutraApp) -> Option<f32> {
     for (path, _) in mount_lanes(app) {
         match app.mount_totals.get(path) {
             Some(known) if *known > 0 => {
-                staged += app.staged_by_mount.get(path).copied().unwrap_or(0).min(*known);
+                staged += app
+                    .staged_by_mount
+                    .get(path)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(*known);
                 total += known;
             }
             _ => return None,
@@ -102,33 +109,51 @@ fn overall_fraction(app: &NeutraApp) -> Option<f32> {
 }
 
 fn drive_fraction(app: &NeutraApp, path: &str) -> Option<f32> {
-    let total = app.mount_totals.get(path).copied().filter(|total| *total > 0)?;
-    let staged = app.staged_by_mount.get(path).copied().unwrap_or(0).min(total);
+    let total = app
+        .mount_totals
+        .get(path)
+        .copied()
+        .filter(|total| *total > 0)?;
+    let staged = app
+        .staged_by_mount
+        .get(path)
+        .copied()
+        .unwrap_or(0)
+        .min(total);
     Some((staged as f64 / total as f64).min(1.0) as f32)
 }
 
 fn progress_bar(ui: &mut egui::Ui, overall: Option<f32>) {
-    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), egui::Sense::hover());
+    let (bar, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), egui::Sense::hover());
     ui.painter().rect_filled(bar, 3.0, HOVER);
     match overall {
         Some(fraction) => {
-            let fill = egui::Rect::from_min_size(bar.left_top(), Vec2::new(bar.width() * fraction, bar.height()));
+            let fill = egui::Rect::from_min_size(
+                bar.left_top(),
+                Vec2::new(bar.width() * fraction, bar.height()),
+            );
             ui.painter().rect_filled(fill, 3.0, ACID_STRONG);
         }
         None => {
-            let pulse = ((ui.ctx().input(|input| input.time) * 0.42).fract() as f32).clamp(0.0, 1.0);
+            let pulse =
+                ((ui.ctx().input(|input| input.time) * 0.42).fract() as f32).clamp(0.0, 1.0);
             let segment = egui::Rect::from_min_size(
                 bar.left_top() + Vec2::new(bar.width() * pulse * 0.72, 0.0),
                 Vec2::new(bar.width() * 0.28, bar.height()),
             );
-            ui.painter().rect_filled(segment.intersect(bar), 3.0, ACID_STRONG);
+            ui.painter()
+                .rect_filled(segment.intersect(bar), 3.0, ACID_STRONG);
         }
     }
 }
 
 fn mount_lanes(app: &NeutraApp) -> Vec<(&String, &LaneState)> {
-    let mut lanes: Vec<(&String, &LaneState)> =
-        app.lanes.iter().filter(|(key, _)| key.starts_with('/')).collect();
+    let mut lanes: Vec<(&String, &LaneState)> = app
+        .lanes
+        .iter()
+        .filter(|(key, _)| key.starts_with('/'))
+        .collect();
     lanes.sort_by(|left, right| left.0.cmp(right.0));
     lanes
 }
@@ -138,7 +163,11 @@ fn detail_row(app: &NeutraApp, ui: &mut egui::Ui, path: &str, lane: &LaneState) 
     let right = drive_right(app, path, lane);
     ui.horizontal(|ui| {
         paint_drive_icon(ui, MUTED);
-        ui.label(RichText::new(shorten(path, 34)).font(mono(10.0)).color(TEXT));
+        ui.label(
+            RichText::new(shorten(path, 34))
+                .font(mono(10.0))
+                .color(TEXT),
+        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(right).font(sans(11.0)).color(MUTED));
             ui.label(RichText::new(status).font(sans(11.0)).color(color));
@@ -165,7 +194,11 @@ fn drive_right(app: &NeutraApp, path: &str, lane: &LaneState) -> String {
         return "-".to_owned();
     }
     if lane.records > 0 {
-        return format!("{} objects \u{b7} {}", fmt_count(lane.records), fmt_ms(lane.ms));
+        return format!(
+            "{} objects \u{b7} {}",
+            fmt_count(lane.records),
+            fmt_ms(lane.ms)
+        );
     }
     match app.staged_by_mount.get(path).copied().unwrap_or(0) {
         0 => "-".to_owned(),

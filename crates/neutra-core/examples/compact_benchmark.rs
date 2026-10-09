@@ -1,4 +1,6 @@
-use neutra_core::{CompactIndex, DirectorySummary, FileKind, FileRecord, FsKind, Query};
+use neutra_core::{
+    CompactIndex, DirectorySummary, FileKind, FileRecord, FsKind, Query, SpillAccumulator,
+};
 use std::path::PathBuf;
 use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,8 +46,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let generated_ms = started.elapsed().as_millis();
-    let built = CompactIndex::build_with_summary(&records, &output)?;
-    drop(records);
+    let mut spill = SpillAccumulator::begin(&output)?;
+    spill.push_batch(records)?;
+    let built = CompactIndex::rebuild_streamed(spill.finish()?, &output)?;
     let sidecar_bytes = std::fs::metadata(DirectorySummary::path_for(&output))?.len();
     let index = CompactIndex::open(&output)?;
     let query = Query::parse(&format!("needle{:08x}", count.saturating_sub(1)));

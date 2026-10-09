@@ -18,7 +18,12 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn seek(index: &'a CompactIndex, key: &str) -> io::Result<Self> {
-        let mut cursor = Self { index, block: 0, records: Vec::new(), at: 0 };
+        let mut cursor = Self {
+            index,
+            block: 0,
+            records: Vec::new(),
+            at: 0,
+        };
         cursor.reseek(key)?;
         Ok(cursor)
     }
@@ -30,14 +35,21 @@ impl<'a> Cursor<'a> {
             let middle = low + (high - low) / 2;
             let records = self.index.read_block(middle as u32)?;
             self.index.release_block(middle as u32);
-            if records.last().is_some_and(|last| compare_index_paths(last.path.as_ref(), key) == Ordering::Less) {
+            if records
+                .last()
+                .is_some_and(|last| compare_index_paths(last.path.as_ref(), key) == Ordering::Less)
+            {
                 low = middle + 1;
             } else {
                 high = middle;
             }
         }
         self.block = low;
-        self.records = if low < self.index.blocks.count { self.index.read_block(low as u32)? } else { Vec::new() };
+        self.records = if low < self.index.blocks.count {
+            self.index.read_block(low as u32)?
+        } else {
+            Vec::new()
+        };
         self.at = self
             .records
             .iter()
@@ -95,18 +107,33 @@ impl CompactIndex {
     }
 
     /// Direct children of `dir` as the base and delta show them together.
-    pub fn directory_children(&self, dir: &str, delta: Option<&DeltaIndex>) -> io::Result<Vec<FileRecord>> {
+    pub fn directory_children(
+        &self,
+        dir: &str,
+        delta: Option<&DeltaIndex>,
+    ) -> io::Result<Vec<FileRecord>> {
         let prefix = dir_prefix(dir);
-        let mut out: Vec<FileRecord> = self
-            .base_children(dir)?
-            .into_iter()
-            .filter(|record| !delta.is_some_and(|d| d.shadows(record.path.as_ref())))
-            .collect();
-        for record in delta.into_iter().flat_map(DeltaIndex::upserts) {
-            let path = record.path.as_ref();
-            if starts_with_folded(path, &prefix) && !path[prefix.len()..].contains(['/', '\\']) {
-                out.push(record.clone());
+        let base = self.base_children(dir)?;
+        let shadows = match delta {
+            Some(delta) => {
+                delta.shadows_batch(&base.iter().map(|r| r.path.as_ref()).collect::<Vec<_>>())?
             }
+            None => vec![false; base.len()],
+        };
+        let mut out: Vec<FileRecord> = base
+            .into_iter()
+            .zip(shadows)
+            .filter_map(|(r, shadowed)| (!shadowed).then_some(r))
+            .collect();
+        if let Some(delta) = delta {
+            delta.for_each_upsert(|record| {
+                let path = record.path.as_ref();
+                if starts_with_folded(path, &prefix) && !path[prefix.len()..].contains(['/', '\\'])
+                {
+                    out.push(record);
+                }
+                Ok(())
+            })?;
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out.dedup_by(|a, b| a.path == b.path);
@@ -124,25 +151,49 @@ impl CompactIndex {
         let prefix = dir_prefix(dir);
         let mut cursor = Cursor::seek(self, &prefix)?;
         let mut out = Vec::new();
-        while let Some(record) = cursor.peek() {
-            if !starts_with_folded(record.path.as_ref(), &prefix) {
-                break;
-            }
-            if !delta.is_some_and(|d| d.shadows(record.path.as_ref())) {
-                if out.len() >= limit {
-                    return Ok(None);
+        while cursor
+            .peek()
+            .is_some_and(|r| starts_with_folded(r.path.as_ref(), &prefix))
+        {
+            let mut block = Vec::with_capacity(crate::compact::BLOCK_RECORDS);
+            for _ in 0..crate::compact::BLOCK_RECORDS {
+                let Some(record) = cursor.peek() else { break };
+                if !starts_with_folded(record.path.as_ref(), &prefix) {
+                    break;
                 }
-                out.push(record.clone());
+                block.push(record.clone());
+                cursor.advance()?;
             }
-            cursor.advance()?;
+            let shadows = match delta {
+                Some(d) => {
+                    d.shadows_batch(&block.iter().map(|r| r.path.as_ref()).collect::<Vec<_>>())?
+                }
+                None => vec![false; block.len()],
+            };
+            for (record, shadowed) in block.into_iter().zip(shadows) {
+                if !shadowed {
+                    if out.len() >= limit {
+                        return Ok(None);
+                    }
+                    out.push(record);
+                }
+            }
         }
-        for record in delta.into_iter().flat_map(DeltaIndex::upserts) {
-            if starts_with_folded(record.path.as_ref(), &prefix) {
-                if out.len() >= limit {
-                    return Ok(None);
+        let mut exceeded = false;
+        if let Some(delta) = delta {
+            delta.for_each_upsert(|record| {
+                if starts_with_folded(record.path.as_ref(), &prefix) {
+                    if out.len() >= limit {
+                        exceeded = true;
+                    } else {
+                        out.push(record);
+                    }
                 }
-                out.push(record.clone());
-            }
+                Ok(())
+            })?;
+        }
+        if exceeded {
+            return Ok(None);
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out.dedup_by(|a, b| a.path == b.path);
@@ -183,7 +234,8 @@ mod tests {
             rec("/d/b/y.txt", FileKind::File, 9),
             rec("/e/z.txt", FileKind::File, 10),
         ];
-        let path = std::env::temp_dir().join(format!("neutra-children-{name}-{}.idx", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("neutra-children-{name}-{}.idx", std::process::id()));
         CompactIndex::build(&records, &path).unwrap();
         let index = CompactIndex::open_fast(&path).unwrap();
         (path, index)
@@ -197,8 +249,14 @@ mod tests {
     fn children_skip_subtrees_and_keep_odd_neighbours() {
         let (path, index) = fixture("kids");
         let kids = index.directory_children("/d", None).unwrap();
-        assert_eq!(names(&kids), ["/d/a", "/d/a-b.txt", "/d/a.txt", "/d/a0", "/d/b"]);
-        assert!(index.directory_children("/nothing", None).unwrap().is_empty());
+        assert_eq!(
+            names(&kids),
+            ["/d/a", "/d/a-b.txt", "/d/a.txt", "/d/a0", "/d/b"]
+        );
+        assert!(index
+            .directory_children("/nothing", None)
+            .unwrap()
+            .is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -217,11 +275,21 @@ mod tests {
         let delta_path = path.with_extension("delta");
         let mut delta = DeltaIndex::open(&delta_path, index.generation()).unwrap();
         delta.apply(DeltaChange::Remove("/d/b".into())).unwrap();
-        delta.apply(DeltaChange::Upsert(rec("/d/new.txt", FileKind::File, 11))).unwrap();
-        delta.apply(DeltaChange::Upsert(rec("/d/b/y2.txt", FileKind::File, 12))).unwrap();
+        delta
+            .apply(DeltaChange::Upsert(rec("/d/new.txt", FileKind::File, 11)))
+            .unwrap();
+        delta
+            .apply(DeltaChange::Upsert(rec("/d/b/y2.txt", FileKind::File, 12)))
+            .unwrap();
         let kids = index.directory_children("/d", Some(&delta)).unwrap();
-        assert_eq!(names(&kids), ["/d/a", "/d/a-b.txt", "/d/a.txt", "/d/a0", "/d/new.txt"]);
-        let below = index.subtree_records("/d/b", Some(&delta), 10).unwrap().unwrap();
+        assert_eq!(
+            names(&kids),
+            ["/d/a", "/d/a-b.txt", "/d/a.txt", "/d/a0", "/d/new.txt"]
+        );
+        let below = index
+            .subtree_records("/d/b", Some(&delta), 10)
+            .unwrap()
+            .unwrap();
         // A tombstone hides only its own path; callers expand a removed
         // directory into one tombstone per descendant.
         assert_eq!(names(&below), ["/d/b/y.txt", "/d/b/y2.txt"]);

@@ -158,8 +158,11 @@ impl QueryMatcher {
                 Some((pos, len)) => {
                     // Name match. Prefix matches and full-name matches score best.
                     let base: u64 = if pos == 0 { 1 << 20 } else { 1 << 12 };
-                    let exact_bonus: u64 =
-                        if pos == 0 && len == name.len() { 1 << 24 } else { 0 };
+                    let exact_bonus: u64 = if pos == 0 && len == name.len() {
+                        1 << 24
+                    } else {
+                        0
+                    };
                     total += base + exact_bonus + 256u64.saturating_sub(pos.min(255) as u64);
                 }
                 None => {
@@ -174,7 +177,11 @@ impl QueryMatcher {
 
 fn name_score(pos: usize, match_len: usize, name_len: usize) -> u32 {
     let base: u64 = if pos == 0 { 1 << 20 } else { 1 << 12 };
-    let exact_bonus: u64 = if pos == 0 && match_len == name_len { 1 << 24 } else { 0 };
+    let exact_bonus: u64 = if pos == 0 && match_len == name_len {
+        1 << 24
+    } else {
+        0
+    };
     (base + exact_bonus + 256u64.saturating_sub(pos.min(255) as u64)).min(u32::MAX as u64) as u32
 }
 
@@ -299,16 +306,26 @@ fn norm_char(c: char, case_sensitive: bool, fold_accents: bool) -> char {
 #[inline]
 fn strip_accent(c: char) -> char {
     match c {
-        '\u{e0}' | '\u{e1}' | '\u{e2}' | '\u{e3}' | '\u{e4}' | '\u{e5}' | '\u{101}' | '\u{103}' | '\u{105}' => 'a',
-        '\u{c0}' | '\u{c1}' | '\u{c2}' | '\u{c3}' | '\u{c4}' | '\u{c5}' | '\u{100}' | '\u{102}' | '\u{104}' => 'A',
-        '\u{e8}' | '\u{e9}' | '\u{ea}' | '\u{eb}' | '\u{113}' | '\u{115}' | '\u{117}' | '\u{119}' | '\u{11b}' => 'e',
-        '\u{c8}' | '\u{c9}' | '\u{ca}' | '\u{cb}' | '\u{112}' | '\u{114}' | '\u{116}' | '\u{118}' | '\u{11a}' => 'E',
-        '\u{ec}' | '\u{ed}' | '\u{ee}' | '\u{ef}' | '\u{12b}' | '\u{12d}' | '\u{12f}' | '\u{131}' => 'i',
-        '\u{cc}' | '\u{cd}' | '\u{ce}' | '\u{cf}' | '\u{12a}' | '\u{12c}' | '\u{12e}' | '\u{130}' => 'I',
-        '\u{f2}' | '\u{f3}' | '\u{f4}' | '\u{f5}' | '\u{f6}' | '\u{f8}' | '\u{14d}' | '\u{14f}' | '\u{151}' => 'o',
-        '\u{d2}' | '\u{d3}' | '\u{d4}' | '\u{d5}' | '\u{d6}' | '\u{d8}' | '\u{14c}' | '\u{14e}' | '\u{150}' => 'O',
-        '\u{f9}' | '\u{fa}' | '\u{fb}' | '\u{fc}' | '\u{16b}' | '\u{16d}' | '\u{16f}' | '\u{171}' | '\u{173}' => 'u',
-        '\u{d9}' | '\u{da}' | '\u{db}' | '\u{dc}' | '\u{16a}' | '\u{16c}' | '\u{16e}' | '\u{170}' | '\u{172}' => 'U',
+        '\u{e0}' | '\u{e1}' | '\u{e2}' | '\u{e3}' | '\u{e4}' | '\u{e5}' | '\u{101}' | '\u{103}'
+        | '\u{105}' => 'a',
+        '\u{c0}' | '\u{c1}' | '\u{c2}' | '\u{c3}' | '\u{c4}' | '\u{c5}' | '\u{100}' | '\u{102}'
+        | '\u{104}' => 'A',
+        '\u{e8}' | '\u{e9}' | '\u{ea}' | '\u{eb}' | '\u{113}' | '\u{115}' | '\u{117}'
+        | '\u{119}' | '\u{11b}' => 'e',
+        '\u{c8}' | '\u{c9}' | '\u{ca}' | '\u{cb}' | '\u{112}' | '\u{114}' | '\u{116}'
+        | '\u{118}' | '\u{11a}' => 'E',
+        '\u{ec}' | '\u{ed}' | '\u{ee}' | '\u{ef}' | '\u{12b}' | '\u{12d}' | '\u{12f}'
+        | '\u{131}' => 'i',
+        '\u{cc}' | '\u{cd}' | '\u{ce}' | '\u{cf}' | '\u{12a}' | '\u{12c}' | '\u{12e}'
+        | '\u{130}' => 'I',
+        '\u{f2}' | '\u{f3}' | '\u{f4}' | '\u{f5}' | '\u{f6}' | '\u{f8}' | '\u{14d}' | '\u{14f}'
+        | '\u{151}' => 'o',
+        '\u{d2}' | '\u{d3}' | '\u{d4}' | '\u{d5}' | '\u{d6}' | '\u{d8}' | '\u{14c}' | '\u{14e}'
+        | '\u{150}' => 'O',
+        '\u{f9}' | '\u{fa}' | '\u{fb}' | '\u{fc}' | '\u{16b}' | '\u{16d}' | '\u{16f}'
+        | '\u{171}' | '\u{173}' => 'u',
+        '\u{d9}' | '\u{da}' | '\u{db}' | '\u{dc}' | '\u{16a}' | '\u{16c}' | '\u{16e}'
+        | '\u{170}' | '\u{172}' => 'U',
         '\u{fd}' | '\u{ff}' | '\u{177}' => 'y',
         '\u{dd}' | '\u{178}' | '\u{176}' => 'Y',
         '\u{e7}' | '\u{107}' | '\u{109}' | '\u{10d}' => 'c',
@@ -348,7 +365,11 @@ pub(crate) fn cmp_name_ci(left: &str, right: &str) -> std::cmp::Ordering {
 const LATEST_PLAUSIBLE_MTIME: i64 = 4_102_444_800;
 
 fn sort_mtime(record: &FileRecord) -> i64 {
-    if record.mtime > LATEST_PLAUSIBLE_MTIME { 0 } else { record.mtime }
+    if record.mtime > LATEST_PLAUSIBLE_MTIME {
+        0
+    } else {
+        record.mtime
+    }
 }
 
 /// The single sort comparator shared by the in-memory and compact engines.
@@ -360,19 +381,31 @@ pub(crate) fn compare_records(
     b: &(u32, &FileRecord),
 ) -> std::cmp::Ordering {
     match sort {
-        SortKey::Relevance => b
-            .0
-            .cmp(&a.0)
-            .then(b.1.mtime.cmp(&a.1.mtime))
-            .then(a.1.path.cmp(&b.1.path)),
+        SortKey::Relevance => {
+            b.0.cmp(&a.0)
+                .then(sort_mtime(b.1).cmp(&sort_mtime(a.1)))
+                .then(b.1.path.cmp(&a.1.path))
+        }
         SortKey::NameAsc => cmp_name_ci(a.1.name(), b.1.name()).then(a.1.path.cmp(&b.1.path)),
         SortKey::NameDesc => cmp_name_ci(b.1.name(), a.1.name()).then(b.1.path.cmp(&a.1.path)),
         SortKey::PathAsc => a.1.path.cmp(&b.1.path),
         SortKey::PathDesc => b.1.path.cmp(&a.1.path),
-        SortKey::SizeDesc => b.1.size.cmp(&a.1.size).then(a.1.path.cmp(&b.1.path)),
-        SortKey::SizeAsc => a.1.size.cmp(&b.1.size).then(a.1.path.cmp(&b.1.path)),
-        SortKey::MtimeDesc => sort_mtime(b.1).cmp(&sort_mtime(a.1)).then(a.1.path.cmp(&b.1.path)),
-        SortKey::MtimeAsc => sort_mtime(a.1).cmp(&sort_mtime(b.1)).then(a.1.path.cmp(&b.1.path)),
+        SortKey::SizeDesc => {
+            b.1.disk_bytes()
+                .cmp(&a.1.disk_bytes())
+                .then(b.1.path.cmp(&a.1.path))
+        }
+        SortKey::SizeAsc => {
+            a.1.disk_bytes()
+                .cmp(&b.1.disk_bytes())
+                .then(a.1.path.cmp(&b.1.path))
+        }
+        SortKey::MtimeDesc => sort_mtime(b.1)
+            .cmp(&sort_mtime(a.1))
+            .then(b.1.path.cmp(&a.1.path)),
+        SortKey::MtimeAsc => sort_mtime(a.1)
+            .cmp(&sort_mtime(b.1))
+            .then(a.1.path.cmp(&b.1.path)),
     }
 }
 
@@ -386,18 +419,36 @@ mod tests {
         // because only the haystack was folded.
         // Matches return (byte offset, byte length); non-ASCII letters span
         // multiple bytes in UTF-8.
-        assert_eq!(find_term("café.md", "CAFÉ", "café", false, false, false), Some((0, 5)));
-        assert_eq!(find_term("ärger.txt", "ÄRGER", "ärger", false, false, false), Some((0, 6)));
-        assert_eq!(find_term("文件.txt", "文件", "文件", false, false, false), Some((0, 6)));
-        assert_eq!(find_term("report.pdf", "MISSING", "missing", false, false, false), None);
+        assert_eq!(
+            find_term("café.md", "CAFÉ", "café", false, false, false),
+            Some((0, 5))
+        );
+        assert_eq!(
+            find_term("ärger.txt", "ÄRGER", "ärger", false, false, false),
+            Some((0, 6))
+        );
+        assert_eq!(
+            find_term("文件.txt", "文件", "文件", false, false, false),
+            Some((0, 6))
+        );
+        assert_eq!(
+            find_term("report.pdf", "MISSING", "missing", false, false, false),
+            None
+        );
         // `to_lowercase` is not full case folding: ß does not match "SS".
         // Same semantics as before this refactor; documented, not accidental.
-        assert_eq!(find_term("Straße.txt", "STRASSE", "strasse", false, false, false), None);
+        assert_eq!(
+            find_term("Straße.txt", "STRASSE", "strasse", false, false, false),
+            None
+        );
     }
 
     #[test]
     fn ascii_paths_stay_on_the_fast_byte_path() {
-        assert_eq!(find_term("/a/Report.PDF", "report", "report", false, false, false), Some((3, 6)));
+        assert_eq!(
+            find_term("/a/Report.PDF", "report", "report", false, false, false),
+            Some((3, 6))
+        );
     }
 
     #[test]

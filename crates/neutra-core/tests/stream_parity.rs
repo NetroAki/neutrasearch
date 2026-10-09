@@ -13,7 +13,11 @@ fn fixture(count: usize) -> Vec<FileRecord> {
             size: (id as u64).wrapping_mul(1_234_567),
             mtime: id as i64,
             mode: 0o644,
-            kind: if id % 11 == 0 { FileKind::Dir } else { FileKind::File },
+            kind: if id % 11 == 0 {
+                FileKind::Dir
+            } else {
+                FileKind::File
+            },
             fs: FsKind::Ext4,
             native_id: id as u64,
             native_parent: dir as u64,
@@ -31,7 +35,11 @@ fn streamed_build_indexes_every_record_at_scale() {
     std::fs::create_dir_all(&dir).unwrap();
     let records = fixture(1_000_001);
     let expected_files = records.iter().filter(|r| r.kind == FileKind::File).count() as u64;
-    let expected_size: u64 = records.iter().filter(|r| r.kind == FileKind::File).map(|r| r.size).sum();
+    let expected_size: u64 = records
+        .iter()
+        .filter(|r| r.kind == FileKind::File)
+        .map(|r| r.size)
+        .sum();
     let spilled = dir.join("streamed.nsx");
     let mut accumulator = SpillAccumulator::begin(&spilled).unwrap();
     for batch in records.chunks(100_000) {

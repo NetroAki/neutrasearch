@@ -9,16 +9,15 @@ mod tools;
 
 use anyhow::{bail, Result};
 use policy::allowed_roots_from;
-use tools::call_tool;
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use store::Store;
+use tools::call_tool;
 
 fn main() -> Result<()> {
-     let index_path =
-         configured_index_from(std::env::var_os("NEUTRASEARCH_INDEX"))?;
+    let index_path = configured_index_from(std::env::var_os("NEUTRASEARCH_INDEX"))?;
     let allowed_roots = allowed_roots_from(std::env::var_os("NEUTRASEARCH_MCP_ALLOWED_ROOTS"))?;
     serve(
         Store::open(index_path)?,
@@ -80,8 +79,8 @@ fn write_json(w: &mut impl Write, v: &Value) -> Result<()> {
     Ok(())
 }
 
- fn configured_index_from(configured: Option<OsString>) -> Result<PathBuf> {
-     if let Some(path) = configured {
+fn configured_index_from(configured: Option<OsString>) -> Result<PathBuf> {
+    if let Some(path) = configured {
         if path.is_empty() {
             bail!("configured MCP index path must not be empty");
         }
@@ -94,10 +93,10 @@ fn write_json(w: &mut impl Write, v: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use crate::policy::{path_is_allowed, portable_path_is_under, portable_path_text};
-    use std::path::Path;
     use crate::store::Store;
     use neutra_core::{FileKind, FileRecord, FsKind, Index};
     use std::io::Cursor;
+    use std::path::Path;
 
     fn empty_store() -> Store {
         Store::Legacy {
@@ -118,10 +117,10 @@ mod tests {
     #[test]
     fn index_location_defaults_and_missing_file_fails() {
         assert_eq!(
-             configured_index_from(None).unwrap(),
+            configured_index_from(None).unwrap(),
             neutra_core::paths::resolve_index_path(None)
         );
-         assert!(configured_index_from(Some(OsString::new())).is_err());
+        assert!(configured_index_from(Some(OsString::new())).is_err());
 
         let missing = std::env::temp_dir().join(format!(
             "neutrasearch-mcp-missing-{}-{}",
@@ -174,17 +173,17 @@ mod tests {
         assert_eq!(result["structuredContent"]["paths"][0], allowed_file);
     }
 
-     fn build_test_base(records: &[FileRecord], path: &std::path::Path) {
-         let mut spill = neutra_core::SpillAccumulator::begin(path).unwrap();
-         spill.push_batch(records.to_vec()).unwrap();
-         neutra_core::CompactIndex::rebuild_streamed(spill.finish().unwrap(), path).unwrap();
-     }
+    fn build_test_base(records: &[FileRecord], path: &std::path::Path) {
+        let mut spill = neutra_core::SpillAccumulator::begin(path).unwrap();
+        spill.push_batch(records.to_vec()).unwrap();
+        neutra_core::CompactIndex::rebuild_streamed(spill.finish().unwrap(), path).unwrap();
+    }
 
-     #[test]
-     fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
-         let path =
-             std::env::temp_dir().join(format!("neutra-mcp-dirsum-{}.nsx", std::process::id()));
-         let _ = std::fs::remove_file(&path);
+    #[test]
+    fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
+        let path =
+            std::env::temp_dir().join(format!("neutra-mcp-dirsum-{}.nsx", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let records = vec![
             FileRecord {
                 path: "/docs".into(),
@@ -211,8 +210,8 @@ mod tests {
                 disk: 0,
             },
         ];
-         build_test_base(&records, &path);
-         let mut store = Store::open(path.clone()).unwrap();
+        build_test_base(&records, &path);
+        let mut store = Store::open(path.clone()).unwrap();
         let result = call_tool(
             &mut store,
             &[],

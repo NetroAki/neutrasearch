@@ -5,6 +5,7 @@ use std::process::Command;
 
 pub enum Action {
     Gui,
+    Spotlight,
     Exit(i32),
 }
 
@@ -19,6 +20,7 @@ pub fn action() -> Action {
         return Action::Exit(2);
     };
     match command {
+        "--spotlight" if args.is_empty() => Action::Spotlight,
         "gui" => {
             if args.is_empty() {
                 Action::Gui
@@ -28,6 +30,20 @@ pub fn action() -> Action {
         }
         "search" => Action::Exit(search(args)),
         "index" => Action::Exit(index(args)),
+        "--ensure-index" if args.is_empty() => {
+            let path = neutra_core::paths::resolve_index_path(None);
+            let result = if path.exists() {
+                CompactIndex::open_fast(&path)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            } else {
+                ensure_index(&path)
+            };
+            Action::Exit(match result {
+                Ok(()) => 0,
+                Err(message) => error(&message),
+            })
+        }
         "serve" => Action::Exit(serve(args)),
         "mcp" => Action::Exit(with_index(args, "mcp", |index| {
             run_companion(
@@ -81,11 +97,13 @@ fn search(args: Vec<std::ffi::OsString>) -> i32 {
 
 fn index(args: Vec<std::ffi::OsString>) -> i32 {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: neutrasearch index [--output INDEX.nsx] [--zfs-enumerate]");
-        println!("--zfs-enumerate: index ZFS datasets with a one-time single-pass enumeration");
+        println!("Usage: neutrasearch index [--output INDEX.nsx]");
         return 0;
     }
     let allow_zfs_enumerate = args.iter().any(|arg| arg == "--zfs-enumerate");
+    if allow_zfs_enumerate {
+        return error("Directory walking is disabled; ZFS requires a native metadata backend");
+    }
     let args = args
         .into_iter()
         .filter(|arg| arg != "--zfs-enumerate")
@@ -106,8 +124,10 @@ fn index(args: Vec<std::ffi::OsString>) -> i32 {
 /// Precompute the newest and largest listings so the GUI's first screen is
 /// instant. A failure only costs the GUI a background build later.
 fn build_ranked_lists(path: &Path) {
-    let built = CompactIndex::open_fast(path)
-        .and_then(|index| neutra_core::RankedLists::ensure(path, index.generation()));
+    let built = CompactIndex::open_fast(path).and_then(|index| {
+        neutra_core::BrowserIndex::ensure(path, index.generation())?;
+        neutra_core::TreeSummary::ensure(path, index.generation())
+    });
     if let Err(message) = built {
         eprintln!("neutrasearch: sorted lists not built: {message}");
     }
@@ -219,14 +239,22 @@ fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> Result<(), S
         roots.clone(),
         allow_zfs_enumerate,
     );
-    let mut spill = SpillAccumulator::begin(output).map_err(|error| format!("cannot spill scan batches: {error}"))?;
+    let mut spill = SpillAccumulator::begin(output)
+        .map_err(|error| format!("cannot spill scan batches: {error}"))?;
     let (completed_mounts, errors) = loop {
         match rx.recv() {
             Ok(super::Event::Message(HelperMsg::ScanBegin { mount })) => {
                 eprintln!("neutrasearch: indexing {}", mount.mountpoint.display());
             }
             Ok(super::Event::Message(HelperMsg::Records(records))) => {
-                spill.push_batch(records.into_iter().filter(|record| super::record_in_roots(record.path.as_ref(), &roots)).collect()).map_err(|error| format!("cannot spill scan batches: {error}"))?;
+                spill
+                    .push_batch(
+                        records
+                            .into_iter()
+                            .filter(|record| super::record_in_roots(record.path.as_ref(), &roots))
+                            .collect(),
+                    )
+                    .map_err(|error| format!("cannot spill scan batches: {error}"))?;
             }
             Ok(super::Event::Message(HelperMsg::ScanDone { mount, stats })) => {
                 eprintln!(
@@ -259,8 +287,13 @@ fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> Result<(), S
     if spill.is_empty() {
         return Err("native scanners returned no files; the previous index was kept".into());
     }
-    let built = CompactIndex::rebuild_streamed(spill.finish().map_err(|error| format!("cannot publish {}: {error}", output.display()))?, output)
-        .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
+    let built = CompactIndex::rebuild_streamed(
+        spill
+            .finish()
+            .map_err(|error| format!("cannot publish {}: {error}", output.display()))?,
+        output,
+    )
+    .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
     let remembered = neutra_core::paths::remember_index_path(output)
         .map_err(|error| format!("cannot remember {}: {error}", output.display()))?;
     println!(

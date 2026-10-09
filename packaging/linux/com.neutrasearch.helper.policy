@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Neutrasearch privileged indexing helper — polkit policy.
+
+  Installing this file lets pkexec match the Neutrasearch helper by its
+  installed path and cache administrator authorization for five minutes,
+  so a scanning session asks for the password once instead of per scan.
+  Without it, pkexec falls back to org.freedesktop.policykit.exec and
+  prompts on every elevated scan.
+
+  Install (adjust for the helper path in use):
+    install -Dm644 com.neutrasearch.helper.policy \
+      /usr/share/polkit-1/actions/com.neutrasearch.helper.policy
+-->
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+
+  <action id="com.neutrasearch.helper">
+    <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
+    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/neutrasearch/neutrasearch-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="com.neutrasearch.helper.usr-lib">
+    <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
+    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/neutrasearch/neutrasearch-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="com.neutrasearch.helper.usr-local-bin">
+    <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
+    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/neutrasearch-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+</policyconfig>

@@ -2,9 +2,9 @@
 //! legacy in-memory index, with reopen-on-replacement detection.
 
 use anyhow::{bail, Context, Result};
- use neutra_core::{
-     CompactIndex, DeltaIndex, DirectorySummaryEntry, Index, Query, SearchHit, SearchStats,
- };
+use neutra_core::{
+    CompactIndex, DeltaIndex, DirectorySummaryEntry, Index, Query, SearchHit, SearchStats,
+};
 use std::path::{Path, PathBuf};
 
 pub(crate) enum Store {
@@ -72,59 +72,56 @@ impl Store {
             Self::Legacy { index, .. } => index.search(q).map_err(anyhow::Error::from),
         }
     }
-     /// One directory's live totals streamed from the base with the WAL
-     /// overlay applied. `None` when the path is unindexed.
-     pub(crate) fn directory_summary(
-         &mut self,
-         source: u32,
-         path: &str,
-     ) -> Result<Option<DirectorySummaryEntry>> {
-         use neutra_core::{join_child_path, DirectoryChild, FileKind};
-         let (base, delta) = match self {
-             Self::Compact { base, delta, .. } => (base, delta),
-             Self::Legacy { .. } => bail!("directory summaries require a compact index"),
-         };
-         let listing = base.list_directory(path, Some(source), delta.as_deref())?;
-         if listing.total_count == 0 && listing.subdirs.is_empty() && listing.files.is_empty() {
-             // An existing empty directory still answers; anything else here
-             // was never indexed.
-             if base.records_by_path(path)?.is_empty() {
-                 return Ok(None);
-             }
-         }
-         let mut children: Vec<DirectoryChild> = listing
-             .subdirs
-             .iter()
-             .map(|child| DirectoryChild {
-                 path: join_child_path(path, child.name.as_ref()).into(),
-                 kind: FileKind::Dir,
-                 logical_bytes: child.logical,
-                 physical_bytes: child.size,
-                 file_count: child.files,
-                 directory_count: 0,
-             })
-             .collect();
-         children.extend(listing.files.iter().map(|file| DirectoryChild {
-             path: join_child_path(path, file.name.as_ref()).into(),
-             kind: file.kind,
-             logical_bytes: file.logical,
-             physical_bytes: file.size,
-             file_count: u64::from(matches!(
-                 file.kind,
-                 FileKind::File | FileKind::Symlink
-             )),
-             directory_count: 0,
-         }));
-         Ok(Some(DirectorySummaryEntry {
-             source,
-             path: path.into(),
-             logical_bytes: listing.total_logical,
-             physical_bytes: listing.total_size,
-             file_count: listing.total_count,
-             directory_count: listing.subdirs.len() as u64,
-             children,
-         }))
-     }
+    /// One directory's live totals streamed from the base with the WAL
+    /// overlay applied. `None` when the path is unindexed.
+    pub(crate) fn directory_summary(
+        &mut self,
+        source: u32,
+        path: &str,
+    ) -> Result<Option<DirectorySummaryEntry>> {
+        use neutra_core::{join_child_path, DirectoryChild, FileKind};
+        let (base, delta) = match self {
+            Self::Compact { base, delta, .. } => (base, delta),
+            Self::Legacy { .. } => bail!("directory summaries require a compact index"),
+        };
+        let listing = base.list_directory(path, Some(source), delta.as_deref())?;
+        if listing.total_count == 0 && listing.subdirs.is_empty() && listing.files.is_empty() {
+            // An existing empty directory still answers; anything else here
+            // was never indexed.
+            if base.records_by_path(path)?.is_empty() {
+                return Ok(None);
+            }
+        }
+        let mut children: Vec<DirectoryChild> = listing
+            .subdirs
+            .iter()
+            .map(|child| DirectoryChild {
+                path: join_child_path(path, child.name.as_ref()).into(),
+                kind: FileKind::Dir,
+                logical_bytes: child.logical,
+                physical_bytes: child.size,
+                file_count: child.files,
+                directory_count: 0,
+            })
+            .collect();
+        children.extend(listing.files.iter().map(|file| DirectoryChild {
+            path: join_child_path(path, file.name.as_ref()).into(),
+            kind: file.kind,
+            logical_bytes: file.logical,
+            physical_bytes: file.size,
+            file_count: u64::from(matches!(file.kind, FileKind::File | FileKind::Symlink)),
+            directory_count: 0,
+        }));
+        Ok(Some(DirectorySummaryEntry {
+            source,
+            path: path.into(),
+            logical_bytes: listing.total_logical,
+            physical_bytes: listing.total_size,
+            file_count: listing.total_count,
+            directory_count: listing.subdirs.len() as u64,
+            children,
+        }))
+    }
 
     pub(crate) fn path(&self) -> &Path {
         match self {

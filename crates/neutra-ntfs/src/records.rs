@@ -1,8 +1,8 @@
 //! $MFT record interpretation: name/parent extraction with Windows name
 //! ranking, hardlink aliases, and parent-chain path resolution.
 
-use anyhow::Context as _;
 use crate::geometry::{u16le, u32le, u64le};
+use anyhow::Context as _;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -24,13 +24,10 @@ pub(crate) struct Alias {
     pub name: String,
 }
 
-
-
-
-
-
-
-pub(crate) fn parse_record(rec: &[u8], header_dir: bool) -> Result<Option<(Entry, Vec<Alias>, bool)>> {
+pub(crate) fn parse_record(
+    rec: &[u8],
+    header_dir: bool,
+) -> Result<Option<(Entry, Vec<Alias>, bool)>> {
     let mut p = u16le(rec, 20).context("attribute offset")? as usize;
     let sequence = u16le(rec, 16).context("record sequence")?;
     let mut mtime = 0i64;
@@ -123,9 +120,9 @@ pub(crate) fn parse_record(rec: &[u8], header_dir: bool) -> Result<Option<(Entry
     if let Some((_, mut e)) = best {
         e.mtime = mtime;
         if let Some(size) = data_size {
-        if let Some(alloc) = data_alloc {
-            e.alloc = alloc;
-        }
+            if let Some(alloc) = data_alloc {
+                e.alloc = alloc;
+            }
             e.size = size;
         }
         link_names.retain(|alias| alias.parent != e.parent || alias.name != e.name);

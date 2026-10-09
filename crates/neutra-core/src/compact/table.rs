@@ -10,6 +10,10 @@ pub(super) struct TableView {
 }
 
 impl CompactIndex {
+    pub(crate) fn block_count(&self) -> usize {
+        self.blocks.count
+    }
+
     pub(super) fn block(&self, id: usize) -> Option<BlockDesc> {
         if id >= self.blocks.count {
             return None;

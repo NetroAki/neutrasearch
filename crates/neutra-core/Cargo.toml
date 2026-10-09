@@ -14,3 +14,4 @@ crc32fast.workspace = true
 fs2.workspace = true
 libc.workspace = true
 regex.workspace = true
+rusqlite = { version = "0.38", features = ["bundled"] }

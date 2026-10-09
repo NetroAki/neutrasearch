@@ -2,8 +2,8 @@
 //! path/count/size formatting. Tokens and the egui theme live in `theme.rs`
 //! and are re-exported here for the view modules.
 
-use super::*;
 pub(crate) use super::theme::*;
+use super::*;
 
 pub(super) fn sans(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("Neutra Sans".into()))
@@ -72,7 +72,7 @@ pub(super) fn segment_button(ui: &mut Ui, label: &str, active: bool) -> egui::Re
         } else {
             MUTED
         }))
-        .fill(if active { ACTIVE } else { SURFACE })
+        .fill(if active { SELECTED } else { SURFACE })
         .stroke(Stroke::new(
             1.0_f32,
             if active {
@@ -260,7 +260,10 @@ pub(super) fn format_mtime(timestamp: i64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(timestamp, |duration| duration.as_secs() as i64);
     let age = now.saturating_sub(timestamp);
-    if age < 60 {
+    if age < 0 {
+        let (year, month, day) = civil_date(timestamp.div_euclid(86_400));
+        format!("{year:04}-{month:02}-{day:02}")
+    } else if age < 60 {
         "Just now".into()
     } else if age < 3_600 {
         format!("{} min ago", age / 60)

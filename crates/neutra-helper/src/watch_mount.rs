@@ -19,12 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const META_LEN: usize = 24;
-/// Build output and tool caches close thousands of files an hour. Following
-/// them would fill the delta log with records nobody searches for by name;
-/// the weekly rebuild still picks them up.
-pub(crate) const NOISY_DIRS: [&str; 10] =
-    [".git", "target", "node_modules", ".cache", "__pycache__", ".gradle", ".cargo", ".rustup", "DerivedDataCache", "Intermediate"];
-
+// Each event in a mount-mark read installs an fd in this process before we
+// can close it. Bound that burst so other mount threads and SQLite can open
+// files even with the default 1,024-descriptor limit.
+const MAX_READ_EVENTS: usize = 64;
 /// What the native watch loop needs from either kind of watcher.
 pub(crate) trait Watch: Send + 'static {
     fn read_batch(&mut self) -> Result<WatchBatch>;
@@ -51,11 +49,15 @@ pub(crate) struct MountWatcher {
 /// True when the filesystem-wide watcher cannot be used on this mount: the
 /// kernel refuses subvolume marks (EXDEV), or an unprivileged user cannot
 /// open the mount directory to resolve file handles (EACCES).
-pub(crate) fn needs_mount_mark(error: &anyhow::Error) -> bool {
+pub(crate) fn needs_mount_mark(error: &anyhow::Error, fs: &neutra_core::FsKind) -> bool {
     error
         .chain()
         .filter_map(|cause| cause.downcast_ref::<io::Error>())
-        .any(|cause| matches!(cause.raw_os_error(), Some(libc::EXDEV) | Some(libc::EACCES)))
+        .any(|cause| {
+            matches!(cause.raw_os_error(), Some(libc::EXDEV) | Some(libc::EACCES))
+                || (matches!(fs, neutra_core::FsKind::Btrfs | neutra_core::FsKind::Ntfs)
+                    && cause.raw_os_error() == Some(libc::ENODEV))
+        })
 }
 
 impl MountWatcher {
@@ -88,14 +90,27 @@ impl MountWatcher {
             other => other,
         }
         .context("fanotify mount mark")?;
-        Ok(Self { events, mount, source, excluded, buffer: vec![0; 256 * 1024] })
+        Ok(Self {
+            events,
+            mount,
+            source,
+            excluded,
+            buffer: vec![0; META_LEN * MAX_READ_EVENTS],
+        })
     }
 
     fn record(&self, file: &File, changes: &mut BTreeMap<String, DeltaChange>) {
-        let Ok(path) = fd_path(file.as_raw_fd()) else { return };
-        let noisy = path.components().any(|part| NOISY_DIRS.iter().any(|dir| part.as_os_str() == *dir));
+        let Ok(path) = fd_path(file.as_raw_fd()) else {
+            return;
+        };
         let gone = path.to_string_lossy().ends_with(" (deleted)");
-        if gone || noisy || !path.starts_with(&self.mount.mountpoint) || self.excluded.iter().any(|x| *x == path) {
+        if gone
+            || !path.starts_with(&self.mount.mountpoint)
+            || self
+                .excluded
+                .iter()
+                .any(|excluded| path.starts_with(excluded))
+        {
             return;
         }
         let mut stat = zeroed_stat();
@@ -104,7 +119,10 @@ impl MountWatcher {
             return;
         }
         let parent = parent_inode(&path);
-        insert_upsert(changes, make_record(&path, &stat, parent, &self.mount, self.source));
+        insert_upsert(
+            changes,
+            make_record(&path, &stat, parent, &self.mount, self.source),
+        );
     }
 }
 
@@ -127,7 +145,11 @@ impl Watch for MountWatcher {
         let bytes = loop {
             match self.events.read(&mut self.buffer) {
                 Ok(0) => {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "fanotify descriptor closed").into())
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "fanotify descriptor closed",
+                    )
+                    .into())
                 }
                 Ok(bytes) => break bytes,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -164,7 +186,11 @@ impl Watch for MountWatcher {
     }
 
     fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
-        let mut fds = [libc::pollfd { fd: self.events.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+        let mut fds = [libc::pollfd {
+            fd: self.events.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
         loop {
             // SAFETY: fds points to one initialised pollfd.
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };

@@ -46,12 +46,11 @@ fn key_for(order: SpillOrder, record: &FileRecord, run: usize) -> MergeKey {
 
 fn compare(order: SpillOrder, left: &FileRecord, right: &FileRecord) -> std::cmp::Ordering {
     match order {
-        SpillOrder::Compact => {
-            compare_index_paths(left.path.as_ref(), right.path.as_ref())
-        }
-        SpillOrder::Summary => left.source.cmp(&right.source).then_with(|| {
-            compare_paths(left.path.as_ref(), right.path.as_ref())
-        }),
+        SpillOrder::Compact => compare_index_paths(left.path.as_ref(), right.path.as_ref()),
+        SpillOrder::Summary => left
+            .source
+            .cmp(&right.source)
+            .then_with(|| compare_paths(left.path.as_ref(), right.path.as_ref())),
     }
 }
 
@@ -76,8 +75,7 @@ impl RunMerge {
             SpillOrder::Compact => "c",
             SpillOrder::Summary => "s",
         };
-        let mut readers: Vec<Option<RunReader>> =
-            (0..runs.chunks().len()).map(|_| None).collect();
+        let mut readers: Vec<Option<RunReader>> = (0..runs.chunks().len()).map(|_| None).collect();
         let mut heap = BinaryHeap::new();
         for (index, chunk) in runs.chunks().iter().enumerate() {
             let mut records = read_chunk(chunk)?;
@@ -88,10 +86,17 @@ impl RunMerge {
             let mut reader = BufReader::with_capacity(1 << 20, File::open(&path)?);
             if let Some(head) = crate::compact_spill::read_framed(&mut reader)? {
                 heap.push(Reverse(key_for(order, &head, index)));
-                readers[index] = Some(RunReader { reader, head: Some(head) });
+                readers[index] = Some(RunReader {
+                    reader,
+                    head: Some(head),
+                });
             }
         }
-        Ok(Self { readers, heap, order })
+        Ok(Self {
+            readers,
+            heap,
+            order,
+        })
     }
 }
 
@@ -124,7 +129,8 @@ impl Iterator for RunMerge {
             Ok(next) => {
                 slot.head = next;
                 if let Some(record) = slot.head.as_ref() {
-                    self.heap.push(Reverse(key_for(self.order, record, top.run)));
+                    self.heap
+                        .push(Reverse(key_for(self.order, record, top.run)));
                 }
             }
             Err(error) => return Some(Err(error)),
@@ -240,7 +246,11 @@ fn write_postings_from_pairs(
             encoded.clear();
             previous = 0;
         }
-        let delta = if encoded.is_empty() { block } else { block - previous };
+        let delta = if encoded.is_empty() {
+            block
+        } else {
+            block - previous
+        };
         put_varint(delta, &mut encoded);
         previous = block;
     }

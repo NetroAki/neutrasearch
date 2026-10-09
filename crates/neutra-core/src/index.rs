@@ -10,12 +10,12 @@ use crate::query::Query;
 use crate::types::FileRecord;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
- use std::io;
- use std::time::Instant;
+use std::io;
+use std::time::Instant;
 
- /// Envelope magic for versioned snapshots. Payloads without it predate the
- /// envelope and the disk field, so restore decodes them as the old layout.
- const LEGACY_MAGIC: &[u8; 8] = b"NEUTLG01";
+/// Envelope magic for versioned snapshots. Payloads without it predate the
+/// envelope and the disk field, so restore decodes them as the old layout.
+const LEGACY_MAGIC: &[u8; 8] = b"NEUTLG01";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct SearchStats {
@@ -93,8 +93,7 @@ impl Index {
         // exact, but an empty query over millions of records no longer builds
         // a millions-element temporary vector before truncation.
         let sort = q.sort;
-        let cmp =
-            |a: &(u32, &FileRecord), b: &(u32, &FileRecord)| compare_records(sort, a, b);
+        let cmp = |a: &(u32, &FileRecord), b: &(u32, &FileRecord)| compare_records(sort, a, b);
         let prune = |ranked: &mut Vec<(u32, &FileRecord)>| {
             if q.limit > 0 && ranked.len() > q.limit {
                 ranked.select_nth_unstable_by(q.limit, &cmp);

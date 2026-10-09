@@ -25,10 +25,15 @@ pub(crate) struct NeutraApp {
     pub(crate) query: String,
     pub(crate) hits: Vec<SearchHit>,
     pub(crate) search_stats: SearchStats,
+    pub(crate) page_offset: usize,
+    pub(crate) page_cursors: Vec<Option<neutra_core::FileRecord>>,
+    pub(crate) last_query: Option<neutra_core::Query>,
+    pub(crate) search_roots: Vec<PathBuf>,
+    pub(crate) search_excluded: Vec<PathBuf>,
     /// Newest queued search id and whether its results are still pending.
     pub(crate) search_seq: u64,
     pub(crate) searching: bool,
-    pub(crate) search_tx: Sender<super::search_worker::SearchJob>,
+    pub(crate) search_tx: super::search_worker::SearchQueue,
     /// Compiled text matcher for the current query, reused by result
     /// highlighting so a regex compiles once per query, not per row per frame.
     pub(crate) matcher: Option<neutra_core::QueryMatcher>,
@@ -50,6 +55,7 @@ pub(crate) struct NeutraApp {
     pub(crate) last_cache: Instant,
     pub(crate) last_generation: u64,
     pub(crate) selected: Option<String>,
+    pub(crate) file_operations: super::file_operations::FileOperations,
     pub(crate) view_mode: ui::ResultView,
     pub(crate) kind_filter: ui::KindFilter,
     pub(crate) sort_mode: ui::SortMode,
@@ -77,16 +83,19 @@ pub(crate) struct NeutraApp {
     pub(crate) tree_vertical_fraction: f32,
     pub(crate) treemap_path: String,
     pub(crate) tree_expanded: BTreeSet<String>,
-     pub(crate) tree_model: Option<ui::Hierarchy>,
-     pub(crate) tree_building: bool,
-     /// The shallow folder summary is being built; the tree waits for it.
-     pub(crate) tree_summary_pending: bool,
+    pub(crate) tree_model: Option<ui::Hierarchy>,
+    pub(crate) map_file_key: Option<(String, u64, bool)>,
+    pub(crate) map_files: Vec<neutra_core::FileRecord>,
+    pub(crate) map_files_pending: bool,
+    pub(crate) tree_building: bool,
+    /// The shallow folder summary is being built; the tree waits for it.
+    pub(crate) tree_summary_pending: bool,
     pub(crate) rank_pending: bool,
     pub(crate) delta_stamp: Option<Option<(std::time::SystemTime, u64)>>,
     pub(crate) delta_checked: Instant,
-     /// Directories with a fetch in flight. Guards against duplicate spawns
-     /// while a slow subtree scan runs.
-     pub(crate) tree_pending: BTreeSet<String>,
+    /// Directories with a fetch in flight. Guards against duplicate spawns
+    /// while a slow subtree scan runs.
+    pub(crate) tree_pending: BTreeSet<String>,
     pub(crate) remote_watcher_started: bool,
 }
 
@@ -99,24 +108,29 @@ struct Restored {
 impl NeutraApp {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::widgets::configure(&cc.egui_ctx);
-         let logo = load_logo(&cc.egui_ctx);
-         let cache_path = compact_cache_path();
-         let restored = restore_durable(&cache_path);
+        let logo = load_logo(&cc.egui_ctx);
+        let cache_path = compact_cache_path();
+        let restored = restore_durable(&cache_path);
         let has_durable_index = restored.compact.is_some();
         let cache_error = restored.cache_error.clone();
         let settings_path = gui_settings_path();
-         let saved_settings = load_gui_settings(&settings_path);
-         let first_run = saved_settings.is_none();
-         let settings = saved_settings.unwrap_or_else(default_settings);
+        let saved_settings = load_gui_settings(&settings_path);
+        let first_run = saved_settings.is_none();
+        let settings = saved_settings.unwrap_or_else(default_settings);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = Self {
             index: restored.index,
             compact: restored.compact,
             logo,
             scan_index: None,
-             query: startup_query(),
+            query: startup_query(),
             hits: Vec::new(),
             search_stats: SearchStats::default(),
+            page_offset: 0,
+            page_cursors: vec![None],
+            last_query: None,
+            search_roots: Vec::new(),
+            search_excluded: Vec::new(),
             search_seq: 0,
             searching: false,
             search_tx: super::search_worker::spawn(tx.clone(), cc.egui_ctx.clone()),
@@ -139,6 +153,7 @@ impl NeutraApp {
             last_cache: Instant::now(),
             last_generation: 0,
             selected: None,
+            file_operations: super::file_operations::FileOperations::new(),
             view_mode: settings.view,
             // The filter always resets to All on launch: a leftover Audio
             // or Images preset from last time would silently hide results.
@@ -151,7 +166,7 @@ impl NeutraApp {
                 settings.search_mode
             },
             case_sensitive: settings.case_sensitive,
-             regex_mode: settings.regex_mode,
+            regex_mode: settings.regex_mode,
             whole_word: settings.whole_word,
             ignore_accents: settings.ignore_accents,
             scope_root: None,
@@ -168,13 +183,16 @@ impl NeutraApp {
             treemap_path: std::env::var("NEUTRASEARCH_GUI_TREEMAP_PATH")
                 .unwrap_or_else(|_| "/".into()),
             tree_expanded: BTreeSet::from(["/".into()]),
-             tree_model: None,
-             tree_building: false,
-             tree_summary_pending: false,
+            tree_model: None,
+            map_file_key: None,
+            map_files: Vec::new(),
+            map_files_pending: false,
+            tree_building: false,
+            tree_summary_pending: false,
             rank_pending: false,
             delta_stamp: None,
             delta_checked: Instant::now(),
-             tree_pending: BTreeSet::new(),
+            tree_pending: BTreeSet::new(),
             remote_watcher_started: false,
         };
         app.seed_lanes(has_durable_index, cache_error, first_run);
@@ -189,11 +207,11 @@ impl NeutraApp {
         app.requery_unless_huge();
         app.ensure_ranked();
         app.ensure_tree_summary();
-         if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
+        if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
             crate::transport::spawn_network_watcher(tx);
             app.remote_watcher_started = true;
         }
-         if app.index_is_empty() {
+        if app.index_is_empty() {
             // A missing or empty index is never a valid idle first screen. This
             // also repairs partial installs that wrote settings before their
             // first usable scan completed.
@@ -201,7 +219,7 @@ impl NeutraApp {
             app.onboarding_scan = true;
             app.save_settings();
             app.begin_scan_with_elevation(cfg!(target_os = "linux"));
-         }
+        }
         app
     }
 
@@ -251,8 +269,8 @@ impl NeutraApp {
     }
 }
 
- fn restore_durable(cache_path: &std::path::Path) -> Restored {
-     if !cache_path.is_file() {
+fn restore_durable(cache_path: &std::path::Path) -> Restored {
+    if !cache_path.is_file() {
         let index = std::fs::read(legacy_cache_path())
             .ok()
             .and_then(|bytes| Index::restore(&bytes).ok())
@@ -280,19 +298,19 @@ impl NeutraApp {
     }
 }
 
- fn default_settings() -> GuiSettings {
-     // Setup never asks which folders to scan: everything is indexed by
-     // default and locations stay adjustable from the index settings.
-     GuiSettings {
-         onboarding_complete: true,
-         roots: default_system_roots(),
-         ..GuiSettings::default()
-     }
- }
+fn default_settings() -> GuiSettings {
+    // Setup never asks which folders to scan: everything is indexed by
+    // default and locations stay adjustable from the index settings.
+    GuiSettings {
+        onboarding_complete: true,
+        roots: default_system_roots(),
+        ..GuiSettings::default()
+    }
+}
 
- fn startup_query() -> String {
-     std::env::var("NEUTRASEARCH_GUI_QUERY").unwrap_or_default()
- }
+fn startup_query() -> String {
+    std::env::var("NEUTRASEARCH_GUI_QUERY").unwrap_or_default()
+}
 
 fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
     let (rgba, width, height) = embedded_logo();

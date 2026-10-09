@@ -2,16 +2,25 @@
 //! or scan re-arms it.
 
 use super::super::widgets::{
-    ACID, VIOLET, SELECTED, MUTED, WARN, WARN_DIM, sans,
-    secondary_button,
+    sans, secondary_button, ACID, MUTED, SELECTED, VIOLET, WARN, WARN_DIM,
 };
 use super::SidebarTab;
 use crate::{LaneState, NeutraApp};
 use egui::{Align, Color32, Layout, RichText, Stroke, Vec2};
 
-type BannerCopy = (&'static str, String, Option<&'static str>, &'static str, Color32);
+type BannerCopy = (
+    &'static str,
+    String,
+    Option<&'static str>,
+    &'static str,
+    Color32,
+);
 
-pub(crate) fn runtime_banner(app: &mut NeutraApp, ui: &mut egui::Ui, state: super::super::RuntimeState) {
+pub(crate) fn runtime_banner(
+    app: &mut NeutraApp,
+    ui: &mut egui::Ui,
+    state: super::super::RuntimeState,
+) {
     ui.add_space(10.0);
     let (marker, _) = ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::hover());
     let Some((title, detail, primary, secondary, color)) = banner_copy(app, state) else {
@@ -83,10 +92,14 @@ fn paint_marker(ui: &mut egui::Ui, marker: &egui::Rect, color: Color32) {
     let dot = Stroke::new(1.5_f32, color);
     ui.painter().circle_stroke(marker.center(), 8.0, dot);
     ui.painter().line_segment(
-        [marker.center() - Vec2::new(0.0, 3.0), marker.center() + Vec2::new(0.0, 2.0)],
+        [
+            marker.center() - Vec2::new(0.0, 3.0),
+            marker.center() + Vec2::new(0.0, 2.0),
+        ],
         dot,
     );
-    ui.painter().circle_filled(marker.center() + Vec2::new(0.0, 5.0), 1.0, color);
+    ui.painter()
+        .circle_filled(marker.center() + Vec2::new(0.0, 5.0), 1.0, color);
 }
 
 fn banner_actions(
@@ -105,7 +118,10 @@ fn banner_actions(
         }
         ui.label(RichText::new("|").font(sans(11.0)).color(MUTED));
         if ui
-            .add(egui::Button::new(RichText::new(secondary).font(sans(11.0)).color(ACID)).frame(false))
+            .add(
+                egui::Button::new(RichText::new(secondary).font(sans(11.0)).color(ACID))
+                    .frame(false),
+            )
             .clicked()
         {
             app.diagnostics_open = true;

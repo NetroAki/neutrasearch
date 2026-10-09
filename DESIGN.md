@@ -46,8 +46,14 @@ dense, flat pro-audio UI.
 **Adaptation (contrast, WCAG AA):** surface-500 is 3.75:1 on surface-900, so it
 is never used for text. Raw accent-glow is 3.89:1 on surface-800 and
 accent-audio is 4.22:1 on surface-900, so accent text uses red-400 (#F87171,
-5.3:1 or better everywhere it appears) and violet is used only for outlines
+5.29:1 on surface-800) and violet is used only for outlines
 and dots.
+
+**Adaptation (control contrast, 2026-10-09):** control outlines use surface-500
+instead of surface-700 so they remain distinguishable on raised surfaces.
+Keyboard focus uses opaque red-400, which exceeds 3:1 on surface-700; the
+original translucent red ring did not. Accent and muted text sit on
+surface-800 or darker; pressed controls use surface-200 text.
 
 ## Type (§36.2)
 
@@ -62,7 +68,7 @@ Bold is colour and size, because egui draws one weight per font file.
 ## Shape (§36.3, §36.5)
 
 - Radius: 4 small buttons, 6 controls and inputs, 8 panels and cards, 12 floating windows and filter chips, full for dots and bars.
-- Strokes: 1px outlines, 2px focus ring (accent-glow at 70%).
+- Strokes: 1px outlines, 2px opaque red-400 focus ring (contrast adaptation).
 - Scrollbars 10px. Rows 26px. Shadows follow §36.5.
 
 ## Components

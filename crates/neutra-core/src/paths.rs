@@ -41,7 +41,10 @@ mod portable_tests {
         assert!(path_in_portable_root("C:/Users/alex/report.pdf", &root));
         assert!(!path_in_portable_root("C:/Users/alexander/x", &root));
         assert!(path_in_portable_root("C:/Users/alex", &root));
-        assert!(path_in_portable_root("/home/a/b", &portable_root_prefix("/")));
+        assert!(path_in_portable_root(
+            "/home/a/b",
+            &portable_root_prefix("/")
+        ));
     }
 }
 
@@ -65,11 +68,11 @@ fn resolve_index_path_from(
     explicit.or(configured).or(remembered).unwrap_or(default)
 }
 
- pub fn configured_index_path() -> Option<PathBuf> {
-     std::env::var_os("NEUTRASEARCH_INDEX")
-         .filter(|path| !path.is_empty())
-         .map(PathBuf::from)
- }
+pub fn configured_index_path() -> Option<PathBuf> {
+    std::env::var_os("NEUTRASEARCH_INDEX")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
 
 pub fn last_index_path() -> Option<PathBuf> {
     read_pointer(&index_pointer_path()).ok()

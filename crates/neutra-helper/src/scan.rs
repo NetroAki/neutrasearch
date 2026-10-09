@@ -253,7 +253,9 @@ pub(crate) fn run_scan(
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let root_prefixes = roots
         .iter()
-        .map(|root| neutra_core::paths::portable_root_prefix(&root.to_string_lossy()).to_ascii_lowercase())
+        .map(|root| {
+            neutra_core::paths::portable_root_prefix(&root.to_string_lossy()).to_ascii_lowercase()
+        })
         .collect::<Vec<_>>();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let root_prefixes = roots
@@ -324,7 +326,10 @@ pub(crate) fn run_scan(
 
 /// Route a mount to its native lane. Unsupported combinations are explicit
 /// errors — never a silent fallback to walking.
-pub(crate) fn dispatch_lane(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
+pub(crate) fn dispatch_lane(
+    mount: &MountInfo,
+    sink: &mut dyn FnMut(FileRecord),
+) -> Result<ScanStats> {
     match &mount.fs {
         #[cfg(target_os = "linux")]
         FsKind::Btrfs => neutra_btrfs::scan(mount, sink),
@@ -403,9 +408,7 @@ pub(crate) fn path_has_component_prefix(path: &str, prefix: &str) -> bool {
     if path == prefix {
         return true;
     }
-    path.len() > prefix.len()
-        && path.starts_with(prefix)
-        && path.as_bytes()[prefix.len()] == b'/'
+    path.len() > prefix.len() && path.starts_with(prefix) && path.as_bytes()[prefix.len()] == b'/'
 }
 
 pub(crate) fn same_portable_path(left: &std::path::Path, right: &std::path::Path) -> bool {
@@ -503,7 +506,11 @@ pub(crate) fn parse_macos_mount_output(output: &str) -> Vec<MountInfo> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn run_bounded<T, F>(label: &'static str, timeout: std::time::Duration, operation: F) -> Option<T>
+pub(crate) fn run_bounded<T, F>(
+    label: &'static str,
+    timeout: std::time::Duration,
+    operation: F,
+) -> Option<T>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
@@ -700,8 +707,13 @@ pub(crate) fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf
     let marker_temporary = compaction_marker_temp(base);
     let stale = stale_marker(base);
     let stale_temporary = append_suffix(&stale, ".new");
-    vec![
+    let overlay_paths = neutra_core::DeltaIndex::exclusion_roots(&delta);
+    let mut paths = vec![
         base.to_path_buf(),
+        append_suffix(&delta, ".checkpoint"),
+        append_suffix(&delta, ".migrate"),
+        base.with_extension("spill"),
+        base.with_extension("spill.lock"),
         delta,
         lock.into(),
         temporary,
@@ -711,11 +723,36 @@ pub(crate) fn watch_exclusions(base: &std::path::Path) -> Vec<std::path::PathBuf
         marker_temporary,
         stale,
         stale_temporary,
-    ]
+    ];
+    paths.extend(overlay_paths);
+    for path in [base.to_path_buf(), compaction_stage(base)] {
+        for suffix in [
+            ".browse",
+            ".browse.new",
+            ".browse.lock",
+            ".browse.base",
+            ".browse.base.new",
+            ".browse-wal",
+            ".browse-shm",
+            ".dirs",
+            ".dirs.new",
+            ".tree",
+            ".tree.new",
+            ".rank",
+            ".rank.new",
+            ".sweep",
+            ".sweep.new",
+            ".sweep.tmp",
+            ".watch-status",
+            ".watch-status.new",
+        ] {
+            paths.push(append_suffix(&path, suffix));
+        }
+    }
+    paths
 }
 
 #[cfg(not(target_os = "windows"))]
 fn same_mountpoint(left: &std::path::Path, right: &std::path::Path) -> bool {
     left == right
 }
-

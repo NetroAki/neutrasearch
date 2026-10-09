@@ -10,7 +10,10 @@ fn main() -> anyhow::Result<()> {
     let changes = sub.changes_since(start)?;
     println!("newest leaf generation {}", changes.generation);
     for (inode, link) in &changes.inodes {
-        println!("inode {} {:?} size {} mtime {} parent {:?}", inode.ino, inode.kind, inode.size, inode.mtime, link);
+        println!(
+            "inode {} {:?} size {} mtime {} parent {:?}",
+            inode.ino, inode.kind, inode.size, inode.mtime, link
+        );
     }
     for dir in &changes.dirs {
         let path = sub.dir_path(*dir)?;

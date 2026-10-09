@@ -14,7 +14,13 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
         app.scan_index = None;
         app.scan_roots.clear();
         end_scan_setup(app);
-        note(app, "scan", "NATIVE SCAN", "Indexing cancelled, previous index kept", false);
+        note(
+            app,
+            "scan",
+            "NATIVE SCAN",
+            "Indexing cancelled, previous index kept",
+            false,
+        );
         return;
     }
     let staging = app.scan_index.take();
@@ -45,11 +51,7 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
     app.save_settings();
 }
 
-fn adopt_staging(
-    app: &mut NeutraApp,
-    spill: Option<neutra_core::SpillAccumulator>,
-    errors: u32,
-) {
+fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulator>, errors: u32) {
     let Some(spill) = spill else { return };
     let runs = match spill.finish() {
         Ok(runs) => runs,

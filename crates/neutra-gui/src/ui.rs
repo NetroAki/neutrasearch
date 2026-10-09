@@ -5,38 +5,47 @@ use egui::{
 };
 use egui_expressive::widgets::SearchField;
 use egui_expressive::{ResizableSplit, SplitAxis, Theme};
+use neutra_core::{FileKind, FileRecord};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use neutra_core::{FileKind, FileRecord};
 use std::time::Duration;
 
+mod category_icons;
+mod chrome;
 mod dialogs;
+pub(crate) mod file_actions;
+mod file_interactions;
+mod file_shortcuts;
 mod hierarchy;
 mod icons;
+mod pages;
 mod results;
+mod scopes;
+pub(crate) mod script_fonts;
 mod sidebar;
 mod theme;
+mod toolbar;
 mod tree_panel;
- mod treemap;
- pub(super) mod widgets;
+mod treemap;
+pub(super) mod widgets;
+mod window;
 
-use icons::filter_tab;
-pub(crate) use sidebar::SidebarTab;
-use widgets::{
-    ancestor_paths,
-     extension_color, fixed_strip, fmt_count, format_mtime, format_size, mono,
-    parent_path, path_name, primary_button, sans, secondary_button, segment_button, shorten,
-    type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK, VIOLET, CANVAS, ERROR, HOVER,
-    LINE, LINE_STRONG, MUTED, RAISED, SUBTLE, SURFACE, TEXT, SELECTED, GLOW, WARN, CAPTION, SMALL, MICRO, tracked, bar_style, ghost_style,
-};
-use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
 use dialogs::{about_dialog, diagnostics_dialog};
 use sidebar::banner::{banner_color, runtime_banner};
+pub(crate) use sidebar::SidebarTab;
+use widgets::{
+    ancestor_paths, bar_style, extension_color, fixed_strip, fmt_count, format_mtime, format_size,
+    ghost_style, mono, parent_path, path_name, primary_button, sans, secondary_button,
+    segment_button, shorten, tracked, type_badge, type_color, ACID, ACID_STRONG, ACTIVE, BLACK,
+    CANVAS, CAPTION, ERROR, GLOW, HOVER, LINE, LINE_STRONG, MICRO, MUTED, RAISED, SELECTED, SMALL,
+    SUBTLE, SURFACE, TEXT, VIOLET, WARN,
+};
+use widgets::{copy_to_clipboard, paint_search_icon, task_icon};
 
+pub(super) use hierarchy::Hierarchy;
 use results::{details_view, grid_view, list_view, perform_file_action, surrender_widget_focus};
 use treemap::treemap_view;
- pub(super) use hierarchy::Hierarchy;
 
 const MENU_H: f32 = 30.0;
 const QUERY_H: f32 = 44.0;
@@ -151,16 +160,16 @@ enum RuntimeState {
     Stale,
 }
 
-
-/// Decompress an embedded font at startup. Fonts ship zstd-compressed:
 pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
+    script_fonts::ensure(ui.ctx(), &app.query);
+    file_shortcuts::update(app, ui);
     let more_events = app.process_events();
     if more_events {
         ui.ctx().request_repaint();
     } else if app.scanning || app.building_cache || app.tree_building || app.rank_pending {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     } else {
-        ui.ctx().request_repaint_after(Duration::from_secs(if app.remote_watcher_started { 1 } else { 2 }));
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
     }
 
     let focus_search = ui.input_mut(|input| {
@@ -192,7 +201,7 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
     let state = runtime_state(app);
     ui.vertical(|ui| {
-        fixed_strip(ui, MENU_H, BLACK, |ui| menu_bar(app, ui));
+        fixed_strip(ui, MENU_H, BLACK, |ui| chrome::menu_bar(app, ui));
         if state == RuntimeState::FirstRun {
             let content_h = ui.available_height();
             ui.allocate_ui_with_layout(
@@ -203,8 +212,8 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
             return;
         }
 
-        fixed_strip(ui, QUERY_H, SURFACE, |ui| query_strip(app, ui));
-        fixed_strip(ui, FILTER_H, SURFACE, |ui| kind_strip(app, ui));
+        fixed_strip(ui, QUERY_H, SURFACE, |ui| chrome::query_strip(app, ui));
+        fixed_strip(ui, FILTER_H, SURFACE, |ui| chrome::kind_strip(app, ui));
         if matches!(
             state,
             RuntimeState::IndexingBackground | RuntimeState::Permission | RuntimeState::Stale
@@ -233,6 +242,7 @@ pub(super) fn show_app(app: &mut NeutraApp, ui: &mut Ui) {
         diagnostics_dialog(app, ui.ctx());
     }
     about_dialog(app, ui.ctx());
+    window::resize(ui);
 }
 
 fn move_result_selection(app: &mut NeutraApp, forward: bool) {
@@ -305,238 +315,6 @@ fn runtime_state(app: &NeutraApp) -> RuntimeState {
     }
 }
 
-
-fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
-    bar_style(ui);
-    ui.add_space(8.0);
-    ui.add(egui::Image::new(&app.logo).fit_to_exact_size(Vec2::splat(20.0)));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tracked("Neutrasearch")).font(sans(11.0)).strong());
-    ui.add_space(12.0);
-
-    if runtime_state(app) == RuntimeState::FirstRun {
-        return;
-    }
-
-    ui.menu_button("File", |ui| {
-        if ui.button("Locations and index").clicked() {
-            app.diagnostics_open = true;
-            app.sidebar_tab = SidebarTab::Locations;
-            ui.close();
-        }
-        if ui.button("Rebuild index").clicked() {
-            app.begin_scan();
-            ui.close();
-        }
-        if ui
-            .add_enabled(
-                app.selected.is_some(),
-                egui::Button::new("Copy selected path    Ctrl+Insert"),
-            )
-            .clicked()
-        {
-            if let Some(path) = &app.selected {
-                copy_to_clipboard(ui, path);
-            }
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Exit").clicked() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-    });
-    ui.menu_button("Search", |ui| {
-        if ui.button("Focus search    Ctrl+K").clicked() {
-            app.search_focus_requested = true;
-            ui.close();
-        }
-        if ui.button("Clear search").clicked() {
-            app.query.clear();
-            app.requery();
-            ui.close();
-        }
-        ui.separator();
-        ui.menu_button(format!("Match    {}", app.search_mode.label()), |ui| {
-            for mode in [SearchMode::Name, SearchMode::NameAndPath, SearchMode::Path] {
-                if ui
-                    .selectable_label(app.search_mode == mode, mode.label())
-                    .clicked()
-                {
-                    app.search_mode = mode;
-                    app.save_settings();
-                    app.requery();
-                    ui.close();
-                }
-            }
-        });
-        if app.selected_roots.len() > 1 {
-            ui.menu_button("Location", |ui| {
-                if ui
-                    .selectable_label(app.scope_root.is_none(), "All selected folders")
-                    .clicked()
-                {
-                    app.scope_root = None;
-                    app.requery();
-                    ui.close();
-                }
-                let roots = app
-                    .selected_roots
-                    .iter()
-                    .map(|root| root.to_string_lossy().into_owned())
-                    .collect::<Vec<_>>();
-                for root in roots {
-                    let selected = app.scope_root.as_deref() == Some(root.as_str());
-                    if ui.selectable_label(selected, &root).clicked() {
-                        app.scope_root = Some(root);
-                        app.requery();
-                        ui.close();
-                    }
-                }
-            });
-        }
-        let case = ui
-            .checkbox(&mut app.case_sensitive, "Match capitalisation (A \u{2260} a)")
-            .changed();
-        let words = ui.checkbox(&mut app.whole_word, "Whole words only").changed();
-        let accents = ui
-            .checkbox(&mut app.ignore_accents, "Ignore accents (caf\u{e9} = cafe)")
-            .changed();
-        let regex = ui
-            .checkbox(&mut app.regex_mode, "Regular expression")
-            .changed();
-        if case || words || accents || regex {
-            app.save_settings();
-            app.requery();
-        }
-        ui.separator();
-        ui.label(
-            RichText::new("Ctrl+Up/Down selects results")
-                .font(mono(8.5))
-                .color(SUBTLE),
-        );
-    });
-    ui.menu_button("View", |ui| {
-        for view in ResultView::ALL {
-            if ui
-                .selectable_label(app.view_mode == view, view.label())
-                .clicked()
-            {
-                app.view_mode = view;
-                app.save_settings();
-                ui.close();
-            }
-        }
-    });
-    ui.menu_button("Help", |ui| {
-        if ui.button("About Neutrasearch").clicked() {
-            app.about_open = true;
-            ui.close();
-        }
-        ui.separator();
-        ui.label(
-            RichText::new("Ctrl+K Search · Ctrl+Up/Down Select · Ctrl+Insert Copy")
-                .font(mono(8.5))
-                .color(SUBTLE),
-        );
-        ui.separator();
-        ui.hyperlink_to("Support on Ko-fi", "https://ko-fi.com/netroaki");
-        ui.hyperlink_to("Support on Patreon", "https://www.patreon.com/NetroAki");
-    });
-}
-
-fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.add_space(8.0);
-
-    let before = app.query.clone();
-    let can_search = !matches!(
-        runtime_state(app),
-        RuntimeState::FirstRun | RuntimeState::IndexingInitial
-    );
-    let response = egui::Frame::new()
-        .fill(BLACK)
-        .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(6)
-        .inner_margin(Margin::symmetric(8, 4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                paint_search_icon(ui, MUTED);
-                let response = ui.add_enabled(
-                    can_search,
-                    SearchField::new(&mut app.query)
-                        .hint("Search everything by file name...")
-                        .width((ui.available_width() - 81.0).max(160.0)),
-                );
-                egui::Frame::new()
-                    .fill(SURFACE)
-                    .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-                    .corner_radius(4)
-                    .inner_margin(Margin::symmetric(6, 2))
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Ctrl + K").font(mono(CAPTION)).color(MUTED));
-                    });
-                response
-            })
-            .inner
-        })
-        .inner;
-    if app.search_focus_requested {
-        response.request_focus();
-        app.search_focus_requested = false;
-    }
-    // The text edit drops focus on Esc, so losing focus on that frame means clear.
-    if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-        // The changed-query check below issues the single requery.
-        app.query.clear();
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            response.rect.expand(2.0),
-            6.0,
-            Stroke::new(2.0_f32, GLOW.gamma_multiply(0.7)),
-            StrokeKind::Outside,
-        );
-        // Enter/Down leave the search box for the results. The text edit consumes
-        // arrow keys while focused, so this runs on the search response.
-        let move_down = ui.input(|input| input.key_pressed(egui::Key::ArrowDown));
-        let commit = ui.input(|input| input.key_pressed(egui::Key::Enter));
-        if move_down || commit {
-            if move_down {
-                move_result_selection(app, true);
-            }
-            if let Some(path) = app.selected.clone() {
-                surrender_widget_focus(ui);
-                if commit {
-                    perform_file_action(app, FileAction::Open(PathBuf::from(path)));
-                }
-            }
-        }
-    }
-    if before != app.query {
-        app.requery();
-    }
-    ui.add_space(8.0);
-}
-
-/// File-type presets under the search box: audio, images, video, programs,
-/// compressed archives, documents, folders, or everything.
-fn kind_strip(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.add_space(8.0);
-    egui::ScrollArea::horizontal()
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for preset in KindFilter::ALL {
-                    if filter_tab(ui, preset.label(), app.kind_filter == preset).clicked()
-                    {
-                        app.kind_filter = preset;
-                        app.save_settings();
-                        app.requery();
-                    }
-                    ui.add_space(2.0);
-                }
-            });
-        });
-}
-
 fn first_run_view(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
     let has_error = app.lanes.values().any(|lane| lane.error);
@@ -577,7 +355,7 @@ fn first_run_view(app: &mut NeutraApp, ui: &mut Ui) {
                         egui::Label::new(
                             RichText::new("No folders selected")
                                 .font(sans(11.0))
-                                .color(SUBTLE),
+                                .color(MUTED),
                         ),
                     );
                 } else {
@@ -668,7 +446,6 @@ fn first_run_view(app: &mut NeutraApp, ui: &mut Ui) {
     });
 }
 
-
 fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
     ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
     ui.add_space(34.0);
@@ -713,12 +490,13 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
                 bar.left_top() + Vec2::new(bar.width() * pulse * 0.72, 0.0),
                 Vec2::new(bar.width() * 0.28, bar.height()),
             );
-            ui.painter().rect_filled(segment.intersect(bar), 0.0, VIOLET);
+            ui.painter()
+                .rect_filled(segment.intersect(bar), 0.0, VIOLET);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Existing results remain untouched until the replacement is ready")
-                .font(sans(10.5))
-                .color(MUTED),
+                    .font(sans(10.5))
+                    .color(MUTED),
             );
         });
     ui.add_space(14.0);
@@ -749,7 +527,11 @@ fn indexing_view(app: &mut NeutraApp, ui: &mut Ui) {
                     lane.status.clone()
                 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(shorten(path, 48)).font(mono(10.0)).color(TEXT));
+                    ui.label(
+                        RichText::new(shorten(path, 48))
+                            .font(mono(10.0))
+                            .color(TEXT),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(shorten(&detail, 48))
@@ -771,7 +553,7 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
         no_locations_view(app, ui);
         return;
     }
-    fixed_strip(ui, TOOLBAR_H, SURFACE, |ui| results_toolbar(app, ui));
+    fixed_strip(ui, TOOLBAR_H, SURFACE, |ui| toolbar::show(app, ui));
     let status_h = 26.0;
     let content_h = (ui.available_height() - status_h).max(0.0);
     ui.allocate_ui_with_layout(
@@ -788,12 +570,14 @@ fn ready_view(app: &mut NeutraApp, ui: &mut Ui) {
                 Vec2::new(main_w, content_h),
                 Layout::top_down(Align::LEFT),
                 |ui| {
-                    egui::Frame::new().fill(CANVAS).show(ui, |ui| match app.view_mode {
-                        ResultView::Details => details_view(app, ui),
-                        ResultView::List => list_view(app, ui),
-                        ResultView::Grid => grid_view(app, ui),
-                        ResultView::Treemap => treemap_view(app, ui),
-                    });
+                    egui::Frame::new()
+                        .fill(CANVAS)
+                        .show(ui, |ui| match app.view_mode {
+                            ResultView::Details => details_view(app, ui),
+                            ResultView::List => list_view(app, ui),
+                            ResultView::Grid => grid_view(app, ui),
+                            ResultView::Treemap => treemap_view(app, ui),
+                        });
                 },
             );
             if app.diagnostics_open {
@@ -840,112 +624,8 @@ fn no_locations_view(app: &mut NeutraApp, ui: &mut Ui) {
     });
 }
 
-fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
-    ui.add_space(8.0);
-    // The engine caps how many hits are materialized; report the full matched
-    // count so a capped view never looks complete.
-    let total = app.hits.len();
-    let matched = app.search_stats.matched as usize;
-    let label = if matched > total {
-        format!(
-            "{} of {} results",
-            fmt_count(total as u64),
-            fmt_count(matched as u64)
-        )
-    } else {
-        format!("{} results", fmt_count(total as u64))
-    };
-    ui.label(RichText::new(label).font(sans(12.0)).strong());
-    let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-    ui.painter().circle_filled(dot.center(), 3.0, if app.searching { WARN } else { icons::GREEN });
-    ui.label(
-        RichText::new(if app.searching {
-            "Searching...".to_owned()
-        } else {
-            format!("Completed in {:.2}s", app.search_stats.wall_us as f64 / 1_000_000.0)
-        })
-        .font(sans(11.0))
-        .color(MUTED),
-    );
-    if app.regex_mode && segment_button(ui, "Regex ×", true).clicked() {
-        app.regex_mode = false;
-        app.save_settings();
-        app.requery();
-    }
-    if app.case_sensitive && segment_button(ui, "Aa ×", true).clicked() {
-        app.case_sensitive = false;
-        app.save_settings();
-        app.requery();
-    }
-    if app.whole_word && segment_button(ui, "Words ×", true).clicked() {
-        app.whole_word = false;
-        app.save_settings();
-        app.requery();
-    }
-    if app.ignore_accents && segment_button(ui, "Accents ×", true).clicked() {
-        app.ignore_accents = false;
-        app.save_settings();
-        app.requery();
-    }
-    if app.search_mode != SearchMode::Name
-        && segment_button(ui, &format!("{} ×", app.search_mode.label()), true).clicked()
-    {
-        app.search_mode = SearchMode::Name;
-        app.save_settings();
-        app.requery();
-    }
-    if app.scope_root.is_some() && segment_button(ui, "Folder scope ×", true).clicked() {
-        app.scope_root = None;
-        app.requery();
-    }
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(8.0);
-        ghost_style(ui);
-        ui.menu_button(format!("{}  ▾", app.view_mode.label()), |ui| {
-            for view in ResultView::ALL {
-                if ui
-                    .selectable_label(app.view_mode == view, view.label())
-                    .clicked()
-                {
-                app.view_mode = view;
-                app.save_settings();
-                ui.close();
-            }
-        }
-    });
-        ui.spacing_mut().item_spacing.x = 0.0;
-        if icons::view_button(ui, false, app.view_mode == ResultView::Grid).clicked() {
-            app.view_mode = ResultView::Grid;
-            app.save_settings();
-        }
-        if icons::view_button(ui, true, app.view_mode == ResultView::List).clicked() {
-            app.view_mode = ResultView::List;
-            app.save_settings();
-        }
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if let Some(path) = app.selected.clone() {
-            ui.menu_button("Selected  ▾", |ui| {
-                if ui.button("Open").clicked() {
-                    perform_file_action(app, FileAction::Open(path.clone().into()));
-                    ui.close();
-                }
-                if ui.button("Show in folder").clicked() {
-                    perform_file_action(app, FileAction::Reveal(path.clone().into()));
-                    ui.close();
-                }
-                if ui.button("Copy full path    Ctrl+Insert").clicked() {
-                    copy_to_clipboard(ui, &path);
-                    ui.close();
-                }
-            });
-        }
-    });
-}
-
-
-
 #[cfg(test)]
- mod tests {
+mod tests {
     use super::*;
     use neutra_core::{Index, Query};
     use widgets::{civil_date, normalize_path};
@@ -990,100 +670,230 @@ fn results_toolbar(app: &mut NeutraApp, ui: &mut Ui) {
         );
     }
 
-     /// Dense screenshot-style fixture for view tests. Formerly the GUI
-     /// reference-mode dataset; reference mode itself is gone.
-     fn dense_unicode_index() -> Index {
-         fn record(
-             path: String,
-             size: u64,
-             age_hours: i64,
-             kind: FileKind,
-             fs: neutra_core::FsKind,
-             id: u64,
-         ) -> FileRecord {
-             let now = std::time::SystemTime::now()
-                 .duration_since(std::time::UNIX_EPOCH)
-                 .map(|duration| duration.as_secs() as i64)
-                 .unwrap_or(0);
-             FileRecord {
-                 path: path.into(),
-                 size,
-                 mtime: now.saturating_sub(age_hours * 3_600),
-                 mode: if kind == FileKind::Dir { 0o040755 } else { 0o100644 },
-                 kind,
-                 fs,
-                 native_id: id,
-                 native_parent: id.saturating_sub(1),
-                 source: 0,
-                 disk: size,
-             }
-         }
-         let mut records = vec![
-             record("/home/alex/Documents/Accounts".into(), 0, 3, FileKind::Dir, neutra_core::FsKind::Ext4, 10),
-             record("/home/alex/Documents/Projects".into(), 0, 5, FileKind::Dir, neutra_core::FsKind::Ext4, 11),
-             record("/home/alex/Documents".into(), 0, 4, FileKind::Dir, neutra_core::FsKind::Ext4, 12),
-             record("/home/alex/Pictures".into(), 0, 30, FileKind::Dir, neutra_core::FsKind::Ext4, 13),
-             record("/home/alex/Games".into(), 0, 40, FileKind::Dir, neutra_core::FsKind::Ext4, 14),
-             record("/home/alex/Downloads/invoice-final.pdf".into(), 482 * 1024, 1, FileKind::File, neutra_core::FsKind::Ext4, 20),
-             record("/home/alex/Documents/Accounts/invoice-tracker.xlsx".into(), 86 * 1024, 4, FileKind::File, neutra_core::FsKind::Ext4, 21),
-             record("/home/alex/Documents/Accounts/invoice-template.docx".into(), 42 * 1024, 9, FileKind::File, neutra_core::FsKind::Ext4, 22),
-             record("/home/alex/Documents/Accounts/发票-上海-七月.pdf".into(), 720 * 1024, 12, FileKind::File, neutra_core::FsKind::Ext4, 23),
-             record("/home/alex/Documents/Accounts/فاتورة-يوليو.pdf".into(), 615 * 1024, 16, FileKind::File, neutra_core::FsKind::Ext4, 24),
-             record("/home/alex/Documents/Accounts/चालान-जुलाई.pdf".into(), 530 * 1024, 20, FileKind::File, neutra_core::FsKind::Ext4, 25),
-             record("/home/alex/Documents/Projects/Aurora/site-plan.svg".into(), 1_540 * 1024, 25, FileKind::File, neutra_core::FsKind::Ext4, 26),
-             record("/home/alex/Pictures/Library/photo-library.bin".into(), 82_u64 << 30, 32, FileKind::File, neutra_core::FsKind::Ext4, 27),
-             record("/home/alex/Games/Orion/game-data.pak".into(), 118_u64 << 30, 40, FileKind::File, neutra_core::FsKind::Ext4, 28),
-             record("/home/alex/Videos/family-video.mp4".into(), 18_u64 << 30, 48, FileKind::File, neutra_core::FsKind::Ext4, 29),
-             record("/var/lib/containers/container-storage.bin".into(), 39_u64 << 30, 52, FileKind::File, neutra_core::FsKind::Ext4, 30),
-             record("/usr/lib/runtime-libraries.bin".into(), 27_u64 << 30, 55, FileKind::File, neutra_core::FsKind::Ext4, 31),
-             record("/mnt/studio/Media/camera-originals.bin".into(), 164_u64 << 30, 60, FileKind::File, neutra_core::FsKind::Network("smb3".into()), 32),
-         ];
-         let folders = [
-             "/home/alex/Documents/Accounts/2026",
-             "/home/alex/Documents/Accounts/2025",
-             "/mnt/studio/Clients/Invoices",
-             "/home/alex/Downloads",
-             "/home/alex/Work/Operations/Billing",
-         ];
-         let types = [
-             ("pdf", 0_u64),
-             ("pdf", 1),
-             ("xlsx", 2),
-             ("docx", 3),
-             ("zip", 4),
-             ("png", 5),
-         ];
-         for index in 0..48_u64 {
-             let (extension, offset) = types[index as usize % types.len()];
-             let magnitude = 180 * 1024 + ((index * 173 * 1024) % (9 * 1024 * 1024));
-             records.push(record(
-                 format!(
-                     "{}/invoice-{}-{:02}-{:04}.{}",
-                     folders[index as usize % folders.len()],
-                     2026 - (index % 3),
-                     index % 12 + 1,
-                     index + 1042,
-                     extension
-                 ),
-                 magnitude,
-                 2 + index as i64 * 3,
-                 FileKind::File,
-                 if index % 5 == 2 {
-                     neutra_core::FsKind::Network("smb3".into())
-                 } else {
-                     neutra_core::FsKind::Ext4
-                 },
-                 100 + index + offset,
-             ));
-         }
-         let mut index = Index::new();
-         index.extend(records);
-         index
-     }
+    /// Dense screenshot-style fixture for view tests. Formerly the GUI
+    /// reference-mode dataset; reference mode itself is gone.
+    fn dense_unicode_index() -> Index {
+        fn record(
+            path: String,
+            size: u64,
+            age_hours: i64,
+            kind: FileKind,
+            fs: neutra_core::FsKind,
+            id: u64,
+        ) -> FileRecord {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(0);
+            FileRecord {
+                path: path.into(),
+                size,
+                mtime: now.saturating_sub(age_hours * 3_600),
+                mode: if kind == FileKind::Dir {
+                    0o040755
+                } else {
+                    0o100644
+                },
+                kind,
+                fs,
+                native_id: id,
+                native_parent: id.saturating_sub(1),
+                source: 0,
+                disk: size,
+            }
+        }
+        let mut records = vec![
+            record(
+                "/home/alex/Documents/Accounts".into(),
+                0,
+                3,
+                FileKind::Dir,
+                neutra_core::FsKind::Ext4,
+                10,
+            ),
+            record(
+                "/home/alex/Documents/Projects".into(),
+                0,
+                5,
+                FileKind::Dir,
+                neutra_core::FsKind::Ext4,
+                11,
+            ),
+            record(
+                "/home/alex/Documents".into(),
+                0,
+                4,
+                FileKind::Dir,
+                neutra_core::FsKind::Ext4,
+                12,
+            ),
+            record(
+                "/home/alex/Pictures".into(),
+                0,
+                30,
+                FileKind::Dir,
+                neutra_core::FsKind::Ext4,
+                13,
+            ),
+            record(
+                "/home/alex/Games".into(),
+                0,
+                40,
+                FileKind::Dir,
+                neutra_core::FsKind::Ext4,
+                14,
+            ),
+            record(
+                "/home/alex/Downloads/invoice-final.pdf".into(),
+                482 * 1024,
+                1,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                20,
+            ),
+            record(
+                "/home/alex/Documents/Accounts/invoice-tracker.xlsx".into(),
+                86 * 1024,
+                4,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                21,
+            ),
+            record(
+                "/home/alex/Documents/Accounts/invoice-template.docx".into(),
+                42 * 1024,
+                9,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                22,
+            ),
+            record(
+                "/home/alex/Documents/Accounts/发票-上海-七月.pdf".into(),
+                720 * 1024,
+                12,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                23,
+            ),
+            record(
+                "/home/alex/Documents/Accounts/فاتورة-يوليو.pdf".into(),
+                615 * 1024,
+                16,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                24,
+            ),
+            record(
+                "/home/alex/Documents/Accounts/चालान-जुलाई.pdf".into(),
+                530 * 1024,
+                20,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                25,
+            ),
+            record(
+                "/home/alex/Documents/Projects/Aurora/site-plan.svg".into(),
+                1_540 * 1024,
+                25,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                26,
+            ),
+            record(
+                "/home/alex/Pictures/Library/photo-library.bin".into(),
+                82_u64 << 30,
+                32,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                27,
+            ),
+            record(
+                "/home/alex/Games/Orion/game-data.pak".into(),
+                118_u64 << 30,
+                40,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                28,
+            ),
+            record(
+                "/home/alex/Videos/family-video.mp4".into(),
+                18_u64 << 30,
+                48,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                29,
+            ),
+            record(
+                "/var/lib/containers/container-storage.bin".into(),
+                39_u64 << 30,
+                52,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                30,
+            ),
+            record(
+                "/usr/lib/runtime-libraries.bin".into(),
+                27_u64 << 30,
+                55,
+                FileKind::File,
+                neutra_core::FsKind::Ext4,
+                31,
+            ),
+            record(
+                "/mnt/studio/Media/camera-originals.bin".into(),
+                164_u64 << 30,
+                60,
+                FileKind::File,
+                neutra_core::FsKind::Network("smb3".into()),
+                32,
+            ),
+        ];
+        let folders = [
+            "/home/alex/Documents/Accounts/2026",
+            "/home/alex/Documents/Accounts/2025",
+            "/mnt/studio/Clients/Invoices",
+            "/home/alex/Downloads",
+            "/home/alex/Work/Operations/Billing",
+        ];
+        let types = [
+            ("pdf", 0_u64),
+            ("pdf", 1),
+            ("xlsx", 2),
+            ("docx", 3),
+            ("zip", 4),
+            ("png", 5),
+        ];
+        for index in 0..48_u64 {
+            let (extension, offset) = types[index as usize % types.len()];
+            let magnitude = 180 * 1024 + ((index * 173 * 1024) % (9 * 1024 * 1024));
+            records.push(record(
+                format!(
+                    "{}/invoice-{}-{:02}-{:04}.{}",
+                    folders[index as usize % folders.len()],
+                    2026 - (index % 3),
+                    index % 12 + 1,
+                    index + 1042,
+                    extension
+                ),
+                magnitude,
+                2 + index as i64 * 3,
+                FileKind::File,
+                if index % 5 == 2 {
+                    neutra_core::FsKind::Network("smb3".into())
+                } else {
+                    neutra_core::FsKind::Ext4
+                },
+                100 + index + offset,
+            ));
+        }
+        let mut index = Index::new();
+        index.extend(records);
+        index
+    }
 
-     #[test]
-     fn reference_index_exercises_dense_views_and_unicode_fallbacks() {
-         let index = dense_unicode_index();
+    #[test]
+    fn reference_index_exercises_dense_views_and_unicode_fallbacks() {
+        let index = dense_unicode_index();
         assert!(index.len() >= 60);
         let mut query = Query::parse("");
         query.limit = 1_000;

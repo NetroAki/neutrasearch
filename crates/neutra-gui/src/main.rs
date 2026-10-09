@@ -1,16 +1,16 @@
 mod app;
+mod quick_search;
 mod terminal;
 mod transport;
 mod ui;
 
 pub(crate) use app::{Event, GuiSettings, LaneState, NeutraApp};
-pub(crate) use transport::{
-    launch_file_action, scan_has_reachable_lane, spawn_local_helper,
-    FileAction,
-};
 #[cfg(test)]
 use transport::{
     helper_start_failure, remote_failure_is_offline, select_helper, validate_elevated_helper,
+};
+pub(crate) use transport::{
+    launch_file_action, scan_has_reachable_lane, spawn_local_helper, FileAction,
 };
 
 use neutra_core::MountInfo;
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 /// matched count either way ("1,000 of 40,312 results"), so nothing is hidden.
 /// Above this many records the launch screen waits for the first search.
 pub(crate) const LAUNCH_LISTING_MAX: u64 = 5_000_000;
-pub(crate) const HOME_RESULT_CAP: usize = 10_000;
+pub(crate) const HOME_RESULT_CAP: usize = 1_000;
 pub(crate) const TYPED_RESULT_CAP: usize = 1_000;
 
 fn embedded_logo() -> (Vec<u8>, u32, u32) {
@@ -57,7 +57,7 @@ fn limit_search_threads() {
         libc::mallopt(libc::M_ARENA_MAX, 2);
     }
     let _ = rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
+        .num_threads(4)
         .start_handler(|_| {
             #[cfg(unix)]
             unsafe {
@@ -70,18 +70,23 @@ fn limit_search_threads() {
 fn main() -> eframe::Result<()> {
     match terminal::action() {
         terminal::Action::Gui => {}
+        terminal::Action::Spotlight => {
+            limit_search_threads();
+            return quick_search::run();
+        }
         terminal::Action::Exit(code) => std::process::exit(code),
     }
     limit_search_threads();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_decorations(false)
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([760.0, 500.0])
             .with_title("Neutrasearch")
             .with_app_id("neutrasearch")
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Glow,
-        vsync: false,
+        vsync: true,
         ..Default::default()
     };
     eframe::run_native(
@@ -184,9 +189,9 @@ fn selected_scan_mounts(roots: &[PathBuf]) -> Vec<MountInfo> {
                     .any(|mount: &MountInfo| mount.mountpoint == mountpoint)
                 {
                     mounts.push(requested_mount_with_filesystem(
-                    mountpoint,
-                    neutra_core::FsKind::Ntfs,
-                ));
+                        mountpoint,
+                        neutra_core::FsKind::Ntfs,
+                    ));
                 }
             }
         }
@@ -249,7 +254,9 @@ fn load_gui_settings(path: &std::path::Path) -> Option<GuiSettings> {
         .filter(|root| root.is_absolute())
         .collect();
     settings.roots.sort();
-    settings.roots.dedup_by(|left, right| same_root(left, right));
+    settings
+        .roots
+        .dedup_by(|left, right| same_root(left, right));
     Some(settings)
 }
 
@@ -277,7 +284,10 @@ fn parse_macos_mount_output(output: &str) -> Vec<MountInfo> {
 #[cfg(target_os = "windows")]
 fn requested_mount(mountpoint: PathBuf) -> MountInfo {
     MountInfo {
-        device: mountpoint.to_string_lossy().trim_end_matches('\\').to_owned(),
+        device: mountpoint
+            .to_string_lossy()
+            .trim_end_matches('\\')
+            .to_owned(),
         mountpoint,
         fs: neutra_core::FsKind::Ntfs,
         source: neutra_core::MountSource::Local,
@@ -420,11 +430,9 @@ fn save_gui_settings(path: &std::path::Path, settings: &GuiSettings) -> Result<(
         .map_err(|error| format!("cannot write settings: {error}"))?;
     drop(file);
     if path.exists() {
-        std::fs::remove_file(path)
-            .map_err(|error| format!("cannot replace settings: {error}"))?;
+        std::fs::remove_file(path).map_err(|error| format!("cannot replace settings: {error}"))?;
     }
-    publish_settings(&temporary, path)
-        .map_err(|error| format!("cannot publish settings: {error}"))
+    publish_settings(&temporary, path).map_err(|error| format!("cannot publish settings: {error}"))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -472,12 +480,12 @@ fn publish_settings(
     }
 }
 
- fn env_flag(name: &str) -> bool {
-     std::env::var_os(name).is_some()
- }
- fn configured_index() -> Option<PathBuf> {
-     std::env::var_os("NEUTRASEARCH_INDEX").map(PathBuf::from)
- }
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+fn configured_index() -> Option<PathBuf> {
+    std::env::var_os("NEUTRASEARCH_INDEX").map(PathBuf::from)
+}
 fn legacy_cache_path() -> PathBuf {
     if let Some(path) = configured_index() {
         return path;

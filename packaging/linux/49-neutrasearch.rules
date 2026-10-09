@@ -1,0 +1,12 @@
+// Let the local active session run the Neutrasearch indexing helper without
+// a password prompt. The helper only reads filesystem metadata into the
+// search index; passwordless elevation means anyone at this console can
+// read raw disk contents, so keep this file on single-user machines only.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "com.neutrasearch.helper" ||
+         action.id == "com.neutrasearch.helper.usr-lib" ||
+         action.id == "com.neutrasearch.helper.usr-local-bin") &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

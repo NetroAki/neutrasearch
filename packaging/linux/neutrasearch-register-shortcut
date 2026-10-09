@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+case "${XDG_CURRENT_DESKTOP:-}" in
+    *KDE*) ;;
+    *) echo 'Automatic shortcut registration needs KDE. Assign Ctrl+K to neutrasearch --spotlight in your desktop shortcut settings.' >&2; exit 1 ;;
+esac
+command -v dbus-send >/dev/null
+command -v timeout >/dev/null
+command -v mktemp >/dev/null
+entry=neutrasearch-quick-search.desktop
+key=67108939 # Qt key sequence Ctrl+K
+tmp=$(mktemp "${TMPDIR:-/tmp}/neutrasearch-shortcut.XXXXXX")
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+# If Ctrl+K is already registered, permit it only when this action owns it.
+if ! timeout 5 dbus-send --session --print-reply --dest=org.kde.kglobalaccel /kglobalaccel \
+    org.kde.KGlobalAccel.getGlobalShortcutsByKey int32:"$key" >"$tmp" 2>&1; then
+    echo 'Could not query KDE global shortcut availability.' >&2
+    exit 1
+fi
+if grep -q 'neutrasearch-quick-search' "$tmp"; then
+    if grep -q 'string "neutrasearch-quick-search"' "$tmp"; then
+        timeout 5 dbus-send --session --print-reply --dest=org.kde.kglobalaccel /kglobalaccel \
+            org.kde.KGlobalAccel.unRegister \
+            array:string:neutrasearch-quick-search,_launch,'Neutrasearch Quick Search','Open quick search' >/dev/null
+    fi
+elif grep -q '67108939' "$tmp"; then
+    echo 'Ctrl+K is already assigned to another global shortcut.' >&2
+    exit 1
+fi
+timeout 5 dbus-send --session --print-reply --dest=org.kde.kglobalaccel /kglobalaccel \
+    org.kde.KGlobalAccel.doRegister array:string:"$entry",_launch,'Neutrasearch Quick Search','Quick file search' >/dev/null
+timeout 5 dbus-send --session --print-reply --dest=org.kde.kglobalaccel /kglobalaccel \
+    org.kde.KGlobalAccel.setShortcut \
+    array:string:"$entry",_launch,'Neutrasearch Quick Search','Quick file search' \
+    array:int32:"$key" uint32:4 >/dev/null
+timeout 5 dbus-send --session --print-reply --dest=org.kde.kglobalaccel /kglobalaccel \
+    org.kde.KGlobalAccel.getGlobalShortcutsByKey int32:"$key" >"$tmp"
+if ! grep -q "string \"$entry\"" "$tmp"; then
+    echo 'KDE did not save the Neutrasearch Ctrl+K shortcut.' >&2
+    exit 1
+fi

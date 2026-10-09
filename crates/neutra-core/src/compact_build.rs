@@ -2,16 +2,16 @@
 //! rebuild lock. Split from the read/search side (`compact.rs`) so format
 //! reading and index building evolve independently.
 
+use crate::compact::suffix_path;
 #[cfg(test)]
 use crate::compact::{
-    binerr, collect_trigrams, compare_index_paths, invalid, put_varint, BlockDesc,
-    DictEntry, BLOCK_RECORDS, DESC_SIZE, HEADER, MAGIC, VERSION,
+    binerr, collect_trigrams, compare_index_paths, invalid, put_varint, BlockDesc, DictEntry,
+    BLOCK_RECORDS, DESC_SIZE, HEADER, MAGIC, VERSION,
 };
-use crate::compact::suffix_path;
-use crate::CompactIndex;
 use crate::dir_summary::DirectorySummary;
 #[cfg(test)]
 use crate::query::safe_absolute_path;
+use crate::CompactIndex;
 #[cfg(test)]
 use crate::FileRecord;
 #[cfg(test)]
@@ -26,17 +26,17 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::time::Instant;
 
- impl CompactIndex {
- /// In-RAM builders below are test-only: every production path streams
- /// through spills, since materializing a base peaked past 25 GiB.
- #[cfg(test)]
- pub fn build(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
-         let order = compact_record_order(records)?;
-         Self::build_ordered(records, path, &order)
-     }
+impl CompactIndex {
+    /// In-RAM builders below are test-only: every production path streams
+    /// through spills, since materializing a base peaked past 25 GiB.
+    #[cfg(test)]
+    pub fn build(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+        let order = compact_record_order(records)?;
+        Self::build_ordered(records, path, &order)
+    }
 
- #[cfg(test)]
- fn build_ordered(records: &[FileRecord], path: &Path, order: &[u32]) -> io::Result<BuildStats> {
+    #[cfg(test)]
+    fn build_ordered(records: &[FileRecord], path: &Path, order: &[u32]) -> io::Result<BuildStats> {
         if records.len() > u32::MAX as usize {
             return Err(invalid("compact index supports at most u32::MAX records"));
         }
@@ -76,7 +76,10 @@ use std::time::Instant;
                     }
                     grams.extend(set);
                 }
-                let refs = ids.iter().map(|id| &records[*id as usize]).collect::<Vec<_>>();
+                let refs = ids
+                    .iter()
+                    .map(|id| &records[*id as usize])
+                    .collect::<Vec<_>>();
                 let raw = bincode::serialize(&refs).map_err(binerr)?;
                 let compressed = zstd::bulk::compress(&raw, 1)?;
                 grams.shrink_to_fit();
@@ -170,9 +173,9 @@ use std::time::Instant;
         })
     }
 
- /// Build a compact base and its generation-bound directory-summary sidecar.
-     #[cfg(test)]
-     pub fn build_with_summary(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+    /// Build a compact base and its generation-bound directory-summary sidecar.
+    #[cfg(test)]
+    pub fn build_with_summary(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
         let compact_order = compact_record_order(records)?;
         let summary_order = crate::dir_summary::summary_order(records)?;
         let built = Self::build_ordered(records, path, &compact_order)?;
@@ -180,20 +183,23 @@ use std::time::Instant;
         Ok(built)
     }
 
- /// Rebuild a base while holding its single-writer delta lock, then remove
-     /// the obsolete generation-bound WAL before readers reopen the pair.
-     #[cfg(test)]
-     pub fn rebuild(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
+    /// Rebuild a base while holding its single-writer delta lock, then remove
+    /// the obsolete generation-bound WAL before readers reopen the pair.
+    #[cfg(test)]
+    pub fn rebuild(records: &[FileRecord], path: &Path) -> io::Result<BuildStats> {
         crate::compact_spill::with_rebuild_lock(path, || Self::build_with_summary(records, path))
     }
 
-/// Atomically publish a fully built sibling index at the destination.
+    /// Atomically publish a fully built sibling index at the destination.
     /// The caller must release destination mmaps first on platforms that do
     /// not permit replacing a mapped file.
     pub fn publish(staged: &Path, destination: &Path) -> io::Result<()> {
         let verified = Self::open(staged)?;
         let generation = verified.generation();
         drop(verified);
+        if DirectorySummary::path_for(staged).is_file() {
+            crate::TreeSummary::ensure(staged, generation)?;
+        }
         let temporary = temp_path(destination);
         let mut source = File::open(staged)?;
         let mut copy = open_private(&temporary)?;
@@ -203,12 +209,13 @@ use std::time::Instant;
         drop(copy);
         replace_file(&temporary, destination)?;
         sync_parent(destination)?;
-        DirectorySummary::publish(staged, destination, generation)
+        DirectorySummary::publish(staged, destination, generation)?;
+        crate::TreeSummary::publish(staged, destination, generation)
     }
 }
 
- #[cfg(test)]
- fn compact_record_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
+#[cfg(test)]
+fn compact_record_order(records: &[FileRecord]) -> io::Result<Vec<u32>> {
     if records.len() > u32::MAX as usize {
         return Err(invalid("compact index supports at most u32::MAX records"));
     }

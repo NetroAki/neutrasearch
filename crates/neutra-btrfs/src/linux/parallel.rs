@@ -9,9 +9,7 @@ struct Shard {
     batches: u64,
 }
 
-pub(super) fn scan_metadata(
-    mount: &Path,
-) -> Result<(Vec<Node>, Vec<u8>, u64)> {
+pub(super) fn scan_metadata(mount: &Path) -> Result<(Vec<Node>, Vec<u8>, u64)> {
     scan_metadata_in_tree(mount, 0)
 }
 
@@ -65,18 +63,13 @@ pub(super) fn scan_metadata_in_tree(
         }
         names.append(&mut part.names);
         nodes.append(&mut part.nodes);
-         batches += part.batches;
-     }
-     nodes.sort_unstable_by_key(|n| n.ino);
+        batches += part.batches;
+    }
+    nodes.sort_unstable_by_key(|n| n.ino);
     Ok((nodes, names, batches))
 }
 
- fn scan_range(
-     mount: PathBuf,
-     tree_id: u64,
-     range_min: u64,
-     range_max: u64,
- ) -> Result<Shard> {
+fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> Result<Shard> {
     let file =
         File::open(&mount).with_context(|| format!("open Btrfs mount {}", mount.display()))?;
     let mut nodes = Vec::<Node>::with_capacity(256_000);

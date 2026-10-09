@@ -4,10 +4,10 @@
 
 use crate::dir_summary::{
     ancestor_paths, close_stack, codec, compare_paths, directory_summary_path, normalize_path,
-    open_entry, open_private_file, temporary_path, DirectorySummaryEntry, HashingWriter, MAGIC,
-    VERSION, OpenEntry,
+    open_entry, open_private_file, temporary_path, DirectorySummaryEntry, HashingWriter, OpenEntry,
+    MAGIC, VERSION,
 };
- use crate::FileRecord;
+use crate::FileRecord;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -32,9 +32,7 @@ impl SummaryFeed {
         record: &FileRecord,
         emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
     ) -> io::Result<()> {
-        let previous = self
-            .previous
-            .replace((record.source, record.path.clone()));
+        let previous = self.previous.replace((record.source, record.path.clone()));
         let normalized_path = normalize_path(record.path.as_ref())?;
         if let Some((source, path)) = previous {
             if source == record.source
@@ -66,8 +64,10 @@ impl SummaryFeed {
             open_entry(&mut self.stack, record.source, &normalized_path);
             return Ok(());
         }
-        let contributes_file =
-            matches!(record.kind, crate::FileKind::File | crate::FileKind::Symlink);
+        let contributes_file = matches!(
+            record.kind,
+            crate::FileKind::File | crate::FileKind::Symlink
+        );
         for entry in &mut self.stack {
             if contributes_file {
                 entry.logical_bytes = entry.logical_bytes.saturating_add(record.size);
@@ -106,27 +106,29 @@ pub(crate) struct SidecarSink {
     uncompressed_bytes: u64,
 }
 
- pub(crate) fn begin_sidecar(index_path: &Path, generation: u64) -> io::Result<SidecarSink> {
+pub(crate) fn begin_sidecar(index_path: &Path, generation: u64) -> io::Result<SidecarSink> {
     if generation == 0 {
-        return Err(crate::compact::invalid("directory summary requires a nonzero generation"));
+        return Err(crate::compact::invalid(
+            "directory summary requires a nonzero generation",
+        ));
     }
     let destination = directory_summary_path(index_path);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-     let temporary = temporary_path(&destination);
-     let file = open_private_file(&temporary)?;
-     // The header stays outside the checksum: readers hash bytes from
-     // PREFIX_BYTES onward, matching the non-streaming writer. Hashing the
-     // header here produced sidecars that always failed verification.
-     let mut header = BufWriter::new(file);
-     header.write_all(MAGIC)?;
-     header.write_all(&VERSION.to_le_bytes())?;
-     header.write_all(&generation.to_le_bytes())?;
-     let compressed = HashingWriter {
-         inner: header,
-         hasher: crc32fast::Hasher::new(),
-     };
+    let temporary = temporary_path(&destination);
+    let file = open_private_file(&temporary)?;
+    // The header stays outside the checksum: readers hash bytes from
+    // PREFIX_BYTES onward, matching the non-streaming writer. Hashing the
+    // header here produced sidecars that always failed verification.
+    let mut header = BufWriter::new(file);
+    header.write_all(MAGIC)?;
+    header.write_all(&VERSION.to_le_bytes())?;
+    header.write_all(&generation.to_le_bytes())?;
+    let compressed = HashingWriter {
+        inner: header,
+        hasher: crc32fast::Hasher::new(),
+    };
     let encoder = zstd::stream::Encoder::new(compressed, 3).map_err(codec)?;
     Ok(SidecarSink {
         encoder: Some(encoder),
@@ -165,50 +167,49 @@ impl SidecarSink {
             .inner
             .into_inner()
             .map_err(|error| error.into_error())?;
-         file.write_all(&self.uncompressed_bytes.to_le_bytes())?;
-         file.write_all(&checksum.to_le_bytes())?;
-         file.sync_all()?;
-         drop(file);
-         crate::compact_build::replace_file(&self.temporary, &self.destination)?;
-         crate::compact_build::sync_parent(&self.destination)
-     }
- }
+        file.write_all(&self.uncompressed_bytes.to_le_bytes())?;
+        file.write_all(&checksum.to_le_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        crate::compact_build::replace_file(&self.temporary, &self.destination)?;
+        crate::compact_build::sync_parent(&self.destination)
+    }
+}
 
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use crate::dir_summary::DirectorySummary;
-     use crate::{FileKind, FsKind};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dir_summary::DirectorySummary;
+    use crate::{FileKind, FsKind};
 
-     /// The production sidecar path must survive verification, with on-disk
-     /// totals intact. The header used to be hashed into the checksum the
-     /// readers exclude, so every streamed sidecar failed to open.
-     #[test]
-     fn streaming_sink_roundtrips_through_verification() {
-         let path =
-             std::env::temp_dir().join(format!("neutra-sink-{}.nsx", std::process::id()));
-         let _ = std::fs::remove_file(directory_summary_path(&path));
-         let mut sink = begin_sidecar(&path, 7).unwrap();
-         let mut feed = SummaryFeed::new();
-         let record = FileRecord {
-             path: "/docs/readme.md".into(),
-             size: 42,
-             disk: 12,
-             mtime: 0,
-             mode: 0,
-             kind: FileKind::File,
-             fs: FsKind::Btrfs,
-             native_id: 0,
-             native_parent: 0,
-             source: 0,
-         };
-         feed.push(&record, &mut |entry| sink.push(entry)).unwrap();
-         feed.finish(&mut |entry| sink.push(entry)).unwrap();
-         sink.finish().unwrap();
-         let loaded = DirectorySummary::open_for_compact(&path, 7).unwrap();
-         let docs = loaded.get(0, "/docs").unwrap();
-         assert_eq!(docs.logical_bytes, 42);
-         assert_eq!(docs.physical_bytes, 12);
-         let _ = std::fs::remove_file(directory_summary_path(&path));
-     }
- }
+    /// The production sidecar path must survive verification, with on-disk
+    /// totals intact. The header used to be hashed into the checksum the
+    /// readers exclude, so every streamed sidecar failed to open.
+    #[test]
+    fn streaming_sink_roundtrips_through_verification() {
+        let path = std::env::temp_dir().join(format!("neutra-sink-{}.nsx", std::process::id()));
+        let _ = std::fs::remove_file(directory_summary_path(&path));
+        let mut sink = begin_sidecar(&path, 7).unwrap();
+        let mut feed = SummaryFeed::new();
+        let record = FileRecord {
+            path: "/docs/readme.md".into(),
+            size: 42,
+            disk: 12,
+            mtime: 0,
+            mode: 0,
+            kind: FileKind::File,
+            fs: FsKind::Btrfs,
+            native_id: 0,
+            native_parent: 0,
+            source: 0,
+        };
+        feed.push(&record, &mut |entry| sink.push(entry)).unwrap();
+        feed.finish(&mut |entry| sink.push(entry)).unwrap();
+        sink.finish().unwrap();
+        let loaded = DirectorySummary::open_for_compact(&path, 7).unwrap();
+        let docs = loaded.get(0, "/docs").unwrap();
+        assert_eq!(docs.logical_bytes, 42);
+        assert_eq!(docs.physical_bytes, 12);
+        let _ = std::fs::remove_file(directory_summary_path(&path));
+    }
+}
