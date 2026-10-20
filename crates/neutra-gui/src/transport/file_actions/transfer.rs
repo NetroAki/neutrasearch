@@ -203,6 +203,7 @@ fn rename_noreplace_io(from: &Path, to: &Path) -> std::io::Result<()> {
     rename::rename(from, to)
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
     rename_noreplace_io(from, to).map_err(|e| format!("cannot rename {}: {e}", from.display()))
 }

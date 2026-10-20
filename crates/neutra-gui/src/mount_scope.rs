@@ -1,5 +1,5 @@
 use neutra_core::MountInfo;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -136,7 +136,7 @@ fn requested_mount(mountpoint: PathBuf) -> MountInfo {
     }
 }
 
-pub(crate) fn same_root(left: &PathBuf, right: &PathBuf) -> bool {
+pub(crate) fn same_root(left: &Path, right: &Path) -> bool {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         left.to_string_lossy()

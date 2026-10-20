@@ -80,6 +80,7 @@ fn prefix_ordering_and_recreation_survive_snapshot_checkpoint_and_restart() {
     verify(&reopened);
     assert!(std::fs::metadata(path).unwrap().len() < 1024);
 }
+#[cfg(unix)]
 fn verify(delta: &DeltaIndex) {
     assert!(delta.is_removed("/d/sub/old.dat").unwrap());
     assert!(delta.is_removed("/d/sub/new.dat").unwrap());
