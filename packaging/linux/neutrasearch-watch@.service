@@ -1,0 +1,24 @@
+[Unit]
+Description=Neutrasearch live metadata index for account %i
+After=local-fs.target
+ConditionPathExists=/var/lib/neutrasearch/authorized-users/%i
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=%i
+Environment=NEUTRASEARCH_MANAGED_WATCH=1
+ExecStart=/usr/local/lib/neutrasearch/neutrasearch-watch / 0
+TimeoutStartSec=7500
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=78
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target

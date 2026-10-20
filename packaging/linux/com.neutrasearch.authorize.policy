@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <action id="com.neutrasearch.authorize">
+    <description>Enable continuous Neutrasearch indexing for your account</description>
+    <message>Allow Neutrasearch to read filesystem metadata and keep your search index up to date after restarts</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/neutrasearch/neutrasearch-authorize</annotate>
+  </action>
+  <action id="com.neutrasearch.authorize.usr-lib">
+    <description>Enable continuous Neutrasearch indexing for your account</description>
+    <message>Allow Neutrasearch to read filesystem metadata and keep your search index up to date after restarts</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/neutrasearch/neutrasearch-authorize</annotate>
+  </action>
+</policyconfig>

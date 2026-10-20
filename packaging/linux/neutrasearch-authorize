@@ -1,0 +1,122 @@
+#!/usr/bin/python3
+"""Retain metadata-reader access for the account approved by polkit."""
+import fcntl
+import json
+import os
+import pwd
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+STATE = Path('/var/lib/neutrasearch/authorized-users')
+RULES = Path('/etc/polkit-1/rules.d')
+
+
+def run(*args):
+    subprocess.run(args, check=True, timeout=30)
+
+
+def trusted(path, directory=False):
+    info = path.lstat()
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError(f'Untrusted installation path: {path}')
+    for parent in path.parents:
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError(f'Untrusted installation directory: {parent}')
+
+
+def prepare_directory(path):
+    if not path.exists():
+        path.mkdir(mode=0o755)
+    trusted(path, True)
+
+
+def account(value):
+    if not value or not value.isascii() or not value.isdecimal() or int(value) == 0:
+        raise RuntimeError('The requesting account is unavailable')
+    return pwd.getpwuid(int(value))
+
+
+def write_rule(user):
+    path = RULES / f'49-neutrasearch-{user.pw_uid}.rules'
+    if path.exists() or path.is_symlink():
+        trusted(path)
+    text = ('polkit.addRule(function(action, subject) {\n'
+            f'    if (subject.user === {json.dumps(user.pw_name)} &&\n'
+            '        action.id === "org.freedesktop.systemd1.manage-units" &&\n'
+            f'        action.lookup("unit") === "neutrasearch-watch@{user.pw_uid}.service" &&\n'
+            '        ["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0)\n'
+            '        return polkit.Result.YES;\n'
+            '});\n')
+    temporary = path.with_suffix('.tmp')
+    if temporary.exists() or temporary.is_symlink():
+        trusted(temporary)
+        temporary.unlink()
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def restore(helper):
+    run('/usr/bin/setfacl', '-b', str(helper))
+    helper.chmod(0o700)
+    for marker in STATE.iterdir():
+        trusted(marker)
+        try:
+            user = account(marker.name)
+        except KeyError:
+            continue
+        if marker.read_text().strip() != user.pw_name:
+            continue
+        run('/usr/bin/setfacl', '-m', f'u:{user.pw_uid}:rx', str(helper))
+        write_rule(user)
+        run('/usr/bin/systemctl', 'enable', f'neutrasearch-watch@{user.pw_uid}.service')
+    run('/usr/bin/setcap', 'cap_dac_read_search,cap_sys_admin=ep', str(helper))
+
+
+def main():
+    if os.geteuid() != 0:
+        raise RuntimeError('Administrator authorization is required')
+    location = Path(__file__).absolute()
+    if location.parent not in (Path('/usr/local/lib/neutrasearch'), Path('/usr/lib/neutrasearch')):
+        raise RuntimeError('Access manager must be installed system-wide')
+    trusted(location)
+    helper = location.with_name('neutrasearch-helper')
+    trusted(helper)
+    prepare_directory(STATE.parent)
+    prepare_directory(STATE)
+    prepare_directory(RULES)
+    lock = os.open(STATE.parent / 'access.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    if sys.argv[1:] == ['--restore'] and 'PKEXEC_UID' not in os.environ:
+        restore(helper)
+        return
+    if sys.argv[1:]:
+        raise RuntimeError('Unexpected access request arguments')
+    user = account(os.environ.get('PKEXEC_UID') or os.environ.get('SUDO_UID'))
+    marker = STATE / str(user.pw_uid)
+    if marker.exists() or marker.is_symlink():
+        trusted(marker)
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(user.pw_name + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    restore(helper)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f'Cannot retain indexing access: {error}', file=sys.stderr)
+        sys.exit(1)
