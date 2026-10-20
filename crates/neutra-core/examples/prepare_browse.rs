@@ -19,6 +19,7 @@ fn main() -> std::io::Result<()> {
         maintenance.as_deref(),
         Some("--sync-catalog" | "--checkpoint")
     ) {
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut writer =
             neutra_core::DeltaIndex::open(&path.with_extension("delta"), index.generation())?;
         BrowserIndex::apply_delta(&path, &writer)?;

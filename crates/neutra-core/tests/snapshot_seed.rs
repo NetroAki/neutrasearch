@@ -1,3 +1,6 @@
+//! Snapshot seeding relies on the Unix overlay cache.
+#![cfg(unix)]
+
 use neutra_core::{DeltaChange, DeltaIndex, FileKind, FileRecord, FsKind};
 
 fn record(path: &str, size: u64) -> FileRecord {
