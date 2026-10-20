@@ -1,6 +1,10 @@
 /target/
 /dist/
 /docs/
+/AGENTS.md
+/DESIGN.md
+/current-Debt.md
+/SECURITY.md
 /scripts/
 /packaging/
 /packages/pi-neutrasearch/node_modules/
