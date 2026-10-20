@@ -154,7 +154,8 @@ fn live_snapshot_rejects_aliased_or_shared_overlay_roots() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[cfg(unix)]
+// APFS rejects names that are not valid UTF-8.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn live_snapshot_preserves_non_utf8_index_names() {
     use std::os::unix::ffi::OsStrExt;

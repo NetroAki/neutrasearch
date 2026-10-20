@@ -11,7 +11,9 @@ pub(super) fn file_identity(path: &Path) -> io::Result<(u64, u64)> {
     file_identity_from_metadata(&File::open(path)?.metadata()?)
 }
 
+// Windows has no inode identity, and the code paths that compare it are Unix-only.
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub(super) fn file_identity_from_metadata(_: &Metadata) -> io::Result<(u64, u64)> {
     Ok((0, 0))
 }
