@@ -59,6 +59,7 @@ impl NeutraApp {
         scans::begin_scan_with_elevation(self, elevated)
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn cancel_scan(&mut self) {
         scans::cancel_scan(self)
     }

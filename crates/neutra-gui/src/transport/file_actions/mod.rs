@@ -96,6 +96,8 @@ pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn launch(path: &Path, desktop: Option<&str>) -> Result<Option<PathBuf>, String> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = desktop;
     #[cfg(target_os = "linux")]
     let mut c = if let Some(id) = desktop {
         let mut c = Command::new("gtk-launch");

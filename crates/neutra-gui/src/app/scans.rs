@@ -84,6 +84,7 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
     );
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn cancel_scan(app: &mut NeutraApp) {
     if !app.scanning || app.cancelling {
         return;

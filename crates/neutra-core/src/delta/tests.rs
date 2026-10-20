@@ -20,10 +20,12 @@ fn remove_log(path: &Path) {
 }
 
 mod cache;
+#[cfg(unix)]
 mod checkpoints;
 mod integrity;
 mod migration;
 mod ownership;
+#[cfg(unix)]
 mod permissions;
 mod replay;
 mod shadows;

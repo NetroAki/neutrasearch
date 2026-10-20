@@ -152,7 +152,6 @@ pub(crate) fn same_root(left: &Path, right: &Path) -> bool {
 pub(crate) fn default_system_roots() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        use neutra_core::FsKind;
         use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDriveStringsW};
         const DRIVE_FIXED: u32 = 3;
         const DRIVE_REMOVABLE: u32 = 2;
