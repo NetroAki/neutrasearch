@@ -29,7 +29,11 @@ pub(super) fn key(sort: SortKey, score: u32, record: &FileRecord) -> Vec<u8> {
         }
         SortKey::PathAsc | SortKey::PathDesc => {}
     }
-    string(&mut key, record.path.bytes(), descending);
+    string(
+        &mut key,
+        record.path.bytes().map(crate::compact::fold_byte),
+        descending,
+    );
     key
 }
 

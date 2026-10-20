@@ -56,8 +56,9 @@ fn read(base: &Path) -> Result<Option<[u64; 4]>> {
         "invalid compaction tail intent"
     );
     let mut values = [0; 4];
-    for (value, bytes) in values.iter_mut().zip(bytes[8..].chunks_exact(8)) {
-        *value = u64::from_le_bytes(bytes.try_into().unwrap());
+    for (index, value) in values.iter_mut().enumerate() {
+        let start = 8 + index * 8;
+        *value = u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap());
     }
     anyhow::ensure!(
         values[0] != 0

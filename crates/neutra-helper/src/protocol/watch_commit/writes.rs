@@ -13,10 +13,9 @@ pub(super) fn commit_changes(
             !stale.load(Ordering::Acquire),
             "native event coverage is unavailable"
         );
-        let applied = guard.apply_bounded(chunk.to_vec()).map_err(|error| {
-            stale.store(true, Ordering::Release);
-            error
-        })?;
+        let applied = guard
+            .apply_bounded(chunk.to_vec())
+            .inspect_err(|_| stale.store(true, Ordering::Release))?;
         tracing::debug!(
             changes = applied.changes,
             wal_bytes = applied.wal_bytes,

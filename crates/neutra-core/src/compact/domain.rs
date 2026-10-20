@@ -37,7 +37,7 @@ where
 
 /// Byte fold shared by index ordering and prefix scans so both agree on
 /// every platform.
-pub(super) fn fold_byte(byte: u8) -> u8 {
+pub(crate) fn fold_byte(byte: u8) -> u8 {
     let byte = if byte == b'\\' { b'/' } else { byte };
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
