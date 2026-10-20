@@ -35,10 +35,10 @@ pub(crate) fn record_in_root(path: &str, root: &str) -> bool {
     {
         let path = path.to_ascii_lowercase();
         path == root
-            || (root.ends_with('/') && path.starts_with(&root))
+            || (root.ends_with('/') && path.starts_with(root))
             || (path.len() > root.len()
                 && !root.ends_with('/')
-                && path.starts_with(&root)
+                && path.starts_with(root)
                 && path.as_bytes()[root.len()] == b'/')
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]

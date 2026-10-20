@@ -1,3 +1,4 @@
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 use super::{Event, EventSender};
 use std::{
     path::Path,

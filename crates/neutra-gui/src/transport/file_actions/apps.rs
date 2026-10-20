@@ -1,4 +1,5 @@
 //! Desktop application lookup for Open With (gio mime on Linux).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 use super::run;
 use std::path::Path;
 

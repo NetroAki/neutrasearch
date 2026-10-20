@@ -18,6 +18,7 @@ pub(crate) struct LaneState {
 }
 
 pub(crate) enum Event {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
     IndexChanged,
     Message(HelperMsg),
     Fatal(String),

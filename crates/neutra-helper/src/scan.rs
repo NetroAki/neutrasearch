@@ -17,7 +17,7 @@ mod domain;
 mod state;
 mod view;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 pub(crate) use adapters::parse_macos_mount_output;
 #[cfg(test)]
 pub(crate) use adapters::run_bounded;

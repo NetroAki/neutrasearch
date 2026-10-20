@@ -16,6 +16,7 @@ pub(crate) fn stale_marker(base: &std::path::Path) -> std::path::PathBuf {
     append_suffix(base, ".stale")
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn write_watch_status(base: &std::path::Path, text: &str) -> Result<()> {
     let path = append_suffix(base, ".watch-status");
     let temp = append_suffix(&path, ".new");

@@ -167,9 +167,11 @@ fn reveal(path: &Path) -> Result<Option<PathBuf>, String> {
             .map_err(|e| format!("cannot reveal file: {e}"))
     }
 }
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
     run_with_env(program, args, None)
 }
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 fn run_with_env(program: &str, args: &[&str], data_home: Option<&Path>) -> Result<String, String> {
     use std::{io::Read, process::Stdio};
     // The desktop GVfs daemon retains its original data directory. An

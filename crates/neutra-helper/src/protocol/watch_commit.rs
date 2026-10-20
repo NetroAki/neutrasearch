@@ -82,11 +82,13 @@ pub(super) fn drain_watch_burst(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn request_reconciliation(requested: &AtomicBool, reason: &str) {
     requested.store(true, Ordering::Release);
     tracing::warn!("native event gap: {reason}; replaying Btrfs metadata from the saved cursor");
 }
 
+#[cfg(target_os = "linux")]
 fn merge_watched_changes(pending: &mut BTreeMap<String, DeltaChange>, changes: Vec<DeltaChange>) {
     for change in changes {
         if let DeltaChange::RemovePrefix(path) = &change {
@@ -104,6 +106,7 @@ fn merge_watched_changes(pending: &mut BTreeMap<String, DeltaChange>, changes: V
     }
 }
 
+#[cfg(target_os = "linux")]
 fn change_path(change: &DeltaChange) -> &str {
     match change {
         DeltaChange::Upsert(record) => &record.path,
@@ -111,6 +114,7 @@ fn change_path(change: &DeltaChange) -> &str {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn fail_closed(stale: &AtomicBool, base_path: &std::path::Path, error: anyhow::Error) {
     stale.store(true, Ordering::Release);
     if let Err(marker_error) = write_stale_marker(base_path, &format!("{error:#}")) {

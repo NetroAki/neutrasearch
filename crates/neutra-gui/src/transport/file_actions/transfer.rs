@@ -1,3 +1,4 @@
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -166,6 +167,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 fn conflict_or(message: &str, target: &Path) -> String {
     if target.exists() {
         message.to_owned()

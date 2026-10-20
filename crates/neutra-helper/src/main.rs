@@ -44,7 +44,9 @@ use std::io::{Cursor, Write};
 use std::time::Duration;
 
 /// Watched-event bursts (builds, checkouts) commit once after this quiet window.
+#[cfg(target_os = "linux")]
 pub(crate) const WATCH_DEBOUNCE: Duration = Duration::from_millis(250);
+#[cfg(target_os = "linux")]
 pub(crate) const MAX_PENDING_CHANGES: usize = crate::scan::MAX_DELTA_CHANGES;
 
 fn main() -> Result<()> {

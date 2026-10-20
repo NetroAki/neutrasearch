@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use crate::store::{
     append_suffix, compaction_marker, compaction_marker_temp, compaction_stage, stale_marker,
 };

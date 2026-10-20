@@ -1,10 +1,12 @@
 #[cfg(unix)]
 use super::clipboard::{gio_uri, url_to_path};
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 use super::trash::{restore_with_env, trash_with_env};
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 static NEXT: AtomicU64 = AtomicU64::new(0);
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 static TRASH_TEST_LOCK: Mutex<()> = Mutex::new(());
 fn sandbox() -> (PathBuf, PathBuf) {
     let home = std::env::var_os("HOME")

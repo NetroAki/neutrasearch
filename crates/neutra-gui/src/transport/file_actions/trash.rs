@@ -1,3 +1,4 @@
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 use super::run_with_env;
 use std::path::{Path, PathBuf};
 

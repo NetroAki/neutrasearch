@@ -18,6 +18,7 @@ pub(crate) enum DragAction {
 
 /// Terminal and progress notifications emitted by a native platform driver.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 pub(crate) enum DragEvent {
     Started,
     /// A destination accepted a URI-list offer and advertised these actions.
