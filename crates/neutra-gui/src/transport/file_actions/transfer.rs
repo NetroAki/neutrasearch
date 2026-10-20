@@ -75,6 +75,18 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         } else {
             source.to_path_buf()
         };
+        // Coreutils before 9.5 lack --update=none-fail, so refuse an existing
+        // file here and let --update=none cover the remaining race.
+        if !directory && std::fs::symlink_metadata(target).is_ok() {
+            return Err(conflict_or(
+                &format!(
+                    "cannot copy {} without overwriting {}",
+                    source.display(),
+                    target.display()
+                ),
+                target,
+            ));
+        }
         let status = Command::new("timeout")
             .args([
                 "1800",
@@ -84,7 +96,7 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 "--reflink=auto",
                 "--sparse=auto",
                 "--preserve=all",
-                "--update=none-fail",
+                "--update=none",
                 "--",
             ])
             .arg(&source)
@@ -117,14 +129,18 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
             Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {}
             Err(e) => return Err(format!("cannot move {}: {e}", source.display())),
         }
+        if std::fs::symlink_metadata(target).is_ok() {
+            return Err(conflict_or(
+                &format!(
+                    "cannot move {} without overwriting {}",
+                    source.display(),
+                    target.display()
+                ),
+                target,
+            ));
+        }
         let status = Command::new("timeout")
-            .args([
-                "1800",
-                "mv",
-                "--no-target-directory",
-                "--update=none-fail",
-                "--",
-            ])
+            .args(["1800", "mv", "--no-target-directory", "--update=none", "--"])
             .arg(source)
             .arg(target)
             .status()

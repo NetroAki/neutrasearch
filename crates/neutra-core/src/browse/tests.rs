@@ -97,7 +97,17 @@ fn every_order_and_page_matches_the_engine_with_scopes_and_live_changes() {
     let records = vec![
         record("/a/Z.wav", 500, 20, 20),
         record("/a/a.txt", 50, 50, 30),
-        record("/a/A.txt", 50, 50, 30),
+        // Windows and macOS treat names differing only by case as one file.
+        record(
+            if cfg!(any(windows, target_os = "macos")) {
+                "/a/B.txt"
+            } else {
+                "/a/A.txt"
+            },
+            50,
+            50,
+            30,
+        ),
         record("/b/a.txt", 80, 80, 10),
         record("/a/sparse.vhd", 2_000_000, 10, 50),
         record("/ab/other.txt", 100, 100, 99),

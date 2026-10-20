@@ -25,6 +25,14 @@ fn try_seed(shared: &Path, snapshot: &Path) -> io::Result<()> {
         .map_err(sql_error)?;
     db.execute_batch("PRAGMA synchronous=OFF;")
         .map_err(sql_error)?;
+    // NOFOLLOW also rejects directory aliases such as macOS /var in the target.
+    let snapshot = match (snapshot.parent(), snapshot.file_name()) {
+        (Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map(|parent| parent.join(name))
+            .unwrap_or_else(|_| snapshot.to_path_buf()),
+        _ => snapshot.to_path_buf(),
+    };
     db.execute("VACUUM main INTO ?1", [snapshot.to_string_lossy().as_ref()])
         .map_err(sql_error)?;
     Ok(())
