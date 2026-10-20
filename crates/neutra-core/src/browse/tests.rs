@@ -17,58 +17,6 @@ fn record(path: &str, size: u64, disk: u64, mtime: i64) -> FileRecord {
 }
 
 #[test]
-fn catalog_recovery_restores_changed_added_removed_and_unchanged_records() {
-    let path = std::env::temp_dir().join(format!("ns-catalog-recovery-{}.nsx", std::process::id()));
-    let output = path.with_extension("recovered.delta");
-    let _ = std::fs::remove_file(&output);
-    CompactIndex::build(
-        &[
-            record("/keep", 1, 1, 1),
-            record("/replace", 2, 2, 2),
-            record("/gone", 3, 3, 3),
-            record("/tail", 4, 4, 4),
-        ],
-        &path,
-    )
-    .unwrap();
-    let base = CompactIndex::open_fast(&path).unwrap();
-    let generation = base.generation();
-    BrowserIndex::ensure(&path, generation).unwrap();
-    BrowserIndex::apply_changes(
-        &path,
-        generation,
-        &[
-            DeltaChange::Remove("/gone".into()),
-            DeltaChange::Upsert(record("/replace", 99, 99, 99)),
-            DeltaChange::Upsert(record("/added", 5, 5, 5)),
-        ],
-    )
-    .unwrap();
-    let mut lost = DeltaIndex::open(&path.with_extension("delta"), generation).unwrap();
-    lost.reset(generation).unwrap();
-    BrowserIndex::mark_delta(&path, &lost).unwrap();
-    drop(lost);
-    BrowserIndex::recover_delta(&path, &output).unwrap();
-    let recovered = DeltaIndex::open_snapshot(&output, generation).unwrap();
-    let (hits, stats) = base
-        .search_with_delta(&Query::default(), &recovered)
-        .unwrap();
-    assert_eq!(stats.matched, 4);
-    assert!(!hits.iter().any(|hit| &*hit.record.path == "/gone"));
-    assert_eq!(recovered.upsert_for("/replace").unwrap().unwrap().size, 99);
-    assert!(hits.iter().any(|hit| &*hit.record.path == "/keep"));
-    assert!(hits.iter().any(|hit| &*hit.record.path == "/tail"));
-    assert!(hits.iter().any(|hit| &*hit.record.path == "/added"));
-    let mut pending = DeltaIndex::open(&path.with_extension("delta"), generation).unwrap();
-    pending.apply(DeltaChange::Remove("/keep".into())).unwrap();
-    pending.sync().unwrap();
-    drop(pending);
-    let another = path.with_extension("unsafe.delta");
-    assert!(BrowserIndex::recover_delta(&path, &another).is_err());
-    assert!(!another.exists());
-}
-
-#[test]
 fn hierarchy_cursor_handles_root_unicode_prefix_boundaries_and_overflow() {
     let path = std::env::temp_dir().join(format!("ns-hierarchy-{}.nsx", std::process::id()));
     let records = vec![
@@ -313,3 +261,5 @@ fn durable_changes_and_keyset_pages_survive_base_replacement() {
         let _ = std::fs::remove_file(file);
     }
 }
+
+mod recovery;

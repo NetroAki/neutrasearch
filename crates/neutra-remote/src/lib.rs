@@ -187,65 +187,13 @@ impl Provisioner {
     }
 }
 
-pub fn artifact_name(p: &RemotePlatform) -> String {
-    let os = match p.os {
-        RemoteOs::Linux => "linux",
-        RemoteOs::Windows => "windows",
-        RemoteOs::Macos => "macos",
-    };
-    let ext = if p.os == RemoteOs::Windows {
-        ".exe"
-    } else {
-        ""
-    };
-    format!("neutrasearch-helper-{os}-{}{ext}", p.arch)
-}
-fn remote_helper_path(p: &RemotePlatform) -> &'static str {
-    match p.os {
-        RemoteOs::Windows => r#"$env:LOCALAPPDATA\Neutrasearch\neutrasearch-helper.exe"#,
-        _ => "~/.local/lib/neutrasearch/neutrasearch-helper",
-    }
-}
-
-fn windows_command(script: &str) -> String {
-    format!("powershell -NoProfile -NonInteractive -Command \"{script}\"")
-}
-
-fn build_check_command(p: &RemotePlatform) -> String {
-    match p.os {
-        RemoteOs::Windows => windows_command(
-            r#"& (Join-Path $env:LOCALAPPDATA 'Neutrasearch\neutrasearch-helper.exe') --build"#,
-        ),
-        // Do not quote this path: the remote Unix shell must expand `~`.
-        _ => format!("{} --build", remote_helper_path(p)),
-    }
-}
-
-fn connect_command(p: &RemotePlatform) -> String {
-    match p.os {
-        RemoteOs::Windows => windows_command(
-            r#"& (Join-Path $env:LOCALAPPDATA 'Neutrasearch\neutrasearch-helper.exe')"#,
-        ),
-        _ => remote_helper_path(p).into(),
-    }
-}
-
-fn unix_install_command(expected_sha256: &str, os: RemoteOs) -> String {
-    let hash_command = match os {
-        RemoteOs::Linux => "sha256sum",
-        RemoteOs::Macos => "shasum -a 256",
-        RemoteOs::Windows => unreachable!("Windows uses a PowerShell install command"),
-    };
-    format!(
-        "actual=$({hash_command} ~/.local/lib/neutrasearch/neutrasearch-helper.new | cut -d' ' -f1); test \"$actual\" = '{expected_sha256}' && chmod 700 ~/.local/lib/neutrasearch/neutrasearch-helper.new && mv ~/.local/lib/neutrasearch/neutrasearch-helper.new ~/.local/lib/neutrasearch/neutrasearch-helper"
-    )
-}
-
-fn windows_install_command(expected_sha256: &str) -> String {
-    windows_command(&format!(
-        "$source = Join-Path $HOME 'neutrasearch-helper.exe.new'; $actual = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant(); if ($actual -ne '{expected_sha256}') {{ Remove-Item -LiteralPath $source -Force; exit 42 }}; Move-Item -LiteralPath $source -Destination (Join-Path $env:LOCALAPPDATA 'Neutrasearch\\neutrasearch-helper.exe') -Force"
-    ))
-}
+#[path = "lib/commands.rs"]
+mod commands;
+pub use commands::artifact_name;
+use commands::{
+    build_check_command, connect_command, unix_install_command, windows_command,
+    windows_install_command,
+};
 
 fn verify_local_artifact(path: &Path) -> Result<String> {
     let checksum_path = append_suffix(path, ".sha256");
@@ -285,50 +233,10 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     value.push(suffix);
     value.into()
 }
-fn normalize_arch(s: &str) -> String {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "x86_64" | "amd64" | "x64" => "x86_64".into(),
-        "aarch64" | "arm64" => "aarch64".into(),
-        x => x.into(),
-    }
-}
-fn validate_host(host: &str) -> Result<()> {
-    let (user, hostname) = match host.split_once('@') {
-        Some((user, hostname)) if !hostname.contains('@') => (Some(user), hostname),
-        Some(_) => bail!("unsafe SSH host value"),
-        None => (None, host),
-    };
+#[path = "lib/validation.rs"]
+mod validation;
+use validation::{normalize_arch, validate_host};
 
-    if let Some(user) = user {
-        if user.is_empty()
-            || user.starts_with('-')
-            || !user
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-        {
-            bail!("unsafe SSH host value");
-        }
-    }
-
-    let valid_hostname =
-        if hostname.len() > 2 && hostname.starts_with('[') && hostname.ends_with(']') {
-            let address = &hostname[1..hostname.len() - 1];
-            address.contains(':')
-                && address
-                    .chars()
-                    .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
-        } else {
-            !hostname.is_empty()
-                && !hostname.starts_with('-')
-                && hostname
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-        };
-    if !valid_hostname {
-        bail!("unsafe SSH host value");
-    }
-    Ok(())
-}
 fn checked(cmd: &mut Command, what: &str) -> Result<()> {
     let s = cmd.status()?;
     if !s.success() {
@@ -351,112 +259,5 @@ pub fn new_network_mounts<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn platform(os: RemoteOs, arch: &str) -> RemotePlatform {
-        RemotePlatform {
-            os,
-            arch: arch.into(),
-        }
-    }
-
-    #[test]
-    fn artifact_matrix() {
-        assert_eq!(
-            artifact_name(&platform(RemoteOs::Linux, "x86_64")),
-            "neutrasearch-helper-linux-x86_64"
-        );
-        assert_eq!(
-            artifact_name(&platform(RemoteOs::Windows, "x86_64")),
-            "neutrasearch-helper-windows-x86_64.exe"
-        );
-        assert_eq!(
-            artifact_name(&platform(RemoteOs::Macos, "aarch64")),
-            "neutrasearch-helper-macos-aarch64"
-        );
-    }
-
-    #[test]
-    fn platform_commands_expand_paths_in_the_remote_shell() {
-        let linux = platform(RemoteOs::Linux, "x86_64");
-        assert_eq!(
-            build_check_command(&linux),
-            "~/.local/lib/neutrasearch/neutrasearch-helper --build"
-        );
-        assert_eq!(
-            connect_command(&linux),
-            "~/.local/lib/neutrasearch/neutrasearch-helper"
-        );
-
-        let windows = platform(RemoteOs::Windows, "x86_64");
-        assert_eq!(
-            build_check_command(&windows),
-            "powershell -NoProfile -NonInteractive -Command \"& (Join-Path $env:LOCALAPPDATA 'Neutrasearch\\neutrasearch-helper.exe') --build\""
-        );
-        assert_eq!(
-            connect_command(&windows),
-            "powershell -NoProfile -NonInteractive -Command \"& (Join-Path $env:LOCALAPPDATA 'Neutrasearch\\neutrasearch-helper.exe')\""
-        );
-        let digest = "a".repeat(64);
-        assert!(windows_install_command(&digest).contains("Join-Path $HOME"));
-        assert!(windows_install_command(&digest).contains("Move-Item"));
-        assert!(windows_install_command(&digest).contains("$env:LOCALAPPDATA"));
-        assert!(windows_install_command(&digest).contains(&digest));
-        assert!(unix_install_command(&digest, RemoteOs::Linux).contains("sha256sum"));
-        assert!(unix_install_command(&digest, RemoteOs::Macos).contains("shasum -a 256"));
-    }
-
-    #[test]
-    fn local_artifact_requires_matching_sha256_sidecar() {
-        let path = std::env::temp_dir().join(format!(
-            "neutrasearch-remote-artifact-{}",
-            std::process::id()
-        ));
-        let checksum = append_suffix(&path, ".sha256");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&checksum);
-        std::fs::write(&path, b"helper bytes").unwrap();
-        assert!(verify_local_artifact(&path).is_err());
-        let digest = format!("{:x}", Sha256::digest(b"helper bytes"));
-        std::fs::write(&checksum, format!("{digest}  helper\n")).unwrap();
-        assert_eq!(verify_local_artifact(&path).unwrap(), digest);
-        std::fs::write(&checksum, format!("{}  helper\n", "0".repeat(64))).unwrap();
-        assert!(verify_local_artifact(&path).is_err());
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_file(checksum).unwrap();
-    }
-
-    #[test]
-    fn accepts_unambiguous_ssh_hosts() {
-        for host in [
-            "good-host",
-            "server.example.test",
-            "alice@good-host",
-            "build_bot@10.0.0.4",
-            "[2001:db8::1]",
-            "alice@[2001:db8::1]",
-        ] {
-            assert!(validate_host(host).is_ok(), "should accept {host}");
-        }
-    }
-
-    #[test]
-    fn rejects_option_path_and_shell_ambiguous_hosts() {
-        for host in [
-            "",
-            "-oProxyCommand=bad",
-            "alice@-bad",
-            "alice@@host",
-            "host:path",
-            "host/path",
-            "host\\path",
-            "bad;rm",
-            "bad host",
-            "[not-ipv6]",
-            "[]",
-            "[",
-        ] {
-            assert!(validate_host(host).is_err(), "should reject {host}");
-        }
-    }
-}
+#[path = "lib/tests.rs"]
+mod tests;

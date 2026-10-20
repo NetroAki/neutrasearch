@@ -7,4 +7,4 @@ Icon=neutrasearch
 Terminal=false
 Categories=Utility;FileTools;
 StartupNotify=true
-X-KDE-Shortcuts=Ctrl+K
+X-KDE-Shortcuts=Alt+K

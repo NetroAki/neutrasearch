@@ -11,7 +11,7 @@ use std::io::Read;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"NEUTREE1";
+const MAGIC: &[u8; 8] = b"NEUTREE2";
 const PREFIX: usize = 16;
 /// Folders up to this depth ("/" is 0) keep their children listed.
 const MAX_DEPTH: usize = 3;
@@ -131,12 +131,8 @@ impl TreeSummary {
     /// The folder as a `DirListing`, or `None` when it is deeper than the
     /// summary covers.
     pub fn listing(&self, dir: &str) -> Option<DirListing> {
-        let key = if dir == "/" {
-            dir
-        } else {
-            dir.trim_end_matches('/')
-        };
-        let folder = self.folders.get(key)?;
+        let key = crate::dir_summary::normalize_path(dir).ok()?;
+        let folder = self.folders.get(&key)?;
         Some(DirListing {
             files: folder
                 .rows
@@ -184,7 +180,13 @@ impl TreeSummary {
             acc.logical += entry.logical_bytes;
             acc.files += entry.file_count;
             for child in &entry.children {
-                let name = child.path.rsplit('/').next().unwrap_or_default().to_owned();
+                let name = if entry.path.as_ref() == "/"
+                    && (!child.path.starts_with('/') || child.path.starts_with("//"))
+                {
+                    child.path.to_string()
+                } else {
+                    child.path.rsplit('/').next().unwrap_or_default().to_owned()
+                };
                 let size = size_of(child.physical_bytes, child.logical_bytes);
                 if child.kind == FileKind::Dir {
                     let sub = acc.subs.entry(name).or_default();
@@ -272,74 +274,4 @@ fn trim_rows(acc: &mut Acc) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dir_summary::DirectorySummary;
-    use crate::{CompactIndex, FileRecord, FsKind};
-
-    fn rec(path: &str, size: u64, disk: u64, kind: FileKind, source: u32) -> FileRecord {
-        FileRecord {
-            path: path.into(),
-            size,
-            mtime: 0,
-            mode: 0,
-            kind,
-            fs: FsKind::Btrfs,
-            native_id: size + 100,
-            native_parent: 0,
-            source,
-            disk,
-        }
-    }
-
-    #[test]
-    fn tree_listing_matches_the_streamed_listing_across_sources() {
-        let records = vec![
-            rec("/etc/a.conf", 10, 0, FileKind::File, 0),
-            rec("/mnt/own.txt", 7, 0, FileKind::File, 0),
-            rec("/home/u/doc/a.md", 3, 0, FileKind::File, 0),
-            rec("/home/u/empty", 0, 0, FileKind::Dir, 0),
-            rec("/mnt/keep/deep/song.wav", 1000, 600, FileKind::File, 1),
-            rec("/mnt/keep/x.txt", 5, 0, FileKind::File, 1),
-        ];
-        let path = std::env::temp_dir().join(format!("neutra-tree-{}.idx", std::process::id()));
-        CompactIndex::build(&records, &path).unwrap();
-        let index = CompactIndex::open_fast(&path).unwrap();
-        let generation = index.generation();
-        DirectorySummary::build(&records, &path, generation).unwrap();
-        TreeSummary::ensure(&path, generation).unwrap();
-        assert!(TreeSummary::ensure(&path, generation + 1).is_err());
-        let tree = TreeSummary::open_for_compact(&path, generation).unwrap();
-        let shape = |listing: &DirListing| {
-            let mut subs: Vec<_> = listing
-                .subdirs
-                .iter()
-                .map(|s| (s.name.to_string(), s.size, s.logical, s.files))
-                .collect();
-            subs.sort();
-            let mut files: Vec<_> = listing
-                .files
-                .iter()
-                .map(|f| (f.name.to_string(), f.size, f.logical))
-                .collect();
-            files.sort();
-            (
-                listing.total_size,
-                listing.total_logical,
-                listing.total_count,
-                subs,
-                files,
-            )
-        };
-        for dir in ["/", "/mnt", "/home", "/home/u", "/mnt/keep"] {
-            let want = index.list_directory(dir, None, None).unwrap();
-            let got = tree.listing(dir).unwrap();
-            assert_eq!(shape(&got), shape(&want), "listing for {dir}");
-        }
-        assert!(tree.listing("/mnt/keep/deep/inner/x").is_none());
-        drop(index);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(directory_summary_path(&path));
-        let _ = std::fs::remove_file(TreeSummary::path_for(&path));
-    }
-}
+mod tests;

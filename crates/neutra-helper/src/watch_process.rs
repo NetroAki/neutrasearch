@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
-type Batch = std::result::Result<Vec<DeltaChange>, String>;
+type Batch = std::result::Result<(Vec<DeltaChange>, Option<String>), String>;
 
 // Closing any fd for an inode releases this process's POSIX locks on it.
 // Mount fanotify delivers fds even for excluded SQLite files, so it must not
@@ -17,6 +17,7 @@ type Batch = std::result::Result<Vec<DeltaChange>, String>;
 pub(crate) struct ProcessWatcher {
     child: Child,
     output: BufReader<ChildStdout>,
+    btrfs: bool,
 }
 
 impl Drop for ProcessWatcher {
@@ -27,7 +28,7 @@ impl Drop for ProcessWatcher {
 }
 
 impl ProcessWatcher {
-    pub(crate) fn open(index: &Path, mount: &Path, source: u32) -> Result<Self> {
+    pub(crate) fn open(index: &Path, mount: &Path, source: u32, btrfs: bool) -> Result<Self> {
         let mut child = Command::new(std::env::current_exe()?)
             .arg("--watch-events")
             .arg(index)
@@ -40,7 +41,11 @@ impl ProcessWatcher {
             .spawn()
             .context("start isolated mount event reader")?;
         let output = BufReader::new(child.stdout.take().context("mount reader has no output")?);
-        let mut watcher = Self { child, output };
+        let mut watcher = Self {
+            child,
+            output,
+            btrfs,
+        };
         if !watcher.wait_readable(Duration::from_secs(10))? {
             bail!("mount event reader did not initialize within ten seconds");
         }
@@ -55,7 +60,12 @@ impl ProcessWatcher {
 impl Watch for ProcessWatcher {
     fn read_batch(&mut self) -> Result<WatchBatch> {
         match read_frame::<_, Batch>(&mut self.output)? {
-            Some(Ok(changes)) => Ok(WatchBatch::Changes(changes)),
+            Some(Ok((changes, None))) => Ok(WatchBatch::Changes(changes)),
+            Some(Ok((changes, Some(reason)))) if changes.is_empty() && self.btrfs => {
+                tracing::warn!("mount event reader requested metadata recovery: {reason}");
+                Ok(WatchBatch::ReconcileRequired("Btrfs event loss"))
+            }
+            Some(Ok(_)) => bail!("invalid mount recovery frame"),
             Some(Err(error)) => bail!("mount event reader: {error}"),
             None => bail!("mount event reader exited: {}", self.child.wait()?),
         }
@@ -100,19 +110,25 @@ pub(crate) fn run() -> Result<()> {
         bail!("mount event reader parent exited during startup");
     }
     let mount = crate::scan::find_local_mount(mount)?;
-    let mut watcher = MountWatcher::open(
-        mount,
-        source.parse().context("invalid source ID")?,
-        crate::scan::watch_exclusions(Path::new(index)),
-    )?;
+    let label = mount.mountpoint.display().to_string();
+    let source = source.parse().context("invalid source ID")?;
+    let excluded = crate::scan::watch_exclusions(Path::new(index));
+    let mut watcher: Box<dyn Watch> = if mount.fs == neutra_core::FsKind::Btrfs {
+        Box::new(crate::watch_linux::FanotifyWatcher::open_btrfs(
+            mount, source, excluded,
+        )?)
+    } else {
+        Box::new(MountWatcher::open(mount, source, excluded)?)
+    };
     let mut output = std::io::stdout().lock();
-    write_frame(&mut output, &Batch::Ok(Vec::new()))?;
+    write_frame(&mut output, &Batch::Ok((Vec::new(), None)))?;
     loop {
-        let batch = match watcher.read_batch() {
+        let batch: Batch = match watcher.read_batch() {
             Ok(WatchBatch::Changes(changes)) if changes.is_empty() => continue,
-            Ok(WatchBatch::Changes(changes)) => Ok(changes),
+            Ok(WatchBatch::Changes(changes)) => Ok((changes, None)),
+            Ok(WatchBatch::ReconcileRequired(reason)) => Ok((Vec::new(), Some(reason.into()))),
             Ok(WatchBatch::RescanRequired(reason)) => Err(reason.to_string()),
-            Err(error) => Err(format!("{error:#}")),
+            Err(error) => Err(format!("{label}: {error:#}")),
         };
         let failed = batch.is_err();
         write_frame(&mut output, &batch)?;

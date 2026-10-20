@@ -2,13 +2,17 @@
 set -eu
 WATCH=${NEUTRASEARCH_WATCH_BIN:-/usr/local/lib/neutrasearch/neutrasearch-watch}
 BIN=${NEUTRASEARCH_BIN:-/usr/local/bin/neutrasearch}
+PASSWD_FILE=${NEUTRASEARCH_PASSWD_FILE:-/etc/passwd}
 children=()
 ready_dir=$(mktemp -d)
 mkfifo "$ready_dir/ready"
 exec {ready_fd}<>"$ready_dir/ready"
 cleanup() {
     kill "${children[@]}" 2>/dev/null || true
-    rm -rf -- "$ready_dir"
+    # The machine's safeexec rm wrapper prompts for recursive deletion and
+    # assumes HOME exists. This directory is private, unique, and our own.
+    unlink "$ready_dir/ready" 2>/dev/null || true
+    rmdir "$ready_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -16,6 +20,13 @@ while IFS=: read -r user _ uid gid _ home _; do
     [[ "$uid" =~ ^[0-9]+$ ]] || continue
     (( uid >= 1000 && uid < 60000 )) || continue
     [[ -d "$home" ]] || continue
+    # --ensure-index rebuilds any unusable existing index. A stale marker
+    # means the native sweep exceeded its safe reconciliation bound; the
+    # current implementation requires a full rebuild to recover it.
+    if [[ -f "$home/.local/share/neutrasearch/home.nsx.stale" ]]; then
+        echo "neutrasearch: index for $user is marked stale; current recovery requires a full rebuild before live watch can start" >&2
+        exit 78
+    fi
     # Only a missing index is built. Existing indexes receive metadata deltas.
     if ! timeout 7200 env XDG_DATA_HOME= XDG_CONFIG_HOME= HOME="$home" "$BIN" --ensure-index; then
         echo "neutrasearch: initial index for $user failed" >&2
@@ -29,10 +40,10 @@ while IFS=: read -r user _ uid gid _ home _; do
         --inh-caps=+sys_admin,+dac_read_search --ambient-caps=+sys_admin,+dac_read_search \
         env XDG_DATA_HOME= XDG_CONFIG_HOME= HOME="$home" "$WATCH" / 0 >&"$ready_fd" &
     children+=("$!")
-done < /etc/passwd
+done < "$PASSWD_FILE"
 for _ in "${children[@]}"; do
     if ! read -r -t 120 -u "$ready_fd" state || [[ "$state" != ready ]]; then
-        echo "neutrasearch: native watchers did not become ready" >&2
+        echo "neutrasearch: native watchers did not become ready within 120 seconds" >&2
         exit 1
     fi
 done
@@ -40,5 +51,10 @@ if [[ -n "${NOTIFY_SOCKET:-}" ]]; then
     systemd-notify --ready --status="Native watchers attached for ${#children[@]} account(s)"
 fi
 (( ${#children[@]} > 0 )) || exit 0
-wait -n "${children[@]}"
+status=0
+wait -n "${children[@]}" || status=$?
+if [[ "$status" -eq 78 ]]; then
+    echo "neutrasearch: watcher reported an unrecoverable stale index; stopping without restart" >&2
+    exit 78
+fi
 exit 1

@@ -1,7 +1,8 @@
+use super::columns::Columns;
 use super::{sql_error, BrowserIndex, SCHEMA_VERSION};
-use crate::{CompactIndex, FileRecord};
+use crate::CompactIndex;
 use fs2::FileExt;
-use rusqlite::{params, Connection};
+use rusqlite::params;
 use std::io;
 use std::path::Path;
 
@@ -15,12 +16,21 @@ CREATE TABLE metadata(generation TEXT NOT NULL,version INTEGER NOT NULL,base_gen
 CREATE TABLE entries(id INTEGER PRIMARY KEY,path TEXT NOT NULL,name TEXT NOT NULL,
  bytes BLOB NOT NULL,mtime INTEGER NOT NULL,kind INTEGER NOT NULL,ext TEXT NOT NULL,
  fs TEXT NOT NULL,executable INTEGER NOT NULL,record BLOB);
+CREATE INDEX by_path ON entries(path);
+CREATE INDEX by_name ON entries(name COLLATE NOCASE,path);
+CREATE INDEX by_quick ON entries(name COLLATE NOCASE,mtime DESC,path DESC);
+CREATE INDEX by_size ON entries(bytes,path);
+CREATE INDEX by_modified ON entries(mtime,path);
+CREATE INDEX by_ext ON entries(ext,id);
+CREATE INDEX by_programs ON entries(executable,kind,id);
+CREATE INDEX by_initial ON entries(substr(name,1,1) COLLATE NOCASE,mtime DESC,path DESC,name);
+CREATE TABLE tomb(id INTEGER PRIMARY KEY);
+CREATE TABLE tomb_range(low INTEGER PRIMARY KEY,high INTEGER NOT NULL);
+CREATE TABLE tomb_revision(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL);
+INSERT INTO tomb_revision VALUES(1,0);
 ";
 
 pub(super) fn ensure(index_path: &Path, generation: u64) -> io::Result<()> {
-    if super::updates::upgrade(index_path, generation)? {
-        return Ok(());
-    }
     if BrowserIndex::is_current(index_path, generation) {
         return Ok(());
     }
@@ -40,22 +50,28 @@ pub(super) fn ensure(index_path: &Path, generation: u64) -> io::Result<()> {
         ));
     }
     let temporary = destination.with_extension("browse.new");
-    if temporary.exists() {
-        std::fs::remove_file(&temporary)?;
+    let columns = Columns::path_for(&destination);
+    let columns_temporary = crate::compact::suffix_path(&columns, ".new");
+    for stale in [&temporary, &columns_temporary] {
+        if stale.exists() {
+            std::fs::remove_file(stale)?;
+        }
     }
-    drop(crate::compact_build::open_private(&temporary)?);
-    let result = build(&base, &temporary, generation);
+    let result = build(&base, &temporary, &columns_temporary, generation);
     if let Err(error) = result {
         let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(&columns_temporary);
         return Err(error);
     }
     if CompactIndex::generation_on_disk(index_path)? != generation {
         let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(&columns_temporary);
         return Err(io::Error::other(
             "index replaced while building browse orders",
         ));
     }
     super::updates::pin_base(index_path)?;
+    crate::compact_build::replace_file(&columns_temporary, &columns)?;
     crate::compact_build::replace_file(&temporary, &destination)?;
     crate::compact_build::sync_parent(&destination)
 }
@@ -95,81 +111,32 @@ fn open_browse_lock(path: &Path) -> io::Result<std::io::BufWriter<std::fs::File>
     }
 }
 
-fn build(base: &CompactIndex, path: &Path, generation: u64) -> io::Result<()> {
-    let mut db = Connection::open_with_flags(
+fn build(base: &CompactIndex, path: &Path, columns: &Path, generation: u64) -> io::Result<()> {
+    let built = super::columns::build(base, columns)?;
+    drop(crate::compact_build::open_private(path)?);
+    let mut db = crate::sqlite::open(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(sql_error)?;
     db.execute_batch(SCHEMA).map_err(sql_error)?;
     let transaction = db.transaction().map_err(sql_error)?;
-    {
-        let mut insert = transaction
-            .prepare_cached("INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?,NULL)")
-            .map_err(sql_error)?;
-        for block in 0..base.block_count() {
-            for (slot, record) in base.read_block(block as u32)?.iter().enumerate() {
-                let id = (block * crate::compact::BLOCK_RECORDS + slot + 1) as i64;
-                insert_record(&mut insert, id, record)?;
-            }
-            base.release_block(block as u32);
-            if block % 100_000 == 0 {
-                eprintln!(
-                    "Preparing browse orders: {} / {} records",
-                    block * crate::compact::BLOCK_RECORDS,
-                    base.len()
-                );
-            }
-        }
-    }
-    transaction.commit().map_err(sql_error)?;
-    for (name, columns) in [
-        ("by_path", "path"),
-        ("by_name", "name COLLATE NOCASE,path"),
-        ("by_size", "bytes,path"),
-        ("by_modified", "mtime,path"),
-        ("by_ext", "ext,id"),
-        ("by_programs", "executable,kind,id"),
-    ] {
-        eprintln!("Preparing browse order: {name}");
-        db.execute_batch(&format!("CREATE INDEX {name} ON entries({columns})"))
-            .map_err(sql_error)?;
-    }
-    db.execute(
-        "INSERT INTO metadata VALUES(?,?,?)",
-        params![
-            generation.to_string(),
-            SCHEMA_VERSION,
-            generation.to_string()
-        ],
-    )
-    .map_err(sql_error)?;
-    db.close().map_err(|(_, e)| sql_error(e))?;
-    std::fs::File::open(path)?.sync_all()
-}
-
-fn insert_record(
-    insert: &mut rusqlite::Statement<'_>,
-    id: i64,
-    record: &FileRecord,
-) -> io::Result<()> {
-    let mtime = if record.mtime > 4_102_444_800 {
-        0
-    } else {
-        record.mtime
-    };
-    insert
-        .execute(params![
-            id,
-            &*record.path,
-            record.name(),
-            &record.disk_bytes().to_be_bytes()[..],
-            mtime,
-            record.kind as i64,
-            record.extension().to_ascii_lowercase(),
-            record.fs.label(),
-            i64::from(crate::query::is_executable(record))
-        ])
+    built.counts.publish(&transaction, built.unix_paths)?;
+    transaction
+        .execute(
+            "INSERT INTO metadata VALUES(?,?,?)",
+            params![
+                generation.to_string(),
+                SCHEMA_VERSION,
+                generation.to_string()
+            ],
+        )
         .map_err(sql_error)?;
-    Ok(())
+    transaction.commit().map_err(sql_error)?;
+    db.close().map_err(|(_, e)| sql_error(e))?;
+    // Windows FlushFileBuffers requires write access.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()
 }

@@ -1,3 +1,4 @@
+<!-- doc-topic: Linux packaging -->
 # Linux packaging
 
 ## Index lifecycle
@@ -63,9 +64,20 @@ install -Dm644 49-neutrasearch.rules \
 ## KDE quick-search shortcut
 
 The package installs a KDE-only autostart entry for
-`neutrasearch-register-shortcut`. On KDE, the script checks whether Ctrl+K is
-already assigned, registers Neutrasearch's quick-search action, and verifies
+`neutrasearch-register-shortcut`. The default is Alt+K. On KDE, registration checks
+whether each requested combination is already assigned, registers quick search, and verifies
 the saved shortcut. It leaves an existing shortcut owned by another action
 alone and reports that conflict. Other desktops receive the application menu
 entry and can assign `neutrasearch --spotlight` through their shortcut
-settings.
+settings. Search > Keyboard shortcuts lets users edit, add, remove or reset
+bindings. Remove all and apply to disable global quick search. Choices persist
+in `neutrasearch/shortcuts.json` under the user's configuration directory and
+are restored at login. Invalid or conflicting bindings keep the previous
+active shortcuts. Updating successfully releases the previous global Ctrl+K
+and Super+K bindings. Ctrl+K inside the main Neutrasearch window still
+focuses its search field; it does not intercept keys in other applications.
+
+Alt+K is also the proposed cross-platform default, called Option+K on macOS.
+No combination is guaranteed free across every application and keyboard layout.
+Windows and macOS use a separate per-user shortcut agent, installed on first
+GUI launch. Native runtime validation remains required on those platforms.

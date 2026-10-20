@@ -122,81 +122,8 @@ mod linux {
         | (0x94 << IOC_TYPESHIFT)
         | (17 << IOC_NRSHIFT)) as libc::c_ulong;
 
-    pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
-        let started = Instant::now();
-        let (nodes, names, batches) = parallel::scan_metadata(&mount.mountpoint)?;
-        let mut stats = ScanStats::default();
-        let prefix = mount
-            .mountpoint
-            .to_string_lossy()
-            .trim_end_matches('/')
-            .to_string();
-        let mut dir_paths = HashMap::<u64, String>::new();
-        dir_paths.insert(ROOT_INO, String::new());
-        for node in &nodes {
-            let meta = node.meta;
-            let kind = kind_from_mode(meta.mode);
-            let path = if node.ino == ROOT_INO {
-                if prefix.is_empty() {
-                    "/".to_string()
-                } else {
-                    prefix.clone()
-                }
-            } else {
-                let parent = node.parent;
-                if parent == u64::MAX || !ensure_dir_path(parent, &nodes, &names, &mut dir_paths) {
-                    continue;
-                }
-                let parent_path = dir_paths.get(&parent).unwrap();
-                let name = node_name(node, &names);
-                if kind == FileKind::Dir {
-                    let relative = append_component(parent_path, name);
-                    let full = prefix_path(&prefix, &relative);
-                    dir_paths.insert(node.ino, relative);
-                    full
-                } else {
-                    let mut full =
-                        String::with_capacity(prefix.len() + parent_path.len() + name.len() + 2);
-                    full.push_str(&prefix);
-                    full.push('/');
-                    if !parent_path.is_empty() {
-                        full.push_str(parent_path);
-                        full.push('/');
-                    }
-                    full.push_str(name);
-                    full
-                }
-            };
-            if kind == FileKind::Dir {
-                stats.dirs += 1
-            } else {
-                stats.files += 1
-            };
-            sink(FileRecord {
-                path: path.into_boxed_str(),
-                size: meta.size,
-                disk: FileRecord::allocated_bytes(meta.disk),
-                mtime: meta.mtime,
-                mode: meta.mode,
-                kind,
-                fs: FsKind::Btrfs,
-                native_id: node.ino,
-                native_parent: if node.parent == u64::MAX {
-                    0
-                } else {
-                    node.parent
-                },
-                source: 0,
-            });
-            stats.records += 1;
-        }
-        stats.wall_ms = started.elapsed().as_millis() as u64;
-        stats.detail = format!(
-            "TREE_SEARCH only; {} batches; mounted subvolume tree",
-            batches
-        );
-        Ok(stats)
-    }
+    mod scan;
+    pub use scan::scan;
 
     fn store_name(parent: u64, bytes: &[u8], names: &mut Vec<u8>) -> Option<Link> {
         let text = String::from_utf8_lossy(bytes);
@@ -317,75 +244,7 @@ mod linux {
     }
 
     #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn uapi_sizes() {
-            assert_eq!(std::mem::size_of::<SearchKey>(), 104);
-            assert_eq!(SEARCH_V2_HEADER, 112);
-            assert_eq!(std::mem::size_of::<SearchArgsV2>(), 112);
-            assert_eq!(std::mem::align_of::<SearchArgsV2>(), 8);
-        }
-        #[test]
-        fn cursor_carries() {
-            assert_eq!(next_key((1, 2, 9)), Some((1, 2, 10)));
-            assert_eq!(next_key((1, 2, u64::MAX)), Some((1, 3, 0)));
-            assert_eq!(
-                next_key((1, INODE_EXTREF, u64::MAX)),
-                Some((2, INODE_ITEM, 0))
-            );
-        }
-        #[test]
-        fn root_mount_emits_an_absolute_root_record() {
-            let prefix = "/".trim_end_matches('/');
-            let path = if prefix.is_empty() {
-                "/".to_string()
-            } else {
-                prefix.to_string()
-            };
-            assert_eq!(path, "/");
-        }
-
-        #[test]
-        fn paths_resolve_and_cycles_stop() {
-            let meta = Meta {
-                size: 0,
-                disk: 0,
-                mode: libc::S_IFDIR,
-                mtime: 0,
-            };
-            let names = b"ab".to_vec();
-            let mut nodes = vec![
-                Node {
-                    ino: ROOT_INO,
-                    parent: u64::MAX,
-                    meta,
-                    name_off: 0,
-                    name_len: 0,
-                },
-                Node {
-                    ino: 300,
-                    parent: ROOT_INO,
-                    meta,
-                    name_off: 0,
-                    name_len: 1,
-                },
-                Node {
-                    ino: 301,
-                    parent: 300,
-                    meta,
-                    name_off: 1,
-                    name_len: 1,
-                },
-            ];
-            let mut cache = HashMap::from([(ROOT_INO, String::new())]);
-            assert!(ensure_dir_path(301, &nodes, &names, &mut cache));
-            assert_eq!(cache.get(&301).map(String::as_str), Some("a/b"));
-            nodes[1].parent = 301;
-            let mut cache = HashMap::from([(ROOT_INO, String::new())]);
-            assert!(!ensure_dir_path(301, &nodes, &names, &mut cache));
-        }
-    }
+    mod tests;
 }
 
 #[cfg(target_os = "linux")]

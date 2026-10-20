@@ -10,7 +10,7 @@ use crate::{
 use neutra_core::{CompactIndex, Index, SearchHit, SearchStats, SpillAccumulator};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use eframe::egui;
@@ -40,11 +40,13 @@ pub(crate) struct NeutraApp {
     pub(crate) sort_reversed: bool,
     pub(crate) lanes: BTreeMap<String, LaneState>,
     pub(crate) rx: Receiver<Event>,
-    pub(crate) tx: Sender<Event>,
+    pub(crate) tx: super::EventSender,
+    pub(crate) index_events: Option<super::index_events::IndexEvents>,
     pub(crate) scanning: bool,
     pub(crate) active_scans: usize,
     pub(crate) cache_path: PathBuf,
     pub(crate) settings_path: PathBuf,
+    pub(crate) shortcuts: crate::shortcuts::ShortcutSettings,
     pub(crate) selected_roots: Vec<PathBuf>,
     pub(crate) scan_roots: Vec<PathBuf>,
     pub(crate) onboarding_complete: bool,
@@ -55,6 +57,12 @@ pub(crate) struct NeutraApp {
     pub(crate) last_cache: Instant,
     pub(crate) last_generation: u64,
     pub(crate) selected: Option<String>,
+    pub(crate) native_drag: Option<(
+        Box<dyn crate::transport::native_drag::NativeDragSource>,
+        Instant,
+    )>,
+    pub(crate) file_focus: Option<egui::Id>,
+    pub(crate) selection: super::selection::Selection,
     pub(crate) file_operations: super::file_operations::FileOperations,
     pub(crate) view_mode: ui::ResultView,
     pub(crate) kind_filter: ui::KindFilter,
@@ -70,9 +78,7 @@ pub(crate) struct NeutraApp {
     /// A cancel request is in flight; scan starters stay disabled until the
     /// helper child dies and `ScanCancelled` arrives.
     pub(crate) cancelling: bool,
-    /// Wall-clock start of the running scan, for matching the helper child
-    /// by process birth time on cancel.
-    pub(crate) scan_started: std::time::SystemTime,
+    pub(crate) scan_cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Staged record counts per mount for the running scan (progress %).
     pub(crate) staged_by_mount: std::collections::HashMap<String, u64>,
     /// Last completed per-mount totals, loaded from settings.
@@ -84,7 +90,7 @@ pub(crate) struct NeutraApp {
     pub(crate) treemap_path: String,
     pub(crate) tree_expanded: BTreeSet<String>,
     pub(crate) tree_model: Option<ui::Hierarchy>,
-    pub(crate) map_file_key: Option<(String, u64, bool)>,
+    pub(crate) map_file_key: Option<super::map_queries::MapKey>,
     pub(crate) map_files: Vec<neutra_core::FileRecord>,
     pub(crate) map_files_pending: bool,
     pub(crate) tree_building: bool,
@@ -118,6 +124,8 @@ impl NeutraApp {
         let first_run = saved_settings.is_none();
         let settings = saved_settings.unwrap_or_else(default_settings);
         let (tx, rx) = std::sync::mpsc::channel();
+        let tx = super::EventSender::new(tx, cc.egui_ctx.clone());
+        let index_events = super::index_events::IndexEvents::start(&cache_path, tx.clone()).ok();
         let mut app = Self {
             index: restored.index,
             compact: restored.compact,
@@ -133,16 +141,18 @@ impl NeutraApp {
             search_excluded: Vec::new(),
             search_seq: 0,
             searching: false,
-            search_tx: super::search_worker::spawn(tx.clone(), cc.egui_ctx.clone()),
+            search_tx: super::search_worker::spawn(tx.clone()),
             matcher: None,
             sort_reversed: settings.sort_reversed,
             lanes: BTreeMap::new(),
             rx,
             tx: tx.clone(),
+            index_events,
             scanning: false,
             active_scans: 0,
             cache_path,
             settings_path,
+            shortcuts: crate::shortcuts::ShortcutSettings::start(&cc.egui_ctx),
             selected_roots: settings.roots,
             scan_roots: Vec::new(),
             onboarding_complete: settings.onboarding_complete,
@@ -153,7 +163,10 @@ impl NeutraApp {
             last_cache: Instant::now(),
             last_generation: 0,
             selected: None,
-            file_operations: super::file_operations::FileOperations::new(),
+            native_drag: None,
+            file_focus: None,
+            selection: super::selection::Selection::default(),
+            file_operations: super::file_operations::FileOperations::new(cc.egui_ctx.clone()),
             view_mode: settings.view,
             // The filter always resets to All on launch: a leftover Audio
             // or Images preset from last time would silently hide results.
@@ -173,7 +186,7 @@ impl NeutraApp {
             diagnostics_open: env_flag("NEUTRASEARCH_GUI_DIAGNOSTICS"),
             sidebar_tab: ui::SidebarTab::default(),
             cancelling: false,
-            scan_started: std::time::SystemTime::now(),
+            scan_cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             staged_by_mount: std::collections::HashMap::new(),
             mount_totals: settings.last_mount_totals,
             about_open: false,
@@ -195,32 +208,43 @@ impl NeutraApp {
             tree_pending: BTreeSet::new(),
             remote_watcher_started: false,
         };
-        app.seed_lanes(has_durable_index, cache_error, first_run);
+        app.finish_startup(first_run, has_durable_index, cache_error, tx);
+        app
+    }
+
+    fn finish_startup(
+        &mut self,
+        first_run: bool,
+        has_durable_index: bool,
+        cache_error: Option<String>,
+        tx: super::EventSender,
+    ) {
+        self.seed_lanes(has_durable_index, cache_error, first_run);
         // Settings files written by older versions may still record an
         // unfinished setup run; the folder question is gone, so complete
         // setup here and let a failed scan surface through the access
         // banner instead.
-        if !app.onboarding_complete {
-            app.onboarding_complete = true;
-            app.save_settings();
+        if !self.onboarding_complete {
+            self.onboarding_complete = true;
+            self.save_settings();
         }
-        app.requery_unless_huge();
-        app.ensure_ranked();
-        app.ensure_tree_summary();
+        self.requery_unless_huge();
+        self.ensure_ranked();
+        self.ensure_tree_summary();
         if env_flag("NEUTRASEARCH_AUTO_PROVISION_REMOTE") {
             crate::transport::spawn_network_watcher(tx);
-            app.remote_watcher_started = true;
+            self.remote_watcher_started = true;
         }
-        if app.index_is_empty() {
+        if self.index_is_empty() {
             // A missing or empty index is never a valid idle first screen. This
             // also repairs partial installs that wrote settings before their
             // first usable scan completed.
-            app.selected_roots = default_system_roots();
-            app.onboarding_scan = true;
-            app.save_settings();
-            app.begin_scan_with_elevation(cfg!(target_os = "linux"));
+            self.selected_roots = default_system_roots();
+            self.onboarding_scan = true;
+            self.save_settings();
+            self.begin_scan_with_elevation(cfg!(target_os = "linux"));
         }
-        app
+        super::indexing_lifecycle::resume(self);
     }
 
     fn seed_lanes(
@@ -269,63 +293,6 @@ impl NeutraApp {
     }
 }
 
-fn restore_durable(cache_path: &std::path::Path) -> Restored {
-    if !cache_path.is_file() {
-        let index = std::fs::read(legacy_cache_path())
-            .ok()
-            .and_then(|bytes| Index::restore(&bytes).ok())
-            .unwrap_or_default();
-        return Restored {
-            compact: None,
-            index,
-            cache_error: None,
-        };
-    }
-    match CompactIndex::open_fast(cache_path) {
-        Ok(compact) => Restored {
-            compact: Some(std::sync::Arc::new(compact)),
-            index: Index::default(),
-            cache_error: None,
-        },
-        Err(error) => Restored {
-            compact: None,
-            index: Index::default(),
-            cache_error: Some(format!(
-                "cannot open durable index {}: {error}",
-                cache_path.display()
-            )),
-        },
-    }
-}
-
-fn default_settings() -> GuiSettings {
-    // Setup never asks which folders to scan: everything is indexed by
-    // default and locations stay adjustable from the index settings.
-    GuiSettings {
-        onboarding_complete: true,
-        roots: default_system_roots(),
-        ..GuiSettings::default()
-    }
-}
-
-fn startup_query() -> String {
-    std::env::var("NEUTRASEARCH_GUI_QUERY").unwrap_or_default()
-}
-
-fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
-    let (rgba, width, height) = embedded_logo();
-    ctx.load_texture(
-        "neutrasearch-logo",
-        egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba),
-        egui::TextureOptions::LINEAR,
-    )
-}
-
-impl eframe::App for NeutraApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Event pump first so the frame paints fresh state; queries and scans
-        // read the same fields the UI draws.
-        super::events::process_events(self);
-        ui::show_app(self, ui);
-    }
-}
+mod bootstrap;
+use bootstrap::{default_settings, load_logo, restore_durable, startup_query};
+mod runtime;

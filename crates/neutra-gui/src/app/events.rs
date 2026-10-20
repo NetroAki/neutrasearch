@@ -7,6 +7,7 @@ use std::time::Duration;
 
 const MAX_EVENTS_PER_FRAME: usize = 64;
 const CACHE_BUILD_DELAY: Duration = Duration::from_secs(2);
+mod search_results;
 
 pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
     let mut processed = 0;
@@ -36,11 +37,16 @@ pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
 
 fn handle_event(app: &mut NeutraApp, event: Event) {
     match event {
+        Event::IndexChanged => {
+            app.delta_checked = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+        }
         Event::Message(msg) => handle_helper_message(app, msg),
         Event::Fatal(error) => {
             // A kill after Cancel surfaces as the helper stopping early;
             // report it as a deliberate cancel, not a crash.
-            if app.cancelling && error.contains("stopped before completing") {
+            if app.cancelling {
                 end_scan(app);
                 app.cancelling = false;
                 note(
@@ -70,6 +76,7 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
             app.cache_dirty = false;
             note(app, "cache", "INDEX BUILD", error, true);
             app.requery();
+            super::indexing_lifecycle::resume(app);
         }
         Event::TreeReady { generation, model } => {
             app.tree_building = false;
@@ -95,19 +102,7 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
                 }
             }
         }
-        Event::SearchDone { id, result } => {
-            // Only the newest search may update the view.
-            if id == app.search_seq {
-                app.searching = false;
-                match result {
-                    Ok((hits, stats)) => {
-                        app.hits = hits;
-                        app.search_stats = stats;
-                    }
-                    Err(error) => note(app, "search", "SEARCH", error, true),
-                }
-            }
-        }
+        Event::SearchDone { id, result } => search_results::apply(app, id, result),
         Event::Ranked { generation, ok } => {
             app.rank_pending = false;
             if ok && generation == crate::app::queries::data_generation(app) {
@@ -275,4 +270,5 @@ fn end_scan(app: &mut NeutraApp) {
     app.scan_index = None;
     app.scan_roots.clear();
     super::scan_events::end_scan_setup(app);
+    super::indexing_lifecycle::resume(app);
 }

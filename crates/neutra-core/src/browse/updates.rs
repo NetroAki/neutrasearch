@@ -1,6 +1,7 @@
-use super::{sql_error, BrowserIndex, SCHEMA_VERSION};
-use crate::{DeltaChange, DeltaIndex};
-use rusqlite::{params, Connection, OpenFlags};
+use super::columns::BlockReader;
+use super::{catalog, sql_error, BrowserIndex, SCHEMA_VERSION};
+use crate::{CompactIndex, DeltaChange, DeltaIndex};
+use rusqlite::{params, OpenFlags};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -21,62 +22,35 @@ pub(super) fn pin_base(index: &Path) -> io::Result<()> {
     crate::compact_build::sync_parent(&destination)
 }
 
-pub(super) fn upgrade(index: &Path, generation: u64) -> io::Result<bool> {
-    let path = BrowserIndex::path_for(index);
-    if !path.is_file() {
-        return Ok(false);
-    }
-    let mut db = Connection::open_with_flags(
-        path,
+fn writer(index: &Path) -> io::Result<rusqlite::Connection> {
+    let db = crate::sqlite::open(
+        BrowserIndex::path_for(index),
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(sql_error)?;
-    let (found, version): (String, i64) = db
-        .query_row("SELECT generation,version FROM metadata", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+    db.busy_timeout(std::time::Duration::from_secs(60))
         .map_err(sql_error)?;
-    if found != generation.to_string() {
-        return Ok(false);
-    }
-    if version == SCHEMA_VERSION {
-        return Ok(BrowserIndex::is_current(index, generation));
-    }
-    if version != 1 {
-        return Ok(false);
-    }
-    pin_base(index)?;
-    let transaction = db.transaction().map_err(sql_error)?;
-    transaction.execute_batch("ALTER TABLE entries ADD COLUMN record BLOB; ALTER TABLE metadata ADD COLUMN base_generation TEXT;").map_err(sql_error)?;
-    transaction.execute_batch("CREATE INDEX IF NOT EXISTS by_ext ON entries(ext,id); CREATE INDEX IF NOT EXISTS by_programs ON entries(executable,kind,id);").map_err(sql_error)?;
-    transaction
-        .execute(
-            "UPDATE metadata SET version=?,base_generation=generation",
-            [SCHEMA_VERSION],
-        )
-        .map_err(sql_error)?;
-    transaction.commit().map_err(sql_error)?;
-    Ok(true)
+    Ok(db)
 }
 
 impl BrowserIndex {
-    /// Commit metadata changes into the disk sort orders. The immutable pinned
-    /// record blocks remain valid even when the active compact base is replaced.
+    /// Commit metadata changes into the catalog. Replaced or removed base rows
+    /// become tombstones; new and changed rows go into the small live table.
+    /// The pinned base blocks stay valid when the active compact base changes.
     pub fn apply_changes(index: &Path, generation: u64, changes: &[DeltaChange]) -> io::Result<()> {
-        let path = Self::path_for(index);
-        if !path.is_file() {
+        if !Self::path_for(index).is_file() {
             return Ok(());
         }
-        let mut db = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(sql_error)?;
-        db.busy_timeout(std::time::Duration::from_secs(2))
-            .map_err(sql_error)?;
+        let mut db = writer(index)?;
         db.execute_batch("PRAGMA cache_size=-4096; PRAGMA mmap_size=0; PRAGMA journal_mode=WAL;")
             .map_err(sql_error)?;
-        let found: (String, i64) = db
+        // Own the write reservation before reading metadata or cache state.
+        // Otherwise a cache writer can commit between our read and write,
+        // invalidating the deferred transaction's snapshot.
+        let transaction = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let found: (String, i64) = transaction
             .query_row("SELECT generation,version FROM metadata", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
@@ -84,54 +58,16 @@ impl BrowserIndex {
         if found != (generation.to_string(), SCHEMA_VERSION) {
             return Ok(());
         }
-        let transaction = db.transaction().map_err(sql_error)?;
+        let base = CompactIndex::open_fast(&base_path(index))?;
+        let mut reader = BlockReader::new(&base);
+        let mut pages = super::search_cache::Maintenance::open(&transaction)?;
+        let mut tombstoned = false;
         for change in changes {
-            let path = match change {
-                DeltaChange::Upsert(record) => &record.path,
-                DeltaChange::Remove(path) => path,
-            };
-            if let DeltaChange::Upsert(record) = change {
-                let bytes = bincode::serialize(record).map_err(io::Error::other)?;
-                use rusqlite::OptionalExtension;
-                let stored: Option<Vec<u8>> = transaction
-                    .prepare_cached(
-                        "SELECT record FROM entries WHERE path=? AND record IS NOT NULL LIMIT 1",
-                    )
-                    .map_err(sql_error)?
-                    .query_row([&**path], |row| row.get(0))
-                    .optional()
-                    .map_err(sql_error)?;
-                if stored.as_ref() == Some(&bytes) {
-                    continue;
-                }
-            }
-            transaction
-                .execute("DELETE FROM entries WHERE path=?", [&**path])
-                .map_err(sql_error)?;
-            if let DeltaChange::Upsert(record) = change {
-                let mtime = if record.mtime > 4_102_444_800 {
-                    0
-                } else {
-                    record.mtime
-                };
-                let bytes = bincode::serialize(record).map_err(io::Error::other)?;
-                transaction
-                    .execute(
-                        "INSERT INTO entries VALUES(NULL,?,?,?,?,?,?,?,?,?)",
-                        params![
-                            &*record.path,
-                            record.name(),
-                            &record.disk_bytes().to_be_bytes()[..],
-                            mtime,
-                            record.kind as i64,
-                            record.extension().to_ascii_lowercase(),
-                            record.fs.label(),
-                            i64::from(crate::query::is_executable(record)),
-                            bytes
-                        ],
-                    )
-                    .map_err(sql_error)?;
-            }
+            tombstoned |= apply_one(&transaction, &mut reader, &mut pages, change)?;
+        }
+        pages.finish(&transaction)?;
+        if tombstoned {
+            catalog::bump_revision(&transaction)?;
         }
         transaction.commit().map_err(sql_error)
     }
@@ -146,6 +82,7 @@ impl BrowserIndex {
             }
             Ok(())
         };
+        delta.for_each_removed_prefix(|path| apply(DeltaChange::RemovePrefix(path)))?;
         delta.for_each_removed(|path| apply(DeltaChange::Remove(path)))?;
         delta.for_each_upsert(|record| apply(DeltaChange::Upsert(record)))?;
         if !batch.is_empty() {
@@ -160,18 +97,12 @@ impl BrowserIndex {
         if !Self::path_for(index).is_file() {
             return Ok(());
         }
-        let db = Connection::open_with_flags(
-            Self::path_for(index),
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(sql_error)?;
-        db.busy_timeout(std::time::Duration::from_secs(2))
+        writer(index)?
+            .execute(
+                "UPDATE metadata SET generation=? WHERE generation=? AND version=?",
+                params![new.to_string(), old.to_string(), SCHEMA_VERSION],
+            )
             .map_err(sql_error)?;
-        db.execute(
-            "UPDATE metadata SET generation=? WHERE generation=? AND version=?",
-            params![new.to_string(), old.to_string(), SCHEMA_VERSION],
-        )
-        .map_err(sql_error)?;
         Ok(())
     }
 
@@ -181,18 +112,88 @@ impl BrowserIndex {
         if !Self::path_for(index).is_file() {
             return Ok(());
         }
-        let db = Connection::open_with_flags(
-            Self::path_for(index),
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(sql_error)?;
-        db.busy_timeout(std::time::Duration::from_secs(2))
+        writer(index)?
+            .execute(
+                "UPDATE metadata SET generation=? WHERE version=?",
+                params![generation.to_string(), SCHEMA_VERSION],
+            )
             .map_err(sql_error)?;
-        db.execute(
-            "UPDATE metadata SET generation=? WHERE version=?",
-            params![generation.to_string(), SCHEMA_VERSION],
-        )
-        .map_err(sql_error)?;
         Ok(())
     }
+}
+
+/// Apply one change; returns whether a base row was newly tombstoned.
+fn apply_one(
+    tx: &rusqlite::Transaction<'_>,
+    reader: &mut BlockReader<'_>,
+    pages: &mut super::search_cache::Maintenance,
+    change: &DeltaChange,
+) -> io::Result<bool> {
+    let mut tombstoned = false;
+    if let DeltaChange::RemovePrefix(path) = change {
+        pages.remove_prefix(tx, reader, path)?;
+        for (low, high) in catalog::base_subtree(reader, path)? {
+            if low < high {
+                tx.execute(
+                    "INSERT INTO tomb_range VALUES(?1,?2) ON CONFLICT(low) DO UPDATE SET high=max(high,excluded.high)",
+                    params![i64::from(low), i64::from(high)],
+                )
+                .map_err(sql_error)?;
+                tombstoned = true;
+            }
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut past = prefix.clone();
+        past.pop();
+        past.push('0');
+        tx.execute(
+            "DELETE FROM entries WHERE path=?1 OR (path>=?2 AND path<?3)",
+            params![&**path, prefix, past],
+        )
+        .map_err(sql_error)?;
+        return Ok(tombstoned);
+    }
+    let path = match change {
+        DeltaChange::Upsert(record) => &record.path,
+        DeltaChange::Remove(path) | DeltaChange::RemovePrefix(path) => path,
+    };
+    let old = catalog::find_record(tx, reader, path)?;
+    let bytes = match change {
+        DeltaChange::Upsert(record) => Some(bincode::serialize(record).map_err(io::Error::other)?),
+        _ => None,
+    };
+    if let (Some(bytes), Some(old)) = (&bytes, &old) {
+        if bincode::serialize(old).map_err(io::Error::other)? == *bytes {
+            return Ok(false);
+        }
+    }
+    pages.change(tx, change, old.as_ref())?;
+    for id in catalog::base_ids_for_path(reader, path)? {
+        tombstoned |= BrowserIndex::tombstone_insert(tx, id)?;
+    }
+    tx.execute("DELETE FROM entries WHERE path=?", [&**path])
+        .map_err(sql_error)?;
+    if let (DeltaChange::Upsert(record), Some(bytes)) = (change, bytes) {
+        let mtime = if record.mtime > 4_102_444_800 {
+            0
+        } else {
+            record.mtime
+        };
+        tx.execute(
+            "INSERT INTO entries VALUES(NULL,?,?,?,?,?,?,?,?,?)",
+            params![
+                &*record.path,
+                record.name(),
+                &record.disk_bytes().to_be_bytes()[..],
+                mtime,
+                record.kind as i64,
+                record.extension().to_ascii_lowercase(),
+                record.fs.label(),
+                i64::from(crate::query::is_executable(record)),
+                bytes
+            ],
+        )
+        .map_err(sql_error)?;
+    }
+    Ok(tombstoned)
 }

@@ -13,15 +13,16 @@ pub(super) fn controls(ui: &mut Ui) {
             ),
             ("−", "Minimise", egui::ViewportCommand::Minimized(true)),
         ] {
-            if ui
+            let response = ui
                 .add(
                     egui::Button::new(RichText::new(label).size(17.0))
                         .frame(false)
                         .min_size(Vec2::new(36.0, 28.0)),
                 )
-                .on_hover_text(help)
-                .clicked()
-            {
+                .on_hover_text(help);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, help));
+            if response.clicked() {
                 ui.ctx().send_viewport_cmd(command);
             }
         }

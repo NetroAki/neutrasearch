@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.25"
+version = "0.1.29"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NetroAki/neutrasearch"
@@ -48,6 +48,12 @@ crc32fast = "1"
 fs2 = "0.4"
 sha2 = "0.10"
 regex = "1"
+
+[patch.crates-io]
+global-hotkey = { path = "vendor/global-hotkey" }
+accesskit_unix = { path = "vendor/accesskit_unix" }
+winit = { path = "vendor/winit" }
+egui-winit = { path = "vendor/egui-winit" }
 
 [profile.release]
 lto = "thin"

@@ -45,7 +45,9 @@ impl WatchSession {
             match FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
                 Ok(reader) => readers.push(Box::new(reader)),
                 Err(error) if needs_mount_mark(&error, &mount.fs) => {
-                    if mount.fs != FsKind::Btrfs {
+                    if mount.fs == FsKind::Btrfs {
+                        limitations.push(format!("{}: files update live; folder moves/removals wait for native metadata reconciliation", mount.mountpoint.display()));
+                    } else {
                         // ponytail: FUSE supplies saves only; add a native NTFS journal for renames/deletes.
                         limitations.push(format!("{}: saved files update live; rename/delete journal updates are unavailable", mount.mountpoint.display()));
                     }
@@ -53,6 +55,7 @@ impl WatchSession {
                         base,
                         &mount.mountpoint,
                         source,
+                        mount.fs == FsKind::Btrfs,
                     )?));
                 }
                 Err(error) => {
@@ -81,10 +84,15 @@ impl WatchSession {
     ) -> Result<()> {
         let path = store.read().unwrap().path.clone();
         write_watch_status(&path, &self.limitations.join("\n"))?;
+        let requested = Arc::new(AtomicBool::new(false));
         for reader in self.readers {
-            start_native_watch(reader, Arc::clone(&store), Arc::clone(&stale));
+            start_native_watch(
+                reader,
+                Arc::clone(&store),
+                Arc::clone(&stale),
+                Arc::clone(&requested),
+            );
         }
-        self.sweep.start(store, stale, self.source);
-        Ok(())
+        self.sweep.start(store, stale, self.source, requested)
     }
 }

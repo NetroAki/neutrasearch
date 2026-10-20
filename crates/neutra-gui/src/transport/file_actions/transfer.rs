@@ -3,6 +3,13 @@ use std::{
     process::Command,
 };
 
+#[cfg(not(target_os = "linux"))]
+#[path = "transfer/copy.rs"]
+mod copy;
+#[cfg(not(target_os = "linux"))]
+#[path = "transfer/rename.rs"]
+mod rename;
+
 pub(crate) fn transfer(paths: &[PathBuf], dest: &Path, cut: bool) -> Result<(), String> {
     if paths.is_empty() {
         return Err("no files to transfer".into());
@@ -98,7 +105,7 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        copy_file_noreplace(source, target)
+        copy::copy(source, target)
     }
 }
 
@@ -136,7 +143,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        match rename_noreplace_io(source, &target) {
+        match rename_noreplace_io(source, target) {
             Ok(()) => Ok(()),
             Err(e) => Err(format!("cannot move {}: {e}", source.display())),
         }
@@ -149,29 +156,6 @@ fn conflict_or(message: &str, target: &Path) -> String {
     } else {
         format!("{message}: transfer tool refused the copy")
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn copy_file_noreplace(source: &Path, target: &Path) -> Result<(), String> {
-    use std::io;
-    let mut input = std::fs::File::open(source)
-        .map_err(|e| format!("cannot read {}: {e}", source.display()))?;
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|e| {
-            format!(
-                "cannot create {} without overwriting: {e}",
-                target.display()
-            )
-        })?;
-    if let Err(e) = io::copy(&mut input, &mut output) {
-        drop(output);
-        let _ = std::fs::remove_file(target);
-        return Err(format!("copy failed: {e}"));
-    }
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -198,13 +182,7 @@ fn rename_noreplace_io(from: &Path, to: &Path) -> std::io::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn rename_noreplace_io(from: &Path, to: &Path) -> std::io::Result<()> {
-    if to.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "destination exists",
-        ));
-    }
-    std::fs::rename(from, to)
+    rename::rename(from, to)
 }
 
 pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
@@ -212,64 +190,5 @@ pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    fn sandbox() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "ns-transfer-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-    #[test]
-    fn refuses_existing_destination_without_touching_files() {
-        let root = sandbox();
-        let source = root.join("source");
-        let target = root.join("target");
-        std::fs::write(&source, "source bytes").unwrap();
-        std::fs::write(&target, "keep these bytes").unwrap();
-        assert!(copy_path_noreplace(&source, &target).is_err());
-        assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
-        assert_eq!(std::fs::read(&target).unwrap(), b"keep these bytes");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn transfer_copies_files_folders_and_batch_without_overwrite() {
-        let root = sandbox();
-        let src = root.join("src");
-        let dst = root.join("dst");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::create_dir_all(&dst).unwrap();
-        let file = src.join("note.txt");
-        std::fs::write(&file, "original").unwrap();
-        let folder = src.join("bundle");
-        std::fs::create_dir_all(folder.join("nested")).unwrap();
-        std::fs::write(folder.join("nested/file.txt"), "deep").unwrap();
-        std::fs::write(dst.join("note.txt"), "keep").unwrap();
-        let batch = vec![file.clone(), folder.clone()];
-        assert!(transfer(&batch, &dst, false).is_err());
-        assert_eq!(std::fs::read(&file).unwrap(), b"original");
-        assert_eq!(std::fs::read(dst.join("note.txt")).unwrap(), b"keep");
-        assert!(!dst.join("bundle").exists());
-        std::fs::remove_file(dst.join("note.txt")).unwrap();
-        transfer(&batch, &dst, false).unwrap();
-        assert_eq!(std::fs::read(dst.join("note.txt")).unwrap(), b"original");
-        assert_eq!(
-            std::fs::read(dst.join("bundle/nested/file.txt")).unwrap(),
-            b"deep"
-        );
-        assert!(file.exists() && folder.exists());
-        assert!(transfer(std::slice::from_ref(&file), &dst, true).is_err());
-        assert!(file.exists());
-        let moved = src.join("solo.txt");
-        std::fs::write(&moved, "solo").unwrap();
-        transfer(std::slice::from_ref(&moved), &dst, true).unwrap();
-        assert!(!moved.exists());
-        assert_eq!(std::fs::read(dst.join("solo.txt")).unwrap(), b"solo");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+#[path = "transfer/tests.rs"]
+mod tests;

@@ -12,7 +12,15 @@ pub(super) fn interact(ui: &Ui, response: &Response, path: &str, folder: bool) -
         );
     }
     if response.drag_started() {
-        response.dnd_set_drag_payload(vec![PathBuf::from(path)]);
+        let selected = ui.ctx().data(|data| {
+            data.get_temp::<std::sync::Arc<Vec<PathBuf>>>(egui::Id::new("selected-file-paths"))
+        });
+        let paths = selected
+            .filter(|paths| paths.iter().any(|selected| selected == Path::new(path)))
+            .map_or_else(|| vec![PathBuf::from(path)], |paths| (*paths).clone());
+        response.dnd_set_drag_payload(paths.clone());
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(egui::Id::new("native-file-drag-request"), paths));
     }
     if !folder {
         return None;

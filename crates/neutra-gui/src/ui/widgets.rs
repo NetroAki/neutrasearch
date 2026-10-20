@@ -5,11 +5,11 @@
 pub(crate) use super::theme::*;
 use super::*;
 
-pub(super) fn sans(size: f32) -> FontId {
+pub(crate) fn sans(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("Neutra Sans".into()))
 }
 
-pub(super) fn mono(size: f32) -> FontId {
+pub(crate) fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("Neutra Mono".into()))
 }
 
@@ -35,7 +35,7 @@ pub(super) fn copy_to_clipboard(ui: &Ui, text: &str) {
     }
 }
 
-pub(super) fn paint_search_icon(ui: &mut Ui, color: Color32) {
+pub(crate) fn paint_search_icon(ui: &mut Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(19.0), Sense::hover());
     let center = rect.center() - Vec2::new(1.5, 1.5);
     ui.painter()
@@ -109,120 +109,10 @@ pub(super) fn secondary_button(ui: &mut Ui, label: &str, color: Color32) -> egui
     )
 }
 
-pub(super) fn is_drive_path(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
-}
+mod paths;
+pub(super) use paths::*;
 
-pub(super) fn normalize_path(path: &str) -> String {
-    let replaced = path.replace('\\', "/");
-    let unc = replaced.starts_with("//");
-    let mut normalized = replaced
-        .split('/')
-        .filter(|component| !component.is_empty())
-        .collect::<Vec<_>>()
-        .join("/");
-    if unc {
-        normalized.insert_str(0, "//");
-    } else if replaced.starts_with('/') {
-        normalized.insert(0, '/');
-    }
-    if is_drive_path(&replaced) && normalized.len() == 2 {
-        normalized.push('/');
-    }
-    if normalized.is_empty() {
-        "/".into()
-    } else {
-        normalized
-    }
-}
-
-pub(super) fn parent_path(path: &str) -> String {
-    let normalized = normalize_path(path);
-    if normalized == "/" || is_volume_root(&normalized) {
-        return "/".into();
-    }
-    normalized.rsplit_once('/').map_or_else(
-        || "/".into(),
-        |(parent, _)| {
-            if parent.is_empty() {
-                "/".into()
-            } else if parent.len() == 2 && parent.ends_with(':') {
-                format!("{parent}/")
-            } else {
-                parent.into()
-            }
-        },
-    )
-}
-
-pub(super) fn is_volume_root(path: &str) -> bool {
-    if is_drive_path(path) {
-        return path.len() == 3;
-    }
-    if let Some(unc) = path.strip_prefix("//") {
-        return unc.split('/').filter(|part| !part.is_empty()).count() == 2;
-    }
-    false
-}
-
-pub(super) fn path_name(path: &str) -> String {
-    let normalized = normalize_path(path);
-    if normalized == "/" {
-        return "Computer".into();
-    }
-    if is_volume_root(&normalized) {
-        return normalized.trim_end_matches('/').to_owned();
-    }
-    normalized
-        .rsplit('/')
-        .next()
-        .unwrap_or(&normalized)
-        .to_owned()
-}
-
-pub(super) fn ancestor_paths(path: &str) -> Vec<String> {
-    let normalized = normalize_path(path);
-    let mut out = vec!["/".to_owned()];
-    if is_drive_path(&normalized) {
-        let root = normalized[..3].to_owned();
-        out.push(root.clone());
-        let mut current = root;
-        for component in normalized[3..]
-            .split('/')
-            .filter(|component| !component.is_empty())
-        {
-            current.push_str(component);
-            out.push(current.clone());
-            current.push('/');
-        }
-    } else if let Some(unc) = normalized.strip_prefix("//") {
-        let mut components = unc.split('/').filter(|component| !component.is_empty());
-        if let (Some(server), Some(share)) = (components.next(), components.next()) {
-            let mut current = format!("//{server}/{share}");
-            out.push(current.clone());
-            for component in components {
-                current.push('/');
-                current.push_str(component);
-                out.push(current.clone());
-            }
-        }
-    } else {
-        let mut current = String::new();
-        for component in normalized
-            .split('/')
-            .filter(|component| !component.is_empty())
-        {
-            current.push('/');
-            current.push_str(component);
-            out.push(current.clone());
-        }
-    }
-    out.dedup();
-    out
-}
-
-pub(super) fn type_badge(record: &neutra_core::FileRecord) -> String {
+pub(crate) fn type_badge(record: &neutra_core::FileRecord) -> String {
     if record.kind == FileKind::Dir {
         return "DIR".into();
     }
@@ -234,7 +124,7 @@ pub(super) fn type_badge(record: &neutra_core::FileRecord) -> String {
     }
 }
 
-pub(super) fn type_color(record: &neutra_core::FileRecord) -> Color32 {
+pub(crate) fn type_color(record: &neutra_core::FileRecord) -> Color32 {
     if record.kind == FileKind::Dir {
         return WARN;
     }

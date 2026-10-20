@@ -43,7 +43,7 @@ fn record(path: &std::path::Path) -> io::Result<FileRecord> {
     #[cfg(not(unix))]
     let allocated = meta.len();
     Ok(FileRecord {
-        path: path.to_string_lossy().into_owned().into_boxed_str(),
+        path: neutra_core::paths::portable_root_prefix(&path.to_string_lossy()).into_boxed_str(),
         size: meta.len(),
         disk: FileRecord::allocated_bytes(allocated),
         mtime: meta

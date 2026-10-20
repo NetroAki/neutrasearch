@@ -4,6 +4,77 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.29] - 2026-10-20
+
+### Smaller disk catalog
+
+- Replace the SQLite browse B-trees with memory-mapped flat columns plus a small live-row table. The catalog for a 50M-record index drops from 52 GB to about 1.6 GB, with the same sort orders, live updates and tombstones.
+- Add a licence policy (deny.toml) and move lopdf to 0.42 through the shared egui_expressive crate.
+
+### Quick-search shortcut
+
+- Default quick search to Alt+K (Option+K on macOS). Add Search > Keyboard
+  shortcuts to edit, add, remove, disable or reset global bindings. Persist
+  choices across restarts and report conflicts while preserving active keys.
+- Release retired Ctrl+K and Super+K bindings on successful KDE migration.
+  Add native per-user shortcut agents for Windows and macOS; hardware/runtime
+  validation on those platforms remains pending.
+
+### Recover from native event gaps
+
+- Request per-event errors from Linux mount fanotify readers. Files deleted
+  before their saved-file event is read no longer stop indexing; later valid
+  events in the batch remain available. Older kernels use a narrow vanished-file
+  retry path. Permission, I/O and genuine queue-loss errors remain explicit.
+- Recover Btrfs event overflow and unresolved event paths through native changed
+  metadata from the saved inclusive transaction cursor. Keep the reader running
+  and the base available while replay catches up, without directory walking or
+  rebuilding the full index.
+- Sync recovery cursors and their parent directory after atomic replacement.
+  Propagate malformed cursors and failed saves rather than silently advancing.
+- Verify the actual deleted-file race on the mounted NTFS drive and force a real
+  Btrfs queue overflow on an isolated fixture, including subsequent rename/delete
+  operations and unchanged base-index publication.
+
+### Faster broad searches
+
+- Keep exact totals for supported one- and two-character filename searches on
+  disk and read bounded candidates through the existing sort catalog. All nine
+  sort orders returned 1,000 rows in 2–1,398 ms across five broad terms on the
+  48.6M-record index. The installed GUI showed its first `a` results in 1.67 s.
+- Keep eight recent query/sort combinations on disk, with exact counts and 4,096
+  spare ordered rows. File events maintain both counters and pages in the catalog
+  transaction; a bounded journal catches changes made during page preparation.
+- Preserve matching semantics through safe fallback. Advanced options, scoped
+  short searches, Unicode-sensitive `i`/`k`, unprepared longer terms and exhausted
+  pages can still require compact search. This does not establish a universal
+  three-second search limit.
+- Existing-catalog preparation added 9.64 GB and took 285 seconds on this machine.
+  Ordinary changes update the catalog incrementally without full rescans.
+- Stop the watcher supervisor when a native reader marks the index stale, so a
+  fanotify overflow is reported as failure rather than an apparently active service.
+
+### Retained indexing access
+
+- Retain Linux filesystem metadata access for each explicitly authorized account.
+  Rebuilds use that grant, and installers restore it after replacing the scanner.
+  Index settings can enable or repair access without terminal instructions.
+- Run one continuous indexing service per authorized account, report readiness
+  after native readers attach, and resume it after GUI rebuilds or cancellation.
+  Closing during a rebuild schedules service recovery after the GUI exits.
+- Remove whole directory prefixes through the durable delta instead of expanding
+  every deleted descendant. Preserve recreated files through checkpoints,
+  legacy-WAL upgrades, catalog recovery and compaction. Large moves remain bounded.
+- Limit directory file-row allocation while keeping complete totals. Responsive
+  tree columns reserve room for deep names and expose full paths on keyboard focus.
+- Exclude Btrfs root backreferences from live records and remove existing bogus
+  entries without stopping updates. Split metadata reconciliation by responsibility.
+- Support local Trash and conflict-safe restore when the desktop service refuses
+  an internal Btrfs subvolume. Preserve file contents and symlinks on failure.
+- Invalidate searches after file actions and report completion only after queued
+  operations finish. Batch overlay checks for matching search candidates.
+
+
 ### Index and search
 
 - Add a disk-backed catalog covering both directions of Name, Path, Size and

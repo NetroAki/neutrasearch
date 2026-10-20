@@ -1,7 +1,8 @@
 //! Watcher for mounts that refuse filesystem-wide fanotify marks, such as
 //! Btrfs subvolume mounts (the kernel returns EXDEV). A mount mark cannot
 //! report creates, deletes or renames, but it does report every closed write,
-//! which covers saving a file. Deletes and renames wait for the next rebuild.
+//! which covers saving a file. Btrfs structural changes use generation sweeps;
+//! FUSE NTFS structural changes require a journal reader.
 
 use crate::watch_linux::{
     fanotify_init, fanotify_mark, fd_path, insert_upsert, make_record, zeroed_stat,
@@ -18,11 +19,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const META_LEN: usize = 24;
-// Each event in a mount-mark read installs an fd in this process before we
-// can close it. Bound that burst so other mount threads and SQLite can open
-// files even with the default 1,024-descriptor limit.
-const MAX_READ_EVENTS: usize = 64;
+mod events;
+use events::{is_vanished, parse_events, FD_ERROR_FLAG};
+
 /// What the native watch loop needs from either kind of watcher.
 pub(crate) trait Watch: Send + 'static {
     fn read_batch(&mut self) -> Result<WatchBatch>;
@@ -40,6 +39,7 @@ impl Watch for FanotifyWatcher {
 
 pub(crate) struct MountWatcher {
     events: File,
+    fd_error_reporting: bool,
     mount: MountInfo,
     source: u32,
     excluded: Vec<PathBuf>,
@@ -62,11 +62,20 @@ pub(crate) fn needs_mount_mark(error: &anyhow::Error, fs: &neutra_core::FsKind) 
 
 impl MountWatcher {
     pub(crate) fn open(mount: MountInfo, source: u32, excluded: Vec<PathBuf>) -> Result<Self> {
-        let fd = fanotify_init(
-            libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF,
+        let (fd, fd_error_reporting) = match fanotify_init(
+            libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF | FD_ERROR_FLAG,
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE,
-        )
-        .context("fanotify_init requires CAP_SYS_ADMIN")?;
+        ) {
+            Ok(fd) => (fd, true),
+            Err(error) if error.raw_os_error() == Some(libc::EINVAL) => (
+                fanotify_init(
+                    libc::FAN_CLOEXEC | libc::FAN_CLASS_NOTIF,
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_LARGEFILE,
+                )?,
+                false,
+            ),
+            Err(error) => return Err(error).context("fanotify_init requires CAP_SYS_ADMIN"),
+        };
         // SAFETY: fanotify_init returned a new owned descriptor.
         let events = unsafe { File::from_raw_fd(fd) };
         let mark = |target: &Path| -> io::Result<()> {
@@ -92,10 +101,11 @@ impl MountWatcher {
         .context("fanotify mount mark")?;
         Ok(Self {
             events,
+            fd_error_reporting,
             mount,
             source,
             excluded,
-            buffer: vec![0; META_LEN * MAX_READ_EVENTS],
+            buffer: vec![0; events::META_LEN * events::MAX_READ_EVENTS],
         })
     }
 
@@ -106,10 +116,7 @@ impl MountWatcher {
         let gone = path.to_string_lossy().ends_with(" (deleted)");
         if gone
             || !path.starts_with(&self.mount.mountpoint)
-            || self
-                .excluded
-                .iter()
-                .any(|excluded| path.starts_with(excluded))
+            || crate::scan::is_watch_excluded(&path, &self.excluded)
         {
             return;
         }
@@ -133,7 +140,7 @@ fn same_mount_home(mountpoint: &Path) -> Option<PathBuf> {
     same.then_some(home)
 }
 
-fn parent_inode(path: &Path) -> u64 {
+pub(crate) fn parent_inode(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     path.parent()
         .and_then(|parent| std::fs::symlink_metadata(parent).ok())
@@ -149,38 +156,32 @@ impl Watch for MountWatcher {
                         io::ErrorKind::UnexpectedEof,
                         "fanotify descriptor closed",
                     )
-                    .into())
+                    .into());
                 }
                 Ok(bytes) => break bytes,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if is_vanished(&error) => {
+                    return Ok(WatchBatch::Changes(Vec::new()));
+                }
                 Err(error) => return Err(error.into()),
             }
         };
         let own = std::process::id() as i32;
         let mut changes = BTreeMap::new();
-        let mut overflow = false;
-        let mut at = 0;
-        while at + META_LEN <= bytes {
-            let slice = &self.buffer[at..at + META_LEN];
-            let len = u32::from_ne_bytes(slice[0..4].try_into().unwrap()) as usize;
-            let mask = u64::from_ne_bytes(slice[8..16].try_into().unwrap());
-            let fd = i32::from_ne_bytes(slice[16..20].try_into().unwrap());
-            let pid = i32::from_ne_bytes(slice[20..24].try_into().unwrap());
-            overflow |= mask & libc::FAN_Q_OVERFLOW != 0;
-            if fd >= 0 {
-                // SAFETY: the kernel opened this descriptor for us; dropping it closes it.
-                let file = unsafe { File::from_raw_fd(fd) };
-                if pid != own {
+        let parsed = parse_events(&self.buffer[..bytes], self.fd_error_reporting)?;
+        for event in parsed {
+            if event.mask & libc::FAN_Q_OVERFLOW != 0 {
+                return Ok(WatchBatch::RescanRequired("the event queue overflowed"));
+            }
+            if let Some(file) = event.file {
+                if event.pid != own {
                     self.record(&file, &mut changes);
                 }
+            } else if let Some(error) = event.error {
+                if !is_vanished(&io::Error::from_raw_os_error(error)) {
+                    return Err(io::Error::from_raw_os_error(error).into());
+                }
             }
-            if len < META_LEN {
-                break;
-            }
-            at += len;
-        }
-        if overflow {
-            return Ok(WatchBatch::RescanRequired("the event queue overflowed"));
         }
         Ok(WatchBatch::Changes(changes.into_values().collect()))
     }

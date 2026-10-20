@@ -1,0 +1,9 @@
+M	F	/qa-zfs/data/modify.txt
+-	F	/qa-zfs/data/remove.txt
+R	F	/qa-zfs/data/old\0040name.wav	/qa-zfs/data/new\0040name.wav
+M	/	/qa-zfs/data/
++	F	/qa-zfs/data/new\0040image.png
++	F	/qa-zfs/data/accent-\0303\0251.txt
++	F	/qa-zfs/data/tab\0011name.txt
++	F	/qa-zfs/data/back\0134slash.txt
++	F	/qa-zfs/data/sparse-docker.vhdx

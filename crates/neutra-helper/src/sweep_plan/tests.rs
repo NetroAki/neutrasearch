@@ -1,27 +1,7 @@
 use super::*;
 
-#[derive(Default)]
-struct Fake {
-    dirs: HashMap<u64, String>,
-    kids: HashMap<u64, Vec<Child>>,
-    inodes: HashMap<u64, Inode>,
-    refs: HashMap<u64, Vec<(u64, String)>>,
-}
-
-impl Tree for Fake {
-    fn dir_path(&self, ino: u64) -> Result<Option<String>> {
-        Ok(self.dirs.get(&ino).cloned())
-    }
-    fn children(&self, dir: u64) -> Result<Vec<Child>> {
-        Ok(self.kids.get(&dir).cloned().unwrap_or_default())
-    }
-    fn inode(&self, ino: u64) -> Result<Option<Inode>> {
-        Ok(self.inodes.get(&ino).cloned())
-    }
-    fn parent_refs(&self, ino: u64) -> Result<Vec<(u64, String)>> {
-        Ok(self.refs.get(&ino).cloned().unwrap_or_default())
-    }
-}
+mod fixture;
+use fixture::Fake;
 
 fn inode(ino: u64, size: u64, kind: FileKind) -> Inode {
     Inode {
@@ -78,6 +58,7 @@ fn summary(changes: Vec<DeltaChange>) -> BTreeMap<String, String> {
         .into_iter()
         .map(|change| match change {
             DeltaChange::Remove(path) => (path.to_string(), "remove".to_string()),
+            DeltaChange::RemovePrefix(path) => (path.to_string(), "remove prefix".to_string()),
             DeltaChange::Upsert(record) => {
                 (record.path.to_string(), format!("upsert {}", record.size))
             }
@@ -132,8 +113,7 @@ fn deletes_renames_new_files_and_edits_reach_the_index() {
     let got = summary(reconcile(&tree, &changes, &base, None, &mounted, None).unwrap());
     let want: BTreeMap<String, String> = [
         ("/d/gone.txt", "remove"),
-        ("/d/sub", "remove"),
-        ("/d/sub/deep.txt", "remove"),
+        ("/d/sub", "remove prefix"),
         ("/d/new.txt", "upsert 7"),
         ("/d/keep.txt", "upsert 9"),
         ("/old", "remove"),
@@ -149,7 +129,7 @@ fn deletes_renames_new_files_and_edits_reach_the_index() {
 }
 
 #[test]
-fn oversized_removed_folders_fail_before_any_partial_changes_are_committed() {
+fn removed_folders_emit_one_prefix_without_expanding_descendants() {
     let (path, base) = build("subtree-cap");
     let mut tree = Fake::default();
     tree.dirs.insert(256, String::new());
@@ -166,8 +146,13 @@ fn oversized_removed_folders_fail_before_any_partial_changes_are_committed() {
         fs: &FsKind::Btrfs,
         source: 0,
     };
-    let error = reconcile(&tree, &changes, &base, None, &mounted, None).unwrap_err();
-    assert!(error.to_string().contains("cursor was not advanced"));
+    let planned = reconcile(&tree, &changes, &base, None, &mounted, None).unwrap();
+    assert!(planned
+        .iter()
+        .any(|change| matches!(change, DeltaChange::RemovePrefix(path) if &**path == "/d")));
+    assert!(!planned
+        .iter()
+        .any(|change| matches!(change, DeltaChange::Remove(path) if path.starts_with("/d/"))));
     let _ = std::fs::remove_file(path);
 }
 
@@ -203,6 +188,36 @@ fn unchanged_entries_do_nothing() {
         .unwrap()
         .is_empty());
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn duplicate_touched_directory_is_reconciled_once() {
+    let (path, base) = build("duplicate-touched");
+    let mut tree = Fake::default();
+    tree.dirs.insert(300, "d".into());
+    tree.kids.insert(
+        300,
+        vec![
+            child("keep.txt", 301, FileKind::File),
+            child("gone.txt", 302, FileKind::File),
+            child("sub", 303, FileKind::Dir),
+        ],
+    );
+    let changes = Changes {
+        generation: 4,
+        dirs: vec![300, 300],
+        inodes: vec![(inode(300, 1, FileKind::Dir), None)],
+    };
+    let mounted = Mounted {
+        prefix: "",
+        relative_root: "",
+        fs: &FsKind::Btrfs,
+        source: 0,
+    };
+    let got = reconcile(&tree, &changes, &base, None, &mounted, None).unwrap();
+    assert!(got.is_empty());
+    assert_eq!(tree.child_reads.get(), 1);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -253,62 +268,9 @@ fn a_folder_emptied_of_its_last_entry_is_found_through_its_own_inode() {
     };
     let got = summary(reconcile(&tree, &changes, &base, None, &mounted, None).unwrap());
     assert_eq!(got.get("/d/keep.txt").map(String::as_str), Some("remove"));
-    assert_eq!(
-        got.get("/d/sub/deep.txt").map(String::as_str),
-        Some("remove")
-    );
+    assert_eq!(got.get("/d/sub").map(String::as_str), Some("remove prefix"));
     let _ = std::fs::remove_file(&path);
 }
 
-#[test]
-fn subdirectory_mount_maps_only_paths_beneath_its_btrfs_root() {
-    assert_eq!(mount_relative("/@/home", "@/home"), Some(String::new()));
-    assert_eq!(
-        mount_relative("/@/home", "@/home/user/docs"),
-        Some("user/docs".into())
-    );
-    assert_eq!(mount_relative("/@/home", "@/homes/user"), None);
-}
-
-#[test]
-fn changed_hardlinked_inode_refreshes_every_parent_name() {
-    let (path, base) = build("hardlinks");
-    let mut tree = Fake::default();
-    tree.dirs.extend([(300, "d".into()), (320, "other".into())]);
-    tree.refs.insert(
-        301,
-        vec![(300, "keep.txt".into()), (320, "alias.txt".into())],
-    );
-    let changes = Changes {
-        generation: 5,
-        inodes: vec![(inode(301, 8, FileKind::File), None)],
-        dirs: vec![],
-    };
-    let mounted = Mounted {
-        prefix: "",
-        relative_root: "",
-        fs: &FsKind::Btrfs,
-        source: 0,
-    };
-    let got = summary(reconcile(&tree, &changes, &base, None, &mounted, None).unwrap());
-    assert_eq!(got.get("/d/keep.txt").map(String::as_str), Some("upsert 8"));
-    assert_eq!(
-        got.get("/other/alias.txt").map(String::as_str),
-        Some("upsert 8")
-    );
-    let _ = std::fs::remove_file(&path);
-}
-
-#[test]
-fn subdirectory_handle_root_is_empty_and_descendants_are_relative() {
-    // dir_path is already relative to the opened subvolume tree, not mountinfo's
-    // filesystem root. A root handle must preserve ordinary child paths.
-    assert_eq!(
-        mount_relative("", "netroaki/docs"),
-        Some("netroaki/docs".into())
-    );
-    assert_eq!(
-        mount_relative("@home", "@home/netroaki"),
-        Some("netroaki".into())
-    );
-}
+mod hardlinks;
+mod mount_scope;

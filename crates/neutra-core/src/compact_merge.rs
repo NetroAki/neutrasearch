@@ -154,6 +154,14 @@ pub(crate) fn write_postings_sorted(
     pairs_path: &Path,
     file: &mut BufWriter<File>,
 ) -> io::Result<Vec<crate::compact::DictEntry>> {
+    write_postings_from_pairs(sorted_pairs(pairs_path)?, file)
+}
+
+/// Spilled (gram, block) pairs in ascending order. Segment files stay in the
+/// spill directory next to `pairs_path` and vanish with it.
+pub(crate) fn sorted_pairs(
+    pairs_path: &Path,
+) -> io::Result<Box<dyn Iterator<Item = io::Result<u64>>>> {
     let mut segments = Vec::new();
     let pairs_file = File::open(pairs_path)?;
     let mut reader = BufReader::with_capacity(1 << 20, pairs_file);
@@ -172,7 +180,7 @@ pub(crate) fn write_postings_sorted(
         }
         segment.sort_unstable();
         if reader.fill_buf()?.is_empty() && segments.is_empty() {
-            return write_postings_from_pairs(segment.into_iter().map(Ok), file);
+            return Ok(Box::new(segment.into_iter().map(Ok)));
         }
         let path = pairs_path.with_extension(format!("seg{}", segments.len()));
         write_segment(&path, &segment)?;
@@ -187,7 +195,7 @@ pub(crate) fn write_postings_sorted(
             heap.push((Reverse(pair), index));
         }
     }
-    let ordered = std::iter::from_fn(|| {
+    Ok(Box::new(std::iter::from_fn(move || {
         let (Reverse(pair), index) = heap.pop()?;
         match read_pair(&mut readers[index]) {
             Ok(next) => {
@@ -198,12 +206,7 @@ pub(crate) fn write_postings_sorted(
             }
             Err(error) => Some(Err(error)),
         }
-    });
-    let dict = write_postings_from_pairs(ordered, file)?;
-    for path in &segments {
-        let _ = std::fs::remove_file(path);
-    }
-    Ok(dict)
+    })))
 }
 
 fn write_segment(path: &Path, segment: &[u64]) -> io::Result<()> {
@@ -224,7 +227,7 @@ fn read_pair(reader: &mut BufReader<File>) -> io::Result<Option<u64>> {
     }
 }
 
-fn write_postings_from_pairs(
+pub(crate) fn write_postings_from_pairs(
     pairs: impl Iterator<Item = io::Result<u64>>,
     file: &mut BufWriter<File>,
 ) -> io::Result<Vec<crate::compact::DictEntry>> {

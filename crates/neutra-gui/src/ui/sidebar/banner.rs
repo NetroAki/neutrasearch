@@ -74,7 +74,7 @@ fn permission_detail(app: &NeutraApp) -> String {
 fn primary_label(state: super::super::RuntimeState) -> Option<&'static str> {
     match state {
         super::super::RuntimeState::Stale => Some("Rebuild now"),
-        super::super::RuntimeState::Permission => Some("Try with elevated access"),
+        super::super::RuntimeState::Permission => Some("Enable indexing access"),
         _ => None,
     }
 }
@@ -144,9 +144,7 @@ fn banner_primary(app: &mut NeutraApp, ui: &mut egui::Ui, state: super::super::R
         super::super::RuntimeState::Permission if cfg!(target_os = "windows") => {
             windows_elevation(app, ui)
         }
-        super::super::RuntimeState::Permission if cfg!(target_os = "linux") => {
-            app.begin_scan_with_elevation(true)
-        }
+        super::super::RuntimeState::Permission if cfg!(target_os = "linux") => app.begin_scan(),
         super::super::RuntimeState::Permission => app.diagnostics_open = true,
         _ => {}
     }

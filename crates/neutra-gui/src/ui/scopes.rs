@@ -22,7 +22,7 @@ pub(super) fn picker(app: &mut NeutraApp, ui: &mut Ui) {
             app.requery();
             ui.close();
         }
-        let mounts = neutra_core::mounts::system_mounts().unwrap_or_default();
+        let mounts = crate::selected_scan_mounts(&crate::default_system_roots());
         let nvme: Vec<_> = mounts
             .iter()
             .filter(|mount| mount.device.contains("nvme") && mount.fs.is_indexable_local())

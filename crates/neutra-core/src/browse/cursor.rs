@@ -1,6 +1,7 @@
+pub(super) mod recovery;
 use super::{sql_error, BrowserIndex, SCHEMA_VERSION};
 use crate::DeltaIndex;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, OpenFlags, OptionalExtension};
 use std::{io, path::Path};
 
 fn stamp(path: &Path) -> io::Result<(String, String, String)> {
@@ -22,6 +23,31 @@ fn stamp(path: &Path) -> io::Result<(String, String, String)> {
 }
 
 impl BrowserIndex {
+    /// The caller holds a catalog read transaction before refreshing the WAL,
+    /// so the refreshed overlay includes every catalog mutation in that view.
+    pub(super) fn delta_covers_catalog(&self, delta: &mut DeltaIndex) -> io::Result<bool> {
+        let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='live_cursor' AND type='table')", [], |row| row.get(0)).map_err(sql_error)?;
+        if !exists {
+            return Ok(false);
+        }
+        let cursor: Option<(String, String, String)> = self
+            .db
+            .query_row(
+                "SELECT generation,identity,bytes FROM live_cursor WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        if delta.generation() != self.generation {
+            return Ok(false);
+        }
+        delta.refresh()?;
+        Ok(cursor.is_some_and(|(generation, identity, bytes)| {
+            delta.covers_catalog_cursor(&generation, &identity, &bytes)
+        }))
+    }
+
     /// Publish only after every durable WAL frame is reflected in the catalog.
     pub fn mark_delta(index: &Path, delta: &DeltaIndex) -> io::Result<()> {
         let path = Self::path_for(index);
@@ -34,16 +60,19 @@ impl BrowserIndex {
                 "delta changed before catalog cursor publication",
             ));
         }
-        let mut db = Connection::open_with_flags(
+        let mut db = crate::sqlite::open(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(sql_error)?;
-        db.busy_timeout(std::time::Duration::from_secs(2))
+        db.busy_timeout(std::time::Duration::from_secs(60))
             .map_err(sql_error)?;
         db.execute_batch("PRAGMA cache_size=-1024; PRAGMA mmap_size=0;")
             .map_err(sql_error)?;
-        let found: (String, i64) = db
+        let transaction = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        let found: (String, i64) = transaction
             .query_row("SELECT generation,version FROM metadata", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
@@ -51,7 +80,6 @@ impl BrowserIndex {
         if found != (delta.generation().to_string(), SCHEMA_VERSION) {
             return Ok(());
         }
-        let transaction = db.transaction().map_err(sql_error)?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS live_cursor(id INTEGER PRIMARY KEY CHECK(id=1),generation TEXT NOT NULL,identity TEXT NOT NULL,bytes TEXT NOT NULL,modified TEXT NOT NULL);").map_err(sql_error)?;
         transaction
             .execute(

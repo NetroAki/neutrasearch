@@ -123,7 +123,7 @@ fn build_streamed(runs: &SpillRuns, path: &Path) -> io::Result<BuildStats> {
 
 /// Encode one block exactly like the in-RAM writer, publish it immediately,
 /// and spill its (gram, block) pairs for the external postings sort.
-fn encode_block(
+pub(crate) fn encode_block(
     block: &[crate::FileRecord],
     block_id: u32,
     file: &mut BufWriter<File>,

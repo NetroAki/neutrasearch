@@ -1,5 +1,6 @@
 //! Manual check of the incremental sweep against a real subvolume:
 //! sweep_demo DIR   (needs CAP_SYS_ADMIN; DIR must be inside a Btrfs subvolume)
+#[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     let dir = std::env::args().nth(1).expect("usage: sweep_demo DIR");
     let sub = neutra_btrfs::Subvolume::open(std::path::Path::new(&dir))?;
@@ -23,4 +24,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("The Btrfs sweep example requires Linux")
 }

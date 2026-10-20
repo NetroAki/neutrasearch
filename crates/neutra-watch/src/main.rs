@@ -4,6 +4,11 @@
 //! dies the read end hits EOF and this process exits so systemd restarts the
 //! pair, and if this process dies the helper sees EOF and exits the same way.
 
+mod health;
+#[cfg(target_os = "linux")]
+mod resume;
+mod startup;
+
 use neutra_core::proto::{read_frame, write_frame, ClientMsg, HelperMsg, PROTO_VERSION};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::process::{Command, Stdio};
@@ -33,6 +38,11 @@ fn fail(message: String) -> ! {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--resume-after") {
+        resume::after_parent_exit();
+        return;
+    }
     let mut args = std::env::args_os().skip(1);
     let (Some(mount), source) = (args.next(), args.next()) else {
         usage();
@@ -41,6 +51,7 @@ fn main() {
         .map(|value| value.to_string_lossy().into_owned().parse().unwrap_or(0))
         .unwrap_or(0);
     let index = neutra_core::paths::resolve_index_path(None);
+    startup::ensure_index(&index);
     let mut child = Command::new(helper_program())
         .arg("--watch-index")
         .arg(&index)
@@ -82,6 +93,8 @@ fn main() {
         Some(HelperMsg::WatchReady) => {}
         other => fail(format!("native watches failed to initialize: {other:?}")),
     }
+    notify_service();
+    health::monitor(&index);
     println!("ready");
     std::io::stdout()
         .flush()
@@ -95,7 +108,9 @@ fn main() {
     loop {
         match stdout.read(&mut idle) {
             Ok(0) => {
-                let _ = child.wait();
+                if child.wait().is_ok_and(|status| status.code() == Some(78)) {
+                    std::process::exit(78);
+                }
                 fail("helper exited".into())
             }
             Ok(_) => {}
@@ -107,3 +122,24 @@ fn main() {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+fn notify_service() {
+    if std::env::var_os("NOTIFY_SOCKET").is_none() {
+        return;
+    }
+    let status = Command::new("/usr/bin/timeout")
+        .args([
+            "5",
+            "/usr/bin/systemd-notify",
+            "--ready",
+            "--status=Native filesystem watchers attached",
+        ])
+        .status();
+    if !status.is_ok_and(|status| status.success()) {
+        fail("Cannot report native watcher readiness to the service manager".into());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify_service() {}

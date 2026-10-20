@@ -93,6 +93,8 @@ pub(crate) fn maintenance_section(app: &mut NeutraApp, ui: &mut egui::Ui) {
     );
     ui.add_space(6.0);
     rebuild_row(app, ui);
+    #[cfg(target_os = "linux")]
+    indexing_access_row(app, ui);
 }
 
 fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
@@ -120,10 +122,6 @@ fn rebuild_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
             {
                 app.cancel_scan();
             }
-        }
-        #[cfg(target_os = "linux")]
-        if !rebuilding && secondary_button(ui, "Rebuild as administrator", ACID_STRONG).clicked() {
-            app.begin_scan_with_elevation(true);
         }
     });
 }
@@ -168,7 +166,7 @@ pub(crate) fn location_rows(app: &mut NeutraApp, ui: &mut egui::Ui) {
                 )
                 .sense(egui::Sense::click()),
             );
-            response.context_menu(|menu| {
+            crate::ui::file_actions::popup(&response, |menu| {
                 if menu.button("Search this location").clicked() {
                     app.scope_root = Some(root_text.clone());
                     app.requery();
@@ -251,38 +249,31 @@ fn row_menu(
     );
 }
 
-/// Aggregate lane state for one selected root: any failed lane reads
-/// Unavailable, an unfinished scan reads Indexing, finished lanes Ready.
-fn root_status(app: &NeutraApp, root: &str) -> (&'static str, egui::Color32) {
-    use super::super::icons::GREEN;
-    use super::super::widgets::{ERROR, MUTED, VIOLET};
-    let failed = app
-        .lanes
-        .iter()
-        .any(|(key, lane)| lane.error && covers(key, root));
-    if failed {
-        return ("Unavailable", ERROR);
-    }
-    let known: Vec<&crate::LaneState> = app
-        .lanes
-        .iter()
-        .filter(|(key, _)| covers(key, root))
-        .map(|(_, lane)| lane)
-        .collect();
-    if known.is_empty() || !app.scanning {
-        if app.index_is_empty() {
-            return ("-", MUTED);
-        }
-        return ("Ready", GREEN);
-    }
-    if known.iter().all(|lane| lane.records > 0) {
-        ("Ready", GREEN)
-    } else {
-        ("Indexing\u{2026}", VIOLET)
-    }
-}
+mod status;
+use status::root_status;
 
-/// A lane covers a root when its mountpoint is the root or an ancestor.
-fn covers(key: &str, root: &str) -> bool {
-    key.starts_with('/') && (key == "/" || key == root || root.starts_with(&format!("{key}/")))
+#[cfg(target_os = "linux")]
+fn indexing_access_row(app: &mut NeutraApp, ui: &mut egui::Ui) {
+    let retained = crate::transport::indexing_access::retained();
+    ui.label(
+        RichText::new(if retained {
+            "Filesystem access is retained for your account across restarts."
+        } else {
+            "Enable filesystem access once to index automatically after restarts."
+        })
+        .font(sans(11.0))
+        .color(MUTED),
+    );
+    let enabled = !app.scanning && !app.building_cache && !app.cancelling;
+    let title = if retained {
+        "Repair indexing access"
+    } else {
+        "Enable indexing"
+    };
+    if ui
+        .add_enabled(enabled, egui::Button::new(title).small())
+        .clicked()
+    {
+        crate::transport::indexing_access::repair(app.tx.clone());
+    }
 }

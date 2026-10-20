@@ -1,7 +1,17 @@
 use super::*;
 
 pub(super) fn controls(app: &mut NeutraApp, ui: &mut Ui) {
-    if app.query.trim().is_empty() && !app.index_is_empty() {
+    if app.selection.len() > 0 {
+        ui.label(
+            RichText::new(format!(
+                "{} selected on this page",
+                fmt_count(app.selection.len() as u64)
+            ))
+            .font(sans(CAPTION))
+            .color(TEXT),
+        );
+    }
+    if !app.index_is_empty() {
         let first = app.page_offset + usize::from(!app.hits.is_empty());
         ui.label(
             RichText::new(format!(
@@ -25,7 +35,10 @@ pub(super) fn controls(app: &mut NeutraApp, ui: &mut Ui) {
         }
         if ui
             .add_enabled(
-                !app.searching && app.hits.len() == crate::HOME_RESULT_CAP,
+                !app.searching
+                    && app.hits.len() == crate::HOME_RESULT_CAP
+                    && (app.query.trim().is_empty()
+                        || ((app.page_offset + app.hits.len()) as u64) < app.search_stats.matched),
                 egui::Button::new("Next").frame(false),
             )
             .clicked()

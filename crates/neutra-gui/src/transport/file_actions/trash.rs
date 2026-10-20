@@ -1,6 +1,10 @@
 use super::run_with_env;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+#[path = "local_trash/mod.rs"]
+mod local;
+
 pub(super) fn trash(path: &Path) -> Result<PathBuf, String> {
     trash_with_env(path, None)
 }
@@ -12,7 +16,11 @@ pub(super) fn trash_with_env(path: &Path, data_home: Option<&Path>) -> Result<Pa
     #[cfg(target_os = "linux")]
     {
         let before = items(data_home)?;
-        run_with_env("gio", &["trash", "--", &path.to_string_lossy()], data_home)?;
+        if let Err(error) =
+            run_with_env("gio", &["trash", "--", &path.to_string_lossy()], data_home)
+        {
+            return local::trash(path).map_err(|local| format!("{error}; local Trash: {local}"));
+        }
         let matches: Vec<_> = items(data_home)?
             .into_iter()
             .filter(|(uri, original)| original == path && !before.iter().any(|(old, _)| old == uri))
@@ -33,6 +41,9 @@ pub(super) fn trash_with_env(path: &Path, data_home: Option<&Path>) -> Result<Pa
 pub(super) fn restore_with_env(token: &Path, data_home: Option<&Path>) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
+        if token.is_absolute() {
+            return local::restore(token);
+        }
         let original = items(data_home)?
             .into_iter()
             .find_map(|(uri, original)| (uri == token).then_some(original))

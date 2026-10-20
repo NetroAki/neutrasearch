@@ -1,3 +1,9 @@
+#[path = "maps/folders.rs"]
+mod folders;
+#[path = "maps/loading.rs"]
+mod loading;
+pub(super) use folders::show as folder_view;
+pub(super) use loading::prepare;
 #[path = "maps/ball_graph.rs"]
 mod ball_graph;
 #[path = "maps/file_map.rs"]
@@ -23,7 +29,11 @@ pub(super) fn view_picker(ui: &mut Ui) -> usize {
             .into_iter()
             .enumerate()
         {
-            if ui.selectable_label(mode == index, label).clicked() {
+            let response = ui.selectable_label(mode == index, label);
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_label(format!("Map style: {label}"))
+            });
+            if response.clicked() {
                 mode = index;
             }
         }

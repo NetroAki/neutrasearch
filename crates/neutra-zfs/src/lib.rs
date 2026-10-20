@@ -1,11 +1,9 @@
 //! ZFS lane.
 //!
-//! OpenZFS exposes no stable userspace metadata-enumeration API: the intended
-//! production path is snapshot + DMU/ZAP enumeration through libzpool, which
-//! only exists inside an OpenZFS build tree (`zfs-libzpool` feature; the
-//! default build refuses to pretend an unverified ABI is safe). `zdb` output
-//! is deliberately never parsed: it is a debugging interface, not a
-//! production API.
+//! A version-matched native reader streams ZAP directory entries and SA
+//! metadata from a consistent snapshot through read-only libzpool. Its C
+//! boundary compiles against the pinned OpenZFS headers; Rust consumes a
+//! bounded binary record stream, not private C layouts or debug output.
 //!
 //! This crate also provides a `zfs diff` parser and snapshot command builders
 //! for updates. Initial indexing requires the native backend; there is no
@@ -13,49 +11,24 @@
 
 use anyhow::{bail, Result};
 use neutra_core::{FileRecord, MountInfo, ScanStats};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiffEntry {
-    Created(PathBuf),
-    Removed(PathBuf),
-    Modified(PathBuf),
-    Renamed { from: PathBuf, to: PathBuf },
-}
-
-/// Parse `zfs diff -FH old@snap new@snap`. `-H` makes it tab separated and
-/// `-F` adds type information after the change marker; fields after paths are
-/// intentionally ignored so this remains compatible across OpenZFS releases.
-pub fn parse_diff(input: &str) -> Result<Vec<DiffEntry>> {
-    let mut out = Vec::new();
-    for (line_no, line) in input.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let cols: Vec<&str> = line.split('\t').collect();
-        let marker = cols.first().copied().unwrap_or("").trim();
-        let path_at = |i: usize| -> Result<PathBuf> {
-            cols.get(i)
-                .map(|s| PathBuf::from(*s))
-                .ok_or_else(|| anyhow::anyhow!("zfs diff line {} missing path", line_no + 1))
-        };
-        // Common output is marker, path; with -F it can be marker, type, path.
-        let first_path = if cols.len() >= 3 { 2 } else { 1 };
-        let entry = match marker {
-            "+" => DiffEntry::Created(path_at(first_path)?),
-            "-" => DiffEntry::Removed(path_at(first_path)?),
-            "M" => DiffEntry::Modified(path_at(first_path)?),
-            "R" => {
-                let from = path_at(first_path)?;
-                let to = path_at(first_path + 1)?;
-                DiffEntry::Renamed { from, to }
-            }
-            other => bail!("unknown zfs diff marker {other:?} on line {}", line_no + 1),
-        };
-        out.push(entry);
-    }
-    Ok(out)
-}
+#[cfg(target_os = "linux")]
+mod capability;
+#[cfg(target_os = "linux")]
+mod dataset;
+mod diff;
+#[cfg(target_os = "linux")]
+mod native;
+mod probe;
+#[cfg(target_os = "linux")]
+mod programs;
+#[cfg(target_os = "linux")]
+mod staging;
+#[cfg(target_os = "linux")]
+mod wire;
+pub use diff::{parse_diff, DiffEntry};
+pub use probe::{probe, reader_version, ZfsLaneProbe};
 
 pub const SNAPSHOT_PREFIX: &str = "neutra-";
 
@@ -87,68 +60,16 @@ pub fn destroy_snapshot_command(snapshot: &str) -> Result<Vec<String>> {
 
 /// Initial ZFS scan through the native metadata backend only.
 pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
-    #[cfg(feature = "zfs-libzpool")]
+    #[cfg(target_os = "linux")]
     {
-        return libzpool_backend::scan(mount, sink);
+        native::scan(mount, sink)
     }
-    #[cfg(not(feature = "zfs-libzpool"))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (mount, sink);
         bail!(
-            "ZFS native metadata indexing is unavailable in this build; directory walking is disabled"
+            "The native ZFS metadata reader requires Linux/OpenZFS; directory walking is disabled"
         )
-    }
-}
-
-/// Which ZFS indexing lanes are usable on this machine. Reported by
-/// `neutrasearch-helper --zfs-probe` so operators can see the decision
-/// without reading source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ZfsLaneProbe {
-    /// First line of `zfs version`, when the CLI is installed.
-    pub zfs_cli_version: Option<String>,
-    /// A libzpool shared object found on disk (the native ZAP lane's link
-    /// target; the feature build must still link and verify against it).
-    pub libzpool_soname: Option<&'static str>,
-}
-
-pub fn probe() -> ZfsLaneProbe {
-    let zfs_cli_version = std::process::Command::new("zfs")
-        .arg("version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
-        })
-        .filter(|line| !line.is_empty());
-    let libzpool_soname = ["libzpool.so.6", "libzpool.so.4", "libzpool.so.2"]
-        .into_iter()
-        .find(|soname| {
-            ["/usr/lib", "/usr/lib64", "/lib", "/usr/local/lib"]
-                .iter()
-                .any(|dir| std::path::Path::new(dir).join(soname).is_file())
-        });
-    ZfsLaneProbe {
-        zfs_cli_version,
-        libzpool_soname,
-    }
-}
-
-#[cfg(feature = "zfs-libzpool")]
-mod libzpool_backend {
-    use super::*;
-
-    // The stable public Rust ABI does not exist. This module intentionally
-    // fails at runtime until OPENZFS_SRC-specific bindings are generated.
-    // Keeping it feature-gated prevents pretending an unverified ABI is safe.
-    pub fn scan(_mount: &MountInfo, _sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
-        bail!("zfs-libzpool feature enabled, but generated OpenZFS-version bindings are not installed; set OPENZFS_SRC and generate bindings for that exact release")
     }
 }
 

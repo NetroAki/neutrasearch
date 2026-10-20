@@ -2,10 +2,15 @@
 //! this sidecar contains sortable keys and record addresses, not a resident copy.
 
 mod build;
+mod catalog;
+mod columns;
 mod cursor;
 mod hierarchy;
+mod ordered;
 mod query;
-mod recovery;
+mod quick;
+mod search_cache;
+mod short_counts;
 #[cfg(test)]
 mod tests;
 mod updates;
@@ -17,12 +22,14 @@ use std::path::{Path, PathBuf};
 
 // Reversing an order also reverses its path tie-break, so one B-tree covers
 // both directions without separate descending indexes.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct BrowserIndex {
     db: Connection,
     generation: u64,
     base: CompactIndex,
+    cols: columns::Columns,
+    tombstone_cache: std::sync::Mutex<Option<(i64, std::sync::Arc<catalog::Tombstones>)>>,
 }
 
 pub(crate) fn sql_error(error: rusqlite::Error) -> io::Error {
@@ -33,57 +40,7 @@ impl BrowserIndex {
     /// Recover a new WAL from a synchronized catalog whose original base
     /// is still published. Stop its writer before invoking or installing it.
     pub fn recover_delta(index: &Path, output: &Path) -> io::Result<()> {
-        recovery::rebuild(index, output)
-    }
-
-    /// Resolve a native watcher lookup through the path B-tree and decode
-    /// one original block, rather than binary-searching compressed blocks.
-    pub fn record_by_path(&self, path: &str) -> io::Result<Option<FileRecord>> {
-        self.record_by_path_cached(path, &mut None)
-    }
-
-    pub(super) fn record_by_path_cached(
-        &self,
-        path: &str,
-        cache: &mut Option<(u32, Vec<FileRecord>)>,
-    ) -> io::Result<Option<FileRecord>> {
-        use rusqlite::OptionalExtension;
-        let found: Option<(i64, Option<Vec<u8>>)> = self
-            .db
-            .prepare_cached("SELECT id,record FROM entries WHERE path=? LIMIT 1")
-            .map_err(sql_error)?
-            .query_row([path], |row| Ok((row.get(0)?, row.get(1)?)))
-            .optional()
-            .map_err(sql_error)?;
-        let Some((id, bytes)) = found else {
-            return Ok(None);
-        };
-        if let Some(bytes) = bytes {
-            return bincode::deserialize(&bytes)
-                .map(Some)
-                .map_err(io::Error::other);
-        }
-        if id <= 0 || id as u64 > self.base.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid browse record address",
-            ));
-        }
-        let address = (id - 1) as usize;
-        let block = (address / crate::compact::BLOCK_RECORDS) as u32;
-        if cache.as_ref().map(|(held, _)| *held) != Some(block) {
-            let records = self.base.read_block(block)?;
-            self.base.release_block(block);
-            *cache = Some((block, records));
-        }
-        cache
-            .as_ref()
-            .expect("requested block was cached")
-            .1
-            .get(address % crate::compact::BLOCK_RECORDS)
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid browse record slot"))
+        cursor::recovery::rebuild(index, output)
     }
 
     pub fn path_for(index: &Path) -> PathBuf {
@@ -93,7 +50,7 @@ impl BrowserIndex {
     }
 
     pub fn open(index: &Path, generation: u64) -> io::Result<Self> {
-        let db = Connection::open_with_flags(
+        let db = crate::sqlite::open(
             Self::path_for(index),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
@@ -117,10 +74,17 @@ impl BrowserIndex {
         if base.generation().to_string() != found.2 {
             return Err(io::Error::other("pinned browse base generation mismatch"));
         }
+        let cols = columns::Columns::open(
+            &columns::Columns::path_for(&Self::path_for(index)),
+            base.generation(),
+            base.len(),
+        )?;
         Ok(Self {
             db,
             generation,
             base,
+            cols,
+            tombstone_cache: std::sync::Mutex::new(None),
         })
     }
 

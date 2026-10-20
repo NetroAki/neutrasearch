@@ -25,12 +25,16 @@ pub mod paths;
 pub mod proto;
 pub mod query;
 pub mod ranked;
+pub(crate) mod record_ref;
+mod sqlite;
 pub mod types;
 
 pub use browse::BrowserIndex;
 pub use compact::{join_child_path, CompactIndex, DirFile, DirListing, DirSubdir};
 pub use compact_build::BuildStats as CompactBuildStats;
 pub use compact_spill::{SpillAccumulator, SpillRuns};
+#[cfg(target_os = "linux")]
+pub use delta::CompactionCursor;
 pub use delta::{DeltaChange, DeltaIndex, DEFAULT_COMPACT_AT, DELTA_HEADER_BYTES};
 pub use dir_overlay::DirectorySummaryOverlay;
 pub use dir_summary::{aggregate_records, DirectoryChild, DirectorySummary, DirectorySummaryEntry};

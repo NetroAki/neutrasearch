@@ -4,7 +4,61 @@ use crate::transport::file_actions::Action;
 use egui::{Context, Ui};
 use std::path::PathBuf;
 
+pub(crate) fn popup(response: &egui::Response, contents: impl FnOnce(&mut Ui)) {
+    let key = response.id.with("keyboard-context-menu");
+    let keyboard = response.has_focus()
+        && response
+            .ctx
+            .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+    if keyboard {
+        response.ctx.data_mut(|data| data.insert_temp(key, true));
+        egui::Popup::open_id(&response.ctx, egui::Popup::default_response_id(response));
+    } else if response.secondary_clicked() {
+        response.ctx.data_mut(|data| data.insert_temp(key, false));
+    }
+    let menu = egui::Popup::context_menu(response);
+    let menu = if response
+        .ctx
+        .data(|data| data.get_temp::<bool>(key).unwrap_or(false))
+    {
+        menu.at_position(response.rect.left_bottom())
+    } else {
+        menu
+    };
+    menu.show(contents);
+    if !egui::Popup::is_id_open(&response.ctx, egui::Popup::default_response_id(response)) {
+        response.ctx.data_mut(|data| data.remove::<bool>(key));
+    }
+}
+
 pub(crate) fn context_menu(ui: &mut Ui, path: &str, selected: &mut Option<Action>) {
+    selection_menu(ui, path, &[PathBuf::from(path)], selected);
+}
+
+pub(crate) fn selection_menu(
+    ui: &mut Ui,
+    path: &str,
+    paths: &[PathBuf],
+    selected: &mut Option<Action>,
+) {
+    if paths.len() > 1 {
+        ui.label(format!("{} selected items", paths.len()));
+        for (label, action) in [
+            ("Copy files", Action::Copy(paths.to_vec())),
+            ("Cut files", Action::Cut(paths.to_vec())),
+            ("Move to Trash", Action::TrashMany(paths.to_vec())),
+        ] {
+            let allowed = matches!(action, Action::Copy(_))
+                || paths
+                    .iter()
+                    .all(|path| path.to_str().is_some_and(path_buf_has_parent));
+            if ui.add_enabled(allowed, egui::Button::new(label)).clicked() {
+                *selected = Some(action);
+                ui.close();
+            }
+        }
+        return;
+    }
     let path_buf = PathBuf::from(path);
     for (label, action) in [
         ("Open", Action::Open(path_buf.clone())),

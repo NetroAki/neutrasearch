@@ -24,6 +24,10 @@ pub(super) fn show(
     current: &str,
     selected: Option<&str>,
 ) -> Option<TreeAction> {
+    let selected_paths = ui.ctx().data(|data| {
+        data.get_temp::<std::sync::Arc<Vec<std::path::PathBuf>>>(Id::new("selected-file-paths"))
+            .unwrap_or_default()
+    });
     let nodes = nodes(model, current);
     ui.label(
         RichText::new(format!(
@@ -86,6 +90,17 @@ pub(super) fn show(
         let radius = radii[index];
         let hit = Rect::from_center_size(point, Vec2::splat((radius * 2.0).max(12.0)));
         let response = ui.interact(hit, Id::new(("ball", &node.path)), Sense::click_and_drag());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                true,
+                selected_paths
+                    .iter()
+                    .any(|path| path == std::path::Path::new(&node.path))
+                    || selected == Some(node.path.as_str()),
+                format!("{}; {}", node.path, format_size(node.bytes)),
+            )
+        });
         let copying = ui.input(|input| input.modifiers.command);
         if response.dragged() && !copying {
             simulation.points[index] += response.drag_delta();
@@ -111,12 +126,20 @@ pub(super) fn show(
             point,
             radius,
             Stroke::new(
-                if selected == Some(node.path.as_str()) || response.has_focus() {
+                if selected_paths
+                    .iter()
+                    .any(|path| path == std::path::Path::new(&node.path))
+                    || response.has_focus()
+                {
                     2.0_f32
                 } else {
                     1.0_f32
                 },
-                if selected == Some(node.path.as_str()) || response.has_focus() {
+                if selected_paths
+                    .iter()
+                    .any(|path| path == std::path::Path::new(&node.path))
+                    || response.has_focus()
+                {
                     GLOW
                 } else {
                     color
@@ -136,7 +159,10 @@ pub(super) fn show(
             .clone()
             .on_hover_text(format!("{}\n{}", node.path, format_size(node.bytes)));
         if response.clicked() {
-            action = Some(TreeAction::Select(node.path.clone()));
+            action = Some(TreeAction::Select(
+                node.path.clone(),
+                ui.input(|input| input.modifiers),
+            ));
         }
         if response.double_clicked() {
             action = Some(if node.folder {
@@ -145,7 +171,9 @@ pub(super) fn show(
                 TreeAction::Open(node.path.clone())
             });
         }
-        response.context_menu(|menu| file_context_menu(menu, &node.path, &mut action));
+        crate::ui::file_actions::popup(&response, |menu| {
+            file_context_menu(menu, &node.path, &mut action)
+        });
         if copying
             || !ui.input(|input| input.raw.dropped_files.is_empty())
             || response
@@ -201,14 +229,15 @@ fn nodes(model: &Hierarchy, current: &str) -> Vec<Node> {
                 .collect();
             children.sort_unstable_by_key(|item| std::cmp::Reverse(item.0));
             for (bytes, path, folder) in children.into_iter().take(MAX_NODES - nodes.len()) {
-                if !nodes.iter().any(|node| node.path == path) {
-                    nodes.push(Node {
-                        path,
-                        parent: Some(parent),
-                        bytes,
-                        folder,
-                    });
+                if nodes.iter().any(|node| node.path == path) {
+                    continue;
                 }
+                nodes.push(Node {
+                    path,
+                    parent: Some(parent),
+                    bytes,
+                    folder,
+                });
             }
         }
         parent += 1;
@@ -216,89 +245,9 @@ fn nodes(model: &Hierarchy, current: &str) -> Vec<Node> {
     nodes
 }
 
-fn initial_points(count: usize, rect: Rect) -> Vec<egui::Pos2> {
-    let mut points = vec![rect.center()];
-    let radius = rect.width().min(rect.height()) * 0.35;
-    for index in 1..count {
-        let angle = index as f32 * 2.399_963_1;
-        let distance = radius * (index as f32 / count as f32).sqrt();
-        points.push(rect.center() + Vec2::new(angle.cos(), angle.sin()) * distance);
-    }
-    points
-}
-
-fn relax(state: &mut Simulation, nodes: &[Node], radii: &[f32], rect: Rect) {
-    let mut forces = vec![Vec2::ZERO; nodes.len()];
-    for index in 0..nodes.len() {
-        for other in index + 1..nodes.len() {
-            let delta = state.points[index] - state.points[other];
-            let distance = delta.length().max(0.01);
-            let direction = if delta.length_sq() > 0.001 {
-                delta / distance
-            } else {
-                Vec2::new(1.0, 0.0)
-            };
-            let collision = (radii[index] + radii[other] + 5.0 - distance).max(0.0);
-            let force = direction * (collision * 0.15 + (100.0 / (distance * distance)).min(1.0));
-            forces[index] += force;
-            forces[other] -= force;
-        }
-        if let Some(parent) = nodes[index].parent {
-            let delta = state.points[parent] - state.points[index];
-            let length = delta.length().max(0.01);
-            let target = radii[parent] + radii[index] + 42.0;
-            let force = delta / length * (length - target) * 0.012;
-            forces[index] += force;
-            forces[parent] -= force;
-        }
-    }
-    state.points[0] = rect.center();
-    for (index, force) in forces.into_iter().enumerate().skip(1) {
-        let velocity = state.velocity[index] + force;
-        state.velocity[index] = velocity / (velocity.length() / 4.0).max(1.0) * 0.72;
-        state.points[index] += state.velocity[index];
-        let radius = radii[index].min(rect.width().min(rect.height()) / 2.0);
-        state.points[index].x = state.points[index]
-            .x
-            .clamp(rect.left() + radius, rect.right() - radius);
-        state.points[index].y = state.points[index]
-            .y
-            .clamp(rect.top() + radius, rect.bottom() - radius);
-    }
-}
-
+#[path = "ball_graph/physics.rs"]
+mod physics;
+use physics::{initial_points, relax};
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn relaxation_stays_finite_and_inside_the_canvas() {
-        let rect = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 200.0));
-        let nodes = vec![
-            Node {
-                path: "/".into(),
-                parent: None,
-                bytes: 100,
-                folder: true,
-            },
-            Node {
-                path: "/a".into(),
-                parent: Some(0),
-                bytes: 10,
-                folder: false,
-            },
-        ];
-        let mut state = Simulation {
-            key: 0,
-            points: vec![rect.center(); 2],
-            velocity: vec![Vec2::ZERO; 2],
-            steps: 0,
-        };
-        for _ in 0..160 {
-            relax(&mut state, &nodes, &[42.0, 13.0], rect);
-        }
-        assert!(state
-            .points
-            .iter()
-            .all(|point| point.x.is_finite() && point.y.is_finite() && rect.contains(*point)));
-    }
-}
+#[path = "ball_graph/tests.rs"]
+mod tests;

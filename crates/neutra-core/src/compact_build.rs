@@ -2,7 +2,11 @@
 //! rebuild lock. Split from the read/search side (`compact.rs`) so format
 //! reading and index building evolve independently.
 
+#[cfg(windows)]
+pub(crate) use crate::compact::atomic_file::{replace_file, sync_parent};
 use crate::compact::suffix_path;
+#[cfg(test)]
+mod test_encoding;
 #[cfg(test)]
 use crate::compact::{
     binerr, collect_trigrams, compare_index_paths, invalid, put_varint, BlockDesc, DictEntry,
@@ -65,27 +69,7 @@ impl CompactIndex {
         // block order so offsets and posting lists stay identical to the
         // sequential layout. This is compaction's CPU bottleneck on
         // multi-million-record bases.
-        let encoded = order
-            .par_chunks(BLOCK_RECORDS)
-            .map(|ids| {
-                let mut grams = Vec::new();
-                {
-                    let mut set = HashSet::new();
-                    for id in ids {
-                        collect_trigrams(&records[*id as usize].path, &mut set);
-                    }
-                    grams.extend(set);
-                }
-                let refs = ids
-                    .iter()
-                    .map(|id| &records[*id as usize])
-                    .collect::<Vec<_>>();
-                let raw = bincode::serialize(&refs).map_err(binerr)?;
-                let compressed = zstd::bulk::compress(&raw, 1)?;
-                grams.shrink_to_fit();
-                Ok((compressed, grams, ids.len() as u16))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let encoded = test_encoding::blocks(records, order)?;
         for (block_id, (compressed, grams, count)) in encoded.into_iter().enumerate() {
             let offset = file.stream_position()?;
             file.write_all(&compressed)?;
@@ -200,15 +184,7 @@ impl CompactIndex {
         if DirectorySummary::path_for(staged).is_file() {
             crate::TreeSummary::ensure(staged, generation)?;
         }
-        let temporary = temp_path(destination);
-        let mut source = File::open(staged)?;
-        let mut copy = open_private(&temporary)?;
-        std::io::copy(&mut source, &mut copy)?;
-        copy.flush()?;
-        copy.get_ref().sync_all()?;
-        drop(copy);
-        replace_file(&temporary, destination)?;
-        sync_parent(destination)?;
+        files::publish_copy(staged, destination)?;
         DirectorySummary::publish(staged, destination, generation)?;
         crate::TreeSummary::publish(staged, destination, generation)
     }
@@ -248,50 +224,12 @@ pub(crate) fn new_generation() -> u64 {
     }
 }
 
-pub(crate) fn temp_path(path: &Path) -> PathBuf {
-    suffix_path(path, ".new")
-}
-
-pub(crate) fn clear_stale_marker(path: &Path) -> io::Result<()> {
-    let stale = suffix_path(path, ".stale");
-    match std::fs::remove_file(stale) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
+mod files;
 #[cfg(not(windows))]
-pub(crate) fn replace_file(temp: &Path, path: &Path) -> io::Result<()> {
-    std::fs::rename(temp, path)
-}
-
+pub(crate) use files::replace_file;
 #[cfg(unix)]
-pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
-    }
-    Ok(())
-}
-
-pub(crate) fn open_private(path: &Path) -> io::Result<BufWriter<File>> {
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true).read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    Ok(BufWriter::with_capacity(1024 * 1024, options.open(path)?))
-}
+pub(crate) use files::sync_parent;
+pub(crate) use files::{clear_stale_marker, open_private, temp_path};
 
 pub(crate) fn write_u16(w: &mut impl Write, n: u16) -> io::Result<()> {
     w.write_all(&n.to_le_bytes())

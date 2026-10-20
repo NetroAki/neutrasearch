@@ -6,6 +6,12 @@ pub(super) fn show(
     files: &[FileRecord],
     selected: Option<&str>,
 ) -> Option<TreeAction> {
+    let selected_paths = ui.ctx().data(|data| {
+        data.get_temp::<std::sync::Arc<Vec<std::path::PathBuf>>>(egui::Id::new(
+            "selected-file-paths",
+        ))
+        .unwrap_or_default()
+    });
     if files.is_empty() {
         ui.centered_and_justified(|ui| {
             ui.label(RichText::new("No indexed files in this location").color(MUTED))
@@ -100,12 +106,27 @@ pub(super) fn show(
                 Sense::click_and_drag(),
             );
             crate::ui::file_interactions::interact(ui, &response, &file.path, false);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    true,
+                    selected_paths
+                        .iter()
+                        .any(|path| path == std::path::Path::new(&file.path))
+                        || selected == Some(file.path.as_str()),
+                    format!("{}; {}", file.path, format_size(file.bytes)),
+                )
+            });
             ui.painter().rect_filled(
                 tile,
                 1.0,
                 color.gamma_multiply(if response.hovered() { 0.5 } else { 0.3 }),
             );
-            if selected == Some(file.path.as_str()) || response.has_focus() {
+            if selected_paths
+                .iter()
+                .any(|path| path == std::path::Path::new(&file.path))
+                || response.has_focus()
+            {
                 ui.painter()
                     .rect_stroke(tile, 1.0, Stroke::new(2.0_f32, GLOW), StrokeKind::Inside);
             }
@@ -122,12 +143,17 @@ pub(super) fn show(
                 .clone()
                 .on_hover_text(format!("{}\n{}", file.path, format_size(file.bytes)));
             if response.clicked() {
-                action = Some(TreeAction::Select(file.path.clone()));
+                action = Some(TreeAction::Select(
+                    file.path.clone(),
+                    ui.input(|input| input.modifiers),
+                ));
             }
             if response.double_clicked() {
                 action = Some(TreeAction::Open(file.path.clone()));
             }
-            response.context_menu(|menu| file_context_menu(menu, &file.path, &mut action));
+            crate::ui::file_actions::popup(&response, |menu| {
+                file_context_menu(menu, &file.path, &mut action)
+            });
         }
     }
     action

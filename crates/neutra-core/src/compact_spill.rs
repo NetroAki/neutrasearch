@@ -75,8 +75,13 @@ impl SpillAccumulator {
         {
             use std::os::unix::fs::MetadataExt;
             let metadata = lock.metadata()?;
-            if metadata.nlink() != 1 || metadata.mode() & 0o077 != 0 {
+            if metadata.nlink() != 1 || metadata.uid() != unsafe { libc::geteuid() } {
                 return Err(invalid("spill lock must be private and single-linked"));
+            }
+            if metadata.mode() & 0o077 != 0 {
+                // An older build created this file group/world readable.
+                use std::os::unix::fs::PermissionsExt;
+                lock.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
         }
         lock.try_lock_exclusive().map_err(|error| {
@@ -271,26 +276,4 @@ pub(crate) fn with_rebuild_lock<T>(
 }
 
 #[cfg(test)]
-mod spill_lock_tests {
-    use super::*;
-
-    #[test]
-    fn concurrent_ingest_cannot_remove_an_active_spill() {
-        let output =
-            std::env::temp_dir().join(format!("neutra-spill-lock-{}.nsx", std::process::id()));
-        let first = SpillAccumulator::begin(&output).unwrap();
-        let sentinel = output.with_extension("spill").join("active.run");
-        std::fs::write(&sentinel, b"active build").unwrap();
-        assert!(
-            matches!(SpillAccumulator::begin(&output), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-        );
-        assert_eq!(std::fs::read(&sentinel).unwrap(), b"active build");
-        let runs = first.finish().unwrap();
-        assert!(
-            matches!(SpillAccumulator::begin(&output), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-        );
-        drop(runs);
-        drop(SpillAccumulator::begin(&output).unwrap());
-        std::fs::remove_file(output.with_extension("spill.lock")).unwrap();
-    }
-}
+mod spill_lock_tests;

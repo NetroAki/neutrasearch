@@ -1,9 +1,8 @@
-//! macOS lane: Spotlight is the indexed fast path.
+//! macOS lane: read the namespace supplied by Spotlight.
 //!
 //! `mdfind` supplies the namespace from Spotlight, then `symlink_metadata`
 //! obtains attributes for each already-known path. This is not directory
-//! walking. If Spotlight is disabled, the future native fallback is
-//! `getattrlistbulk(2)`; readdir recursion is never used.
+//! walking. Missing or failed Spotlight data is an error.
 
 #[cfg(not(target_os = "macos"))]
 use anyhow::bail;
@@ -23,14 +22,11 @@ pub fn parse_mdfind_nul(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
-mod bulk;
-#[cfg(target_os = "macos")]
-use bulk::bulk_fallback;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod spotlight;
 
 #[cfg(target_os = "macos")]
 pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanStats> {
-    use anyhow::Context as _;
     use neutra_core::FileKind;
     use std::os::unix::fs::MetadataExt;
     use std::process::Command;
@@ -43,26 +39,7 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
         .arg(&mount.mountpoint)
         .arg(SPOTLIGHT_QUERY)
         .output();
-    let paths = match output {
-        Ok(output) if output.status.success() => parse_mdfind_nul(&output.stdout),
-        Ok(output) => {
-            let reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return bulk_fallback(mount, sink).with_context(|| {
-                format!("Spotlight query failed ({reason}); native bulk fallback also failed")
-            });
-        }
-        Err(error) => {
-            return bulk_fallback(mount, sink).with_context(|| {
-                format!("cannot launch Spotlight query ({error}); native bulk fallback also failed")
-            });
-        }
-    };
-    if paths.is_empty() {
-        // Do not parse localized mdutil prose. An empty all-items query is
-        // sufficient evidence that Spotlight cannot supply this volume.
-        return bulk_fallback(mount, sink)
-            .context("Spotlight returned no indexed objects and native bulk fallback failed");
-    }
+    let paths = spotlight::paths(output)?;
 
     let mut stats = ScanStats::default();
     for path in paths {

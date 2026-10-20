@@ -79,6 +79,12 @@ pub(crate) fn tracked(text: &str) -> String {
 }
 
 pub(crate) fn configure(ctx: &egui::Context) {
+    install_fonts(ctx);
+    install_visuals(ctx);
+    install_spacing(ctx);
+}
+
+fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in [
         (
@@ -140,11 +146,16 @@ pub(crate) fn configure(ctx: &egui::Context) {
     }
     super::script_fonts::remember(ctx, &fonts);
     ctx.set_fonts(fonts);
+}
 
+fn install_visuals(ctx: &egui::Context) {
     Theme::dark().store(ctx);
     ctx.set_theme(egui::Theme::Dark);
     let mut visuals = egui::Visuals::dark();
+    visuals.text_cursor.blink = false;
     visuals.panel_fill = CANVAS;
+    visuals.extreme_bg_color = BLACK;
+    visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.window_fill = SURFACE;
     visuals.window_stroke = Stroke::new(1.0_f32, LINE_STRONG);
     visuals.extreme_bg_color = BLACK;
@@ -170,7 +181,9 @@ pub(crate) fn configure(ctx: &egui::Context) {
         &mut visuals.widgets.open,
     ] {
         widget.corner_radius = RADIUS_CONTROL.into();
+        widget.weak_bg_fill = widget.bg_fill;
     }
+    visuals.widgets.open.weak_bg_fill = SURFACE;
     visuals.override_text_color = Some(TEXT);
     visuals.window_corner_radius = RADIUS_FLOAT.into();
     visuals.menu_corner_radius = RADIUS_PANEL.into();
@@ -188,7 +201,9 @@ pub(crate) fn configure(ctx: &egui::Context) {
         color: Color32::from_black_alpha(140),
     };
     ctx.set_visuals(visuals);
+}
 
+fn install_spacing(ctx: &egui::Context) {
     let sans_family = FontFamily::Name("Neutra Sans".into());
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(6.0, 4.0);

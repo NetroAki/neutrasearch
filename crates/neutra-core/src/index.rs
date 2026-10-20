@@ -104,16 +104,7 @@ impl Index {
             self.records
                 .par_chunks(16_384)
                 .map(|chunk| {
-                    let mut matched = 0u64;
-                    let mut ranked = Vec::with_capacity(q.limit.min(chunk.len()));
-                    for record in chunk {
-                        if q.passes_filters(record) {
-                            if let Some(score) = matcher.score(record) {
-                                matched += 1;
-                                ranked.push((score, record));
-                            }
-                        }
-                    }
+                    let (matched, mut ranked) = score_chunk(chunk, q, &matcher);
                     prune(&mut ranked);
                     (matched, ranked)
                 })
@@ -173,6 +164,25 @@ impl Index {
             generation: 1,
         })
     }
+}
+
+fn score_chunk<'a>(
+    chunk: &'a [FileRecord],
+    q: &Query,
+    matcher: &crate::matcher::QueryMatcher,
+) -> (u64, Vec<(u32, &'a FileRecord)>) {
+    let mut matched = 0u64;
+    let mut ranked = Vec::with_capacity(q.limit.min(chunk.len()));
+    for record in chunk {
+        if !q.passes_filters(record) {
+            continue;
+        }
+        if let Some(score) = matcher.score(record) {
+            matched += 1;
+            ranked.push((score, record));
+        }
+    }
+    (matched, ranked)
 }
 
 #[cfg(test)]

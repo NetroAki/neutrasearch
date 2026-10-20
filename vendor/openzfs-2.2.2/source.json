@@ -1,0 +1,10 @@
+{
+  "version": "2.2.2",
+  "tag": "zfs-2.2.2",
+  "commit": "494aaaed89cb9fe9f2da3b6c6f465a4bc9f6a7e1",
+  "source": "https://github.com/openzfs/zfs",
+  "files": {
+    "include/sys/zfs_ioctl.h": "1b06d5d371d4a1cbc3245d8964c51109560ae956a95e99a275465726683730ef",
+    "LICENSE": "1ffb70c33c4f79f04e947facc5c7851f289609256aacb47fc115f700427d9520"
+  }
+}

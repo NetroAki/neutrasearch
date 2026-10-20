@@ -8,8 +8,9 @@ use neutra_btrfs::{Changes, Child, Inode};
 use neutra_core::{CompactIndex, DeltaChange, DeltaIndex, FileKind, FileRecord, FsKind};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-/// Bounded expansion for directory deletes and renames. Larger trees need a
-/// prefix tombstone in the delta API to avoid materializing every record.
+mod plan;
+
+/// Directory moves still expand descendants; larger moves need durable prefix updates.
 #[cfg(not(test))]
 const SUBTREE_LIMIT: usize = 2_000_000;
 #[cfg(test)]
@@ -132,180 +133,12 @@ pub(crate) fn reconcile(
     mounted: &Mounted,
     browser: Option<&neutra_core::BrowserIndex>,
 ) -> Result<Vec<DeltaChange>> {
-    let mut out = BTreeMap::<String, DeltaChange>::new();
-    let mut inodes: HashMap<u64, &Inode> = changes
-        .inodes
-        .iter()
-        .map(|(inode, _)| (inode.ino, inode))
-        .collect();
-    let mut removed = Vec::<FileRecord>::new();
-    let mut added = Vec::<(String, u64, Child)>::new();
-    // A folder whose last entry was removed has no entry items left to show it
-    // changed, but its own inode (size, mtime) did, so changed folders count too.
-    let touched = changes.dirs.iter().copied().chain(
-        changes
-            .inodes
-            .iter()
-            .filter(|(inode, _)| inode.kind == FileKind::Dir)
-            .map(|(inode, _)| inode.ino),
-    );
-    let mut queue: VecDeque<u64> = touched.collect();
-    let mut seen: HashSet<u64> = queue.iter().copied().collect();
-    while let Some(dir) = queue.pop_front() {
-        let Some(relative) = tree.dir_path(dir)? else {
-            continue;
-        };
-        let Some(relative) = mount_relative(mounted.relative_root, &relative) else {
-            continue;
-        };
-        let dir_path = full_path(mounted.prefix, &relative);
-        let now = tree.children(dir)?;
-        let known = match browser {
-            Some(browser) => browser.directory_children(&dir_path)?,
-            None => base.directory_children(&dir_path, delta)?,
-        };
-        let now_names: HashSet<&str> = now.iter().map(|child| child.name.as_str()).collect();
-        let known_names: HashSet<&str> = known
-            .iter()
-            .map(|rec| rec.path.rsplit('/').next().unwrap_or(""))
-            .collect();
-        removed.extend(
-            known
-                .iter()
-                .filter(|rec| !now_names.contains(rec.path.rsplit('/').next().unwrap_or("")))
-                .cloned(),
-        );
-        for child in now
-            .iter()
-            .filter(|child| child.ino != 0 && !known_names.contains(child.name.as_str()))
-        {
-            added.push((dir_path.clone(), dir, child.clone()));
-        }
-    }
-    // A name that left one directory and appeared in another with the same
-    // inode is a move: carry its records over instead of rebuilding them.
-    let mut moved = HashMap::<u64, usize>::new();
-    for (position, (_, _, child)) in added.iter().enumerate() {
-        moved.insert(child.ino, position);
-    }
-    let mut handled = HashSet::<usize>::new();
-    for gone in &removed {
-        let target = (gone.fs == *mounted.fs && gone.source == mounted.source)
-            .then(|| moved.get(&gone.native_id).copied())
-            .flatten()
-            .filter(|position| added[*position].2.kind == gone.kind);
-        let mut subtree = Vec::new();
-        if gone.kind == FileKind::Dir {
-            let found = match browser {
-                Some(browser) => browser.subtree_records(&gone.path, SUBTREE_LIMIT)?,
-                None => base.subtree_records(&gone.path, delta, SUBTREE_LIMIT)?,
-            };
-            if let Some(found) = found {
-                subtree = found;
-            } else {
-                anyhow::bail!("cannot reconcile folder {}: more than {SUBTREE_LIMIT} descendants require native prefix updates; the cursor was not advanced", gone.path);
-            }
-        }
-        out.insert(
-            gone.path.to_string(),
-            DeltaChange::Remove(gone.path.clone()),
-        );
-        for below in &subtree {
-            out.insert(
-                below.path.to_string(),
-                DeltaChange::Remove(below.path.clone()),
-            );
-        }
-        if let Some(position) = target {
-            let (dir_path, parent, child) = &added[position];
-            let new_path = child_path(dir_path, &child.name);
-            if let Some(inode) = inode_of(tree, &mut inodes, child.ino)? {
-                out.insert(
-                    new_path.clone(),
-                    DeltaChange::Upsert(record(new_path.clone(), &inode, *parent, mounted)),
-                );
-            }
-            for below in subtree {
-                let moved_path = format!("{new_path}{}", &below.path[gone.path.len()..]);
-                let mut copy = below;
-                copy.path = moved_path.clone().into_boxed_str();
-                out.insert(moved_path, DeltaChange::Upsert(copy));
-            }
-            handled.insert(position);
-        }
-    }
-    // New names: record them, and descend into new folders (their contents
-    // sit in leaves this sweep may not have listed as changed directories).
-    let mut position = 0;
-    while position < added.len() {
-        if !handled.contains(&position) {
-            let (dir_path, parent, child) = added[position].clone();
-            let path = child_path(&dir_path, &child.name);
-            {
-                if let Some(inode) = inode_of(tree, &mut inodes, child.ino)? {
-                    out.insert(
-                        path.clone(),
-                        DeltaChange::Upsert(record(path, &inode, parent, mounted)),
-                    );
-                }
-                if child.kind == FileKind::Dir && seen.insert(child.ino) {
-                    let relative_dir = child_path(&dir_path, &child.name);
-                    let now = tree.children(child.ino)?;
-                    let known = match browser {
-                        Some(browser) => browser.directory_children(&relative_dir)?,
-                        None => base.directory_children(&relative_dir, delta)?,
-                    };
-                    let known_names: HashSet<&str> = known
-                        .iter()
-                        .map(|rec| rec.path.rsplit('/').next().unwrap_or(""))
-                        .collect();
-                    for below in now.into_iter().filter(|below| {
-                        below.ino != 0 && !known_names.contains(below.name.as_str())
-                    }) {
-                        added.push((relative_dir.clone(), child.ino, below));
-                    }
-                }
-            }
-        }
-        position += 1;
-    }
-    // Changed inodes: refresh size, times and mode where the index disagrees.
-    let mut parents = HashMap::<u64, Option<String>>::new();
-    for (inode, link) in &changes.inodes {
-        let Some(inode) = inodes.get(&inode.ino).copied() else {
-            continue;
-        };
-        // Read the inode's complete refs, including links in older leaves.
-        let mut links = tree.parent_refs(inode.ino)?;
-        if let Some(link) = link {
-            links.push(link.clone());
-        }
-        links.sort();
-        links.dedup();
-        for (parent, name) in links {
-            if let std::collections::hash_map::Entry::Vacant(e) = parents.entry(parent) {
-                let found = tree
-                    .dir_path(parent)?
-                    .and_then(|relative| mount_relative(mounted.relative_root, &relative))
-                    .map(|relative| full_path(mounted.prefix, &relative));
-                e.insert(found);
-            }
-            let Some(dir_path) = parents.get(&parent).cloned().flatten() else {
-                continue;
-            };
-            let path = child_path(&dir_path, &name);
-            if out.contains_key(&path) {
-                continue;
-            }
-            let fresh = record(path.clone(), inode, parent, mounted);
-            if !indexed(base, delta, browser, &path)?
-                .is_some_and(|known| same_content(&known, &fresh))
-            {
-                out.insert(path, DeltaChange::Upsert(fresh));
-            }
-        }
-    }
-    Ok(out.into_values().collect())
+    let mut plan = plan::Plan::new(tree, changes, base, delta, mounted, browser);
+    let removed = plan.discover(changes)?;
+    plan.moves(removed)?;
+    plan.additions()?;
+    plan.refresh(changes)?;
+    Ok(plan.finish())
 }
 
 #[cfg(test)]

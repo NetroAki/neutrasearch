@@ -21,6 +21,7 @@ for source in root.rglob("*"):
     shutil.copy2(source, destination)
 PY
 cp .github/windows/install-service.ps1 packaging/windows/install-service.ps1
+
 if grep -q 'Stop-Service -Name.*NeutrasearchHelper' packaging/windows/install-service.ps1; then
     echo 'restored service installer still uses the unbounded Stop-Service path' >&2
     exit 1

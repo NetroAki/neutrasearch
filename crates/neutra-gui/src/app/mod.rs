@@ -8,20 +8,41 @@
 //! - `queries` — search execution and tree-model preparation
 
 mod cache_events;
+mod event_sender;
 mod events;
 pub(crate) mod file_operations;
+pub(crate) mod index_events;
+mod indexing_lifecycle;
 pub(crate) mod map_queries;
+mod native_drag;
 mod queries;
 mod scan_events;
 mod scans;
 pub(crate) mod search_worker;
+pub(crate) mod selection;
 mod state;
 mod types;
 
+pub(crate) use event_sender::EventSender;
 pub(crate) use state::NeutraApp;
 pub(crate) use types::{Event, GuiSettings, LaneState};
 
 impl NeutraApp {
+    pub(crate) fn select_single(&mut self, path: &str) {
+        self.selection.single(path);
+        self.selected = Some(path.into());
+    }
+
+    pub(crate) fn select_result(&mut self, path: &str, modifiers: egui::Modifiers) {
+        let order: Vec<_> = self
+            .hits
+            .iter()
+            .map(|hit| hit.record.path.as_ref())
+            .collect();
+        self.selection
+            .click(path, modifiers.command, modifiers.shift, &order);
+        self.selected = Some(path.into());
+    }
     pub(crate) fn process_events(&mut self) -> bool {
         events::process_events(self)
     }

@@ -33,7 +33,12 @@ impl SummaryFeed {
         emit: &mut impl FnMut(DirectorySummaryEntry) -> io::Result<()>,
     ) -> io::Result<()> {
         let previous = self.previous.replace((record.source, record.path.clone()));
-        let normalized_path = normalize_path(record.path.as_ref())?;
+        let clean = is_clean_unix_path(record.path.as_ref());
+        let normalized_path = if clean {
+            record.path.to_string()
+        } else {
+            normalize_path(record.path.as_ref())?
+        };
         if let Some((source, path)) = previous {
             if source == record.source
                 && compare_paths(path.as_ref(), &normalized_path) == std::cmp::Ordering::Equal
@@ -43,19 +48,27 @@ impl SummaryFeed {
                 return Ok(());
             }
         }
-        let ancestors = ancestor_paths(&normalized_path);
-        let desired = ancestors
-            .get(..ancestors.len().saturating_sub(1))
-            .unwrap_or_default();
-        let common = self
-            .stack
-            .iter()
-            .zip(desired)
-            .take_while(|(entry, path)| entry.source == record.source && entry.path == **path)
-            .count();
-        close_stack(&mut self.stack, common, emit)?;
-        for path in &desired[common..] {
-            open_entry(&mut self.stack, record.source, path);
+        // Records arrive in path order, so most share their parent with the
+        // previous one; that case needs no ancestor list.
+        let same_parent = clean
+            && self.stack.last().is_some_and(|top| {
+                top.source == record.source && top.path == parent_of(&normalized_path)
+            });
+        if !same_parent {
+            let ancestors = ancestor_paths(&normalized_path);
+            let desired = ancestors
+                .get(..ancestors.len().saturating_sub(1))
+                .unwrap_or_default();
+            let common = self
+                .stack
+                .iter()
+                .zip(desired)
+                .take_while(|(entry, path)| entry.source == record.source && entry.path == **path)
+                .count();
+            close_stack(&mut self.stack, common, emit)?;
+            for path in &desired[common..] {
+                open_entry(&mut self.stack, record.source, path);
+            }
         }
         if record.kind == crate::FileKind::Dir {
             for entry in &mut self.stack {
@@ -94,6 +107,23 @@ impl SummaryFeed {
     ) -> io::Result<()> {
         self.previous = None;
         close_stack(&mut self.stack, 0, emit)
+    }
+}
+
+/// Absolute Unix path that normalization would leave unchanged.
+fn is_clean_unix_path(path: &str) -> bool {
+    path.len() > 1
+        && path.starts_with('/')
+        && !path.ends_with('/')
+        && !path.contains('\\')
+        && !path.contains("//")
+        && !path.split('/').any(|part| part == "." || part == "..")
+}
+
+fn parent_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(0) | None => "/",
+        Some(index) => &path[..index],
     }
 }
 

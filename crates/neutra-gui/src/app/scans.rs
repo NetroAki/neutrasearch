@@ -3,7 +3,7 @@
 
 use super::state::NeutraApp;
 use super::types::GuiSettings;
-use crate::{selected_scan_mounts, spawn_local_helper};
+use crate::selected_scan_mounts;
 
 pub(crate) fn begin_scan(app: &mut NeutraApp) {
     begin_scan_with_elevation(app, false);
@@ -53,7 +53,7 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
     app.scanning = true;
     app.active_scans = 0;
     app.cancelling = false;
-    app.scan_started = std::time::SystemTime::now();
+    app.scan_cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     app.staged_by_mount.clear();
     app.cache_dirty = false;
     app.lanes.clear();
@@ -74,79 +74,24 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
         );
         return;
     }
-    spawn_local_helper(
+    crate::transport::spawn_cancellable_local_helper(
         app.tx.clone(),
         elevated,
         mounts,
         app.scan_roots.clone(),
         false,
+        app.scan_cancelled.clone(),
     );
 }
 
-/// Cancel the running scan: drop staged batches so stragglers adopt nothing,
-/// then kill the helper child. The spawn thread owns the child handle, so
-/// cancellation finds it by identity (helper or pkexec prompt parented to
-/// this process and started after the scan began); the system refresh
-/// service has a different parent and is never matched.
 pub(crate) fn cancel_scan(app: &mut NeutraApp) {
     if !app.scanning || app.cancelling {
         return;
     }
     app.cancelling = true;
     app.scan_index = None;
-    kill_scan_child(app.scan_started);
-}
-
-#[cfg(target_os = "linux")]
-fn kill_scan_child(after: std::time::SystemTime) {
-    let ourselves = std::process::id();
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return;
-    };
-    for entry in dir.flatten() {
-        let pid: u32 = match entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse().ok())
-        {
-            Some(pid) => pid,
-            None => continue,
-        };
-        if pid == ourselves {
-            continue;
-        }
-        // A /proc pid directory's mtime is the process start time: only
-        // kill helpers born after the scan began. Best effort throughout:
-        // the child may already be gone when the scan finished first.
-        let started = std::fs::metadata(format!("/proc/{pid}"))
-            .and_then(|meta| meta.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if started + std::time::Duration::from_secs(1) < after {
-            continue;
-        }
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .map(|comm| comm.trim().to_owned())
-            .unwrap_or_default();
-        if comm != "neutrasearch-helper" && comm != "pkexec" {
-            continue;
-        }
-        let ppid = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                stat.rfind(')').and_then(|end| {
-                    stat[end + 1..]
-                        .split_whitespace()
-                        .nth(1)?
-                        .parse::<u32>()
-                        .ok()
-                })
-            });
-        if ppid == Some(ourselves) {
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-        }
-    }
+    app.scan_cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub(crate) fn complete_onboarding_and_scan(app: &mut NeutraApp) {

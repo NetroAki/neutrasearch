@@ -34,6 +34,9 @@ pub(super) fn parse_ref(parent: u64, data: &[u8]) -> Option<(u64, String)> {
     }
     let len = u16::from_le_bytes([data[8], data[9]]) as usize;
     let name = data.get(10..10 + len)?;
+    if matches!(name, b"." | b"..") {
+        return None;
+    }
     Some((parent, String::from_utf8_lossy(name).into_owned()))
 }
 
@@ -45,6 +48,9 @@ pub(super) fn parse_extref(data: &[u8]) -> Option<(u64, String)> {
     let parent = u64::from_le_bytes(data[..8].try_into().ok()?);
     let len = u16::from_le_bytes(data[16..18].try_into().ok()?) as usize;
     let name = data.get(18..18 + len)?;
+    if matches!(name, b"." | b"..") {
+        return None;
+    }
     Some((parent, String::from_utf8_lossy(name).into_owned()))
 }
 
@@ -182,5 +188,26 @@ mod tests {
     #[test]
     fn ino_lookup_request_is_the_documented_4096_bytes() {
         assert_eq!(std::mem::size_of::<InoLookupArgs>(), INO_LOOKUP_BYTES);
+    }
+
+    #[test]
+    fn subvolume_self_references_are_not_file_names() {
+        for extended in [false, true] {
+            let header = if extended { 18 } else { 10 };
+            let mut data = Vec::new();
+            for name in [".", "..", "real folder"] {
+                let mut entry = vec![0; header];
+                if extended {
+                    entry[..8].copy_from_slice(&256u64.to_le_bytes());
+                }
+                entry[header - 2..].copy_from_slice(&(name.len() as u16).to_le_bytes());
+                entry.extend_from_slice(name.as_bytes());
+                data.extend(entry);
+            }
+            assert_eq!(
+                parse_refs(256, &data, extended),
+                vec![(256, "real folder".into())]
+            );
+        }
     }
 }

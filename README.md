@@ -18,8 +18,8 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 | Btrfs | Tree-search ioctl |
 | EXT2/3/4 | libext2fs |
 | Windows NTFS | MFT metadata |
-| macOS | Spotlight or `getattrlistbulk` |
-| ZFS | Snapshot diff plus opt-in single-pass enumeration (`NEUTRASEARCH_ZFS_ALLOW_WALK`); native ZAP lane requires an OpenZFS build tree |
+| macOS | Spotlight index; unavailable metadata fails explicitly |
+| Linux ZFS | Pinned OpenZFS 2.2.2 reader; snapshot ZAP entries and SA attributes |
 
 A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings. Compact indexes also write a generation-bound `.dirs` sidecar containing logical folder totals and direct children, so hierarchy views do not need to decode every search record.
 
@@ -43,6 +43,16 @@ sudo apt install libext2fs-dev
 # Arch Linux
 sudo pacman -S e2fsprogs
 ```
+
+The Linux ZFS reader also needs matching OpenZFS 2.2.2 development files
+(`libzfslinux-dev` on Ubuntu 24.04). Build its bundled runtime before packaging:
+
+```sh
+python3 scripts/build-zfs-reader.py --project-root . --target-dir target/release
+```
+
+Encrypted ZFS datasets and non-UTF-8 filenames currently fail explicitly.
+Other OpenZFS versions and pool feature sets need qualification.
 
 ## CLI
 

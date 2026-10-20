@@ -146,23 +146,7 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
                 }
                 current_ino = Some(h.objectid);
             }
-            match h.item_type {
-                INODE_ITEM if data.len() >= 148 => {
-                    current_meta = Some(Meta {
-                        size: le64(&data[16..]),
-                        disk: le64(&data[24..]),
-                        mode: le32(&data[52..]),
-                        mtime: le64(&data[136..]) as i64,
-                    })
-                }
-                INODE_REF if current_link.is_none() => {
-                    current_link = parse_inode_ref(h.offset, data, &mut names)
-                }
-                INODE_EXTREF if current_link.is_none() => {
-                    current_link = parse_inode_extref(data, &mut names)
-                }
-                _ => {}
-            }
+            update_item(h, data, &mut names, &mut current_meta, &mut current_link);
             pos = end;
             last = Some((h.objectid, h.item_type, h.offset));
         }
@@ -181,4 +165,28 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
         names,
         batches,
     })
+}
+
+fn update_item(
+    h: Header,
+    data: &[u8],
+    names: &mut Vec<u8>,
+    current_meta: &mut Option<Meta>,
+    current_link: &mut Option<Link>,
+) {
+    match h.item_type {
+        INODE_ITEM if data.len() >= 148 => {
+            *current_meta = Some(Meta {
+                size: le64(&data[16..]),
+                disk: le64(&data[24..]),
+                mode: le32(&data[52..]),
+                mtime: le64(&data[136..]) as i64,
+            })
+        }
+        INODE_REF if current_link.is_none() => {
+            *current_link = parse_inode_ref(h.offset, data, names)
+        }
+        INODE_EXTREF if current_link.is_none() => *current_link = parse_inode_extref(data, names),
+        _ => {}
+    }
 }

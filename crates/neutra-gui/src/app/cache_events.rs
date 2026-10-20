@@ -9,6 +9,7 @@ use std::time::Instant;
 
 pub(crate) fn adopt_published_index(app: &mut NeutraApp, index: CompactIndex) {
     app.last_generation = index.generation();
+    app.last_query = None;
     app.compact = Some(std::sync::Arc::new(index));
     if let Err(error) = neutra_core::paths::remember_index_path(&app.cache_path) {
         note(
@@ -37,6 +38,7 @@ pub(crate) fn adopt_published_index(app: &mut NeutraApp, index: CompactIndex) {
         lane.records = records;
     }
     app.requery();
+    super::indexing_lifecycle::resume(app);
 }
 
 /// Rebuild from the resident index through the spill so even a huge

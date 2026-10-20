@@ -6,40 +6,13 @@ mod maps;
 use maps::{layout_map, map_blocks, MapBlock};
 
 pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
-    if app.index_is_empty() {
-        ui.centered_and_justified(|ui| {
-            ui.vertical_centered(|ui| {
-                if app.scanning {
-                    ui.spinner();
-                }
-                let message = if app.scanning {
-                    "Indexing system files..."
-                } else {
-                    "No indexed files yet"
-                };
-                ui.label(RichText::new(message).font(sans(11.0)).color(MUTED));
-            });
-        });
+    if app.lanes.get("search").is_some_and(|lane| lane.error)
+        || (app.regex_mode && !app.query.is_empty() && app.matcher.is_none())
+    {
+        super::results::empty_results(app, ui);
         return;
     }
-    // Fetch-on-navigate: requests complete instantly when every visible
-    // folder is cached, otherwise the missing branches render as they land.
-    app.request_tree_model();
-    if app.tree_model.is_none() {
-        ui.centered_and_justified(|ui| {
-            ui.vertical_centered(|ui| {
-                ui.spinner();
-                ui.label(
-                    RichText::new(if app.tree_summary_pending {
-                        "Building the folder map (once per index update)..."
-                    } else {
-                        "Preparing the indexed drive hierarchy..."
-                    })
-                    .font(sans(11.0))
-                    .color(MUTED),
-                );
-            });
-        });
+    if !maps::prepare(app, ui) {
         return;
     }
     let hierarchy = app.tree_model.take().expect("tree model checked above");
@@ -131,14 +104,26 @@ pub(super) fn treemap_view(app: &mut NeutraApp, ui: &mut Ui) {
 
 pub(super) enum TreeAction {
     Navigate(String),
-    Select(String),
+    Select(String, egui::Modifiers),
     Open(String),
     FileOperation(crate::transport::file_actions::Action),
+    Focus(String, Id),
 }
 
 pub(super) fn file_context_menu(menu: &mut Ui, path: &str, action: &mut Option<TreeAction>) {
     let mut selected: Option<crate::transport::file_actions::Action> = None;
-    crate::ui::file_actions::context_menu(menu, path, &mut selected);
+    let paths = menu
+        .ctx()
+        .data(|data| data.get_temp::<Arc<Vec<PathBuf>>>(Id::new("selected-file-paths")));
+    if let Some(paths) = paths.filter(|paths| {
+        paths
+            .iter()
+            .any(|selected| selected == std::path::Path::new(path))
+    }) {
+        crate::ui::file_actions::selection_menu(menu, path, &paths, &mut selected);
+    } else {
+        crate::ui::file_actions::context_menu(menu, path, &mut selected);
+    }
     if let Some(selected) = selected {
         use crate::transport::file_actions::Action;
         *action = Some(match selected {
@@ -185,99 +170,13 @@ fn map_panel(
         }
         return;
     }
-    let blocks = map_blocks(hierarchy, current_path);
-    if blocks.is_empty() {
-        let loaded = hierarchy.folders.contains_key(current_path);
-        ui.centered_and_justified(|ui| {
-            ui.label(
-                RichText::new(if loaded {
-                    "This folder has no indexed children"
-                } else {
-                    "Loading..."
-                })
-                .font(sans(11.0))
-                .color(MUTED),
-            )
-        });
-        return;
-    }
-    let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-    let mut layout = Vec::new();
-    layout_map(&blocks, rect.shrink(3.0), &mut layout);
-    for (block, tile) in layout {
-        let tile = tile.shrink(1.0);
-        let response = ui.interact(
-            tile,
-            Id::new(("map-tile", &block.path)),
-            Sense::click_and_drag(),
-        );
-        if let Some(next) =
-            super::file_interactions::interact(ui, &response, &block.path, block.folder)
-        {
-            *action.borrow_mut() = Some(TreeAction::FileOperation(next));
-        }
-        let base = if block.folder {
-            WARN
-        } else {
-            extension_color(&block.extension)
-        };
-        let selected = selected_path == Some(block.path.as_str());
-        ui.painter().rect_filled(
-            tile,
-            2.0,
-            base.gamma_multiply(if response.hovered() { 0.5 } else { 0.34 }),
-        );
-        ui.painter().rect_stroke(
-            tile,
-            2.0,
-            Stroke::new(
-                if selected { 2.0_f32 } else { 1.0_f32 },
-                if selected {
-                    ACID
-                } else {
-                    base.gamma_multiply(0.8)
-                },
-            ),
-            StrokeKind::Inside,
-        );
-        if tile.width() > 62.0 && tile.height() > 34.0 {
-            let prefix = if block.folder { "> " } else { "" };
-            ui.painter().with_clip_rect(tile.shrink(5.0)).text(
-                tile.left_top() + Vec2::new(5.0, 5.0),
-                Align2::LEFT_TOP,
-                format!("{prefix}{}", block.name),
-                sans(CAPTION),
-                TEXT,
-            );
-            ui.painter().text(
-                tile.left_bottom() + Vec2::new(5.0, -5.0),
-                Align2::LEFT_BOTTOM,
-                format!("{} · {}", format_size(block.bytes), block.count),
-                mono(10.0),
-                MUTED,
-            );
-        }
-        response
-            .clone()
-            .on_hover_text(format!("{}\n{}", block.path, format_size(block.bytes)));
-        if response.clicked() {
-            *action.borrow_mut() = Some(if block.folder {
-                TreeAction::Navigate(block.path.clone())
-            } else {
-                TreeAction::Select(block.path.clone())
-            });
-        }
-        if response.double_clicked() && !block.folder {
-            *action.borrow_mut() = Some(TreeAction::Open(block.path.clone()));
-        }
-        response
-            .context_menu(|menu| file_context_menu(menu, &block.path, &mut action.borrow_mut()));
-    }
+    maps::folder_view(ui, hierarchy, current_path, selected_path, action);
 }
 
 fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
     match action {
         TreeAction::Navigate(path) => {
+            app.select_single(&path);
             // Opening a folder reveals it in the tree but leaves its own
             // expansion alone; that is the chevron's job.
             for ancestor in ancestor_paths(&path).into_iter().filter(|a| *a != path) {
@@ -285,8 +184,31 @@ fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
             }
             app.treemap_path = path;
         }
-        TreeAction::Select(path) => {
+        TreeAction::Select(path, modifiers) => {
+            let order: Vec<_> = if !app.map_files.is_empty() {
+                app.map_files
+                    .iter()
+                    .map(|file| file.path.as_ref())
+                    .collect()
+            } else {
+                app.tree_model
+                    .as_ref()
+                    .and_then(|model| model.folders.get(&app.treemap_path))
+                    .map_or_else(Vec::new, |folder| {
+                        folder
+                            .direct_files
+                            .iter()
+                            .map(|file| file.path.as_str())
+                            .collect()
+                    })
+            };
+            app.selection
+                .click(&path, modifiers.command, modifiers.shift, &order);
             app.selected = Some(path);
+        }
+        TreeAction::Focus(path, id) => {
+            app.file_focus = Some(id);
+            app.select_single(&path);
         }
         TreeAction::Open(path) => perform_file_action(app, FileAction::Open(PathBuf::from(path))),
         TreeAction::FileOperation(action) => app.file_operations.dispatch(action),
@@ -294,20 +216,4 @@ fn apply_tree_action(app: &mut NeutraApp, action: TreeAction) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::hierarchy::{FolderSummary, Hierarchy};
-    use super::*;
-
-    #[test]
-    fn empty_and_deep_ancestor_paths_are_safe() {
-        let model = Hierarchy::empty();
-        assert!(maps::map_blocks(&model, "/").is_empty());
-        assert_eq!(
-            ancestor_paths("/a/b"),
-            vec!["/".to_owned(), "/a".to_owned(), "/a/b".to_owned()]
-        );
-        let mut model = model;
-        model.folders.insert("/".into(), FolderSummary::default());
-        assert!(maps::map_blocks(&model, "/").is_empty());
-    }
-}
+mod tests;

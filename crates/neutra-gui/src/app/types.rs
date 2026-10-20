@@ -18,6 +18,7 @@ pub(crate) struct LaneState {
 }
 
 pub(crate) enum Event {
+    IndexChanged,
     Message(HelperMsg),
     Fatal(String),
     Remote {
@@ -33,7 +34,7 @@ pub(crate) enum Event {
     },
     TreeFailed(String),
     MapFiles {
-        key: (String, u64, bool),
+        key: super::map_queries::MapKey,
         result: Result<Vec<neutra_core::FileRecord>, String>,
     },
     SearchDone {

@@ -1,0 +1,34 @@
+# Licence policy for the dependency graph. Only permissive licences are
+# allowed; a crate that needs anything else must be reviewed and listed here.
+[graph]
+all-features = false
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+[advisories]
+# Advisories are checked by cargo-audit against .cargo/audit.toml, which stays free of ignores.
+version = 2
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"

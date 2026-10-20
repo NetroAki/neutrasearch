@@ -1,3 +1,4 @@
+mod search_menu;
 use super::scopes;
 use super::*;
 
@@ -45,81 +46,7 @@ pub(super) fn menu_bar(app: &mut NeutraApp, ui: &mut Ui) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     });
-    ui.menu_button("Search", |ui| {
-        if ui.button("Focus search    Ctrl+K").clicked() {
-            app.search_focus_requested = true;
-            ui.close();
-        }
-        if ui.button("Clear search").clicked() {
-            app.query.clear();
-            app.requery();
-            ui.close();
-        }
-        ui.separator();
-        ui.menu_button(format!("Match    {}", app.search_mode.label()), |ui| {
-            for mode in [SearchMode::Name, SearchMode::NameAndPath, SearchMode::Path] {
-                if ui
-                    .selectable_label(app.search_mode == mode, mode.label())
-                    .clicked()
-                {
-                    app.search_mode = mode;
-                    app.save_settings();
-                    app.requery();
-                    ui.close();
-                }
-            }
-        });
-        if app.selected_roots.len() > 1 {
-            ui.menu_button("Location", |ui| {
-                if ui
-                    .selectable_label(app.scope_root.is_none(), "All selected folders")
-                    .clicked()
-                {
-                    app.scope_root = None;
-                    app.requery();
-                    ui.close();
-                }
-                let roots = app
-                    .selected_roots
-                    .iter()
-                    .map(|root| root.to_string_lossy().into_owned())
-                    .collect::<Vec<_>>();
-                for root in roots {
-                    let selected = app.scope_root.as_deref() == Some(root.as_str());
-                    if ui.selectable_label(selected, &root).clicked() {
-                        app.scope_root = Some(root);
-                        app.requery();
-                        ui.close();
-                    }
-                }
-            });
-        }
-        let case = ui
-            .checkbox(
-                &mut app.case_sensitive,
-                "Match capitalisation (A \u{2260} a)",
-            )
-            .changed();
-        let words = ui
-            .checkbox(&mut app.whole_word, "Whole words only")
-            .changed();
-        let accents = ui
-            .checkbox(&mut app.ignore_accents, "Ignore accents (caf\u{e9} = cafe)")
-            .changed();
-        let regex = ui
-            .checkbox(&mut app.regex_mode, "Regular expression")
-            .changed();
-        if case || words || accents || regex {
-            app.save_settings();
-            app.requery();
-        }
-        ui.separator();
-        ui.label(
-            RichText::new("Ctrl+Up/Down selects results")
-                .font(mono(8.5))
-                .color(MUTED),
-        );
-    });
+    ui.menu_button("Search", |ui| search_menu::show(app, ui));
     ui.menu_button("View", |ui| {
         for view in ResultView::ALL {
             if ui
@@ -190,10 +117,20 @@ pub(super) fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
         response.request_focus();
         app.search_focus_requested = false;
     }
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_label(match app.search_mode {
+            SearchMode::Name => "Search file names",
+            SearchMode::NameAndPath => "Search names and folder paths",
+            SearchMode::Path => "Search folder paths",
+        })
+    });
     // The text edit drops focus on Esc, so losing focus on that frame means clear.
     if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         // The changed-query check below issues the single requery.
         app.query.clear();
+    }
+    if before != app.query {
+        app.requery();
     }
     if response.has_focus() {
         ui.painter().rect_stroke(
@@ -212,14 +149,11 @@ pub(super) fn query_strip(app: &mut NeutraApp, ui: &mut Ui) {
             }
             if let Some(path) = app.selected.clone() {
                 surrender_widget_focus(ui);
-                if commit {
+                if commit && !app.searching {
                     perform_file_action(app, FileAction::Open(PathBuf::from(path)));
                 }
             }
         }
-    }
-    if before != app.query {
-        app.requery();
     }
     ui.add_space(8.0);
 }

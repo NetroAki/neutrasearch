@@ -21,6 +21,7 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
             "Indexing cancelled, previous index kept",
             false,
         );
+        super::indexing_lifecycle::resume(app);
         return;
     }
     let staging = app.scan_index.take();
@@ -49,6 +50,7 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
     }
     // Persist per-mount totals gathered during ScanDone for progress %.
     app.save_settings();
+    super::indexing_lifecycle::resume(app);
 }
 
 fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulator>, errors: u32) {
