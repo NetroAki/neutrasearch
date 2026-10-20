@@ -11,7 +11,7 @@ pub(super) fn publish_copy(staged: &Path, destination: &Path) -> io::Result<()> 
     // Publication runs under the store write lock. A hard link of the staged
     // file is O(1); the byte copy is only for filesystems without links.
     let result = (|| {
-        File::open(staged)?.sync_all()?;
+        flush_file(staged)?;
         if std::fs::hard_link(staged, &temporary).is_ok() {
             return Ok(());
         }
@@ -69,4 +69,13 @@ pub(crate) fn open_private(path: &Path) -> io::Result<BufWriter<File>> {
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     Ok(BufWriter::with_capacity(1024 * 1024, options.open(path)?))
+}
+
+/// Windows refuses FlushFileBuffers on a read-only handle.
+fn flush_file(path: &Path) -> io::Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)?
+        .sync_all()
 }

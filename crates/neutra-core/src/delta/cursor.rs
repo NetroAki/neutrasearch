@@ -1,10 +1,6 @@
 use super::*;
 
 impl DeltaIndex {
-    pub(crate) fn owns_writer(&self) -> bool {
-        self.writer.is_some()
-    }
-
     pub(crate) fn covers_catalog_cursor(
         &self,
         generation: &str,

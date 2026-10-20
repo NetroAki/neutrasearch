@@ -239,8 +239,8 @@ pub(crate) use paths::{
     ancestor_paths, canonical_path, compare_paths, directory_summary_path, entry_key,
     normalize_path, parent_path,
 };
+use storage::remove_if_present;
 pub(crate) use storage::{codec, invalid, open_private_file, temporary_path, HashingWriter};
-use storage::{remove_if_present, write_atomic};
 #[cfg(test)]
 use storage::{replace_file, sync_parent};
 #[cfg(test)]

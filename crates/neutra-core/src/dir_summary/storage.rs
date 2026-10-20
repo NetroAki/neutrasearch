@@ -52,7 +52,11 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Publish a validated staged sidecar without rewriting its bytes under the
 /// store lock; fall back to a copy when hard links are unavailable.
 pub(super) fn link_or_write_atomic(staged: &Path, destination: &Path) -> io::Result<()> {
-    std::fs::File::open(staged)?.sync_all()?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(staged)?
+        .sync_all()?;
     let temporary = temporary_path(destination);
     if std::fs::hard_link(staged, &temporary).is_ok() {
         if let Err(error) = replace_file(&temporary, destination) {

@@ -1,3 +1,4 @@
+use crate::compact::compare_index_paths;
 use crate::{FileRecord, SortKey};
 
 /// ASCII case-insensitive name comparison without per-comparison allocations.
@@ -33,27 +34,31 @@ pub(crate) fn compare_records(
         SortKey::Relevance => {
             b.0.cmp(&a.0)
                 .then(sort_mtime(b.1).cmp(&sort_mtime(a.1)))
-                .then(b.1.path.cmp(&a.1.path))
+                .then(compare_index_paths(&b.1.path, &a.1.path))
         }
-        SortKey::NameAsc => cmp_name_ci(a.1.name(), b.1.name()).then(a.1.path.cmp(&b.1.path)),
-        SortKey::NameDesc => cmp_name_ci(b.1.name(), a.1.name()).then(b.1.path.cmp(&a.1.path)),
-        SortKey::PathAsc => a.1.path.cmp(&b.1.path),
-        SortKey::PathDesc => b.1.path.cmp(&a.1.path),
+        SortKey::NameAsc => {
+            cmp_name_ci(a.1.name(), b.1.name()).then(compare_index_paths(&a.1.path, &b.1.path))
+        }
+        SortKey::NameDesc => {
+            cmp_name_ci(b.1.name(), a.1.name()).then(compare_index_paths(&b.1.path, &a.1.path))
+        }
+        SortKey::PathAsc => compare_index_paths(&a.1.path, &b.1.path),
+        SortKey::PathDesc => compare_index_paths(&b.1.path, &a.1.path),
         SortKey::SizeDesc => {
             b.1.disk_bytes()
                 .cmp(&a.1.disk_bytes())
-                .then(b.1.path.cmp(&a.1.path))
+                .then(compare_index_paths(&b.1.path, &a.1.path))
         }
         SortKey::SizeAsc => {
             a.1.disk_bytes()
                 .cmp(&b.1.disk_bytes())
-                .then(a.1.path.cmp(&b.1.path))
+                .then(compare_index_paths(&a.1.path, &b.1.path))
         }
         SortKey::MtimeDesc => sort_mtime(b.1)
             .cmp(&sort_mtime(a.1))
-            .then(b.1.path.cmp(&a.1.path)),
+            .then(compare_index_paths(&b.1.path, &a.1.path)),
         SortKey::MtimeAsc => sort_mtime(a.1)
             .cmp(&sort_mtime(b.1))
-            .then(a.1.path.cmp(&b.1.path)),
+            .then(compare_index_paths(&a.1.path, &b.1.path)),
     }
 }
