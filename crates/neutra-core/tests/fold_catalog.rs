@@ -1,3 +1,6 @@
+//! The fold path exists on Linux only.
+#![cfg(target_os = "linux")]
+
 //! The browse catalog must address records exactly over a folded base, whose
 //! compaction can leave short blocks in the middle of the file.
 use neutra_core::{

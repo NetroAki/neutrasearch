@@ -101,6 +101,8 @@ impl DeltaStore {
                 ));
             }
         }
+        #[cfg(not(unix))]
+        let _ = overlay_dir;
         Ok(())
     }
 

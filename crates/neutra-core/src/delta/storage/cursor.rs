@@ -73,6 +73,7 @@ impl DeltaStore {
         tx.commit().map_err(sql_error)
     }
 
+    #[cfg(unix)]
     pub(in crate::delta) fn set_checkpoint_cursor(&mut self, cursor: &Cursor) -> io::Result<()> {
         let db = self
             .db

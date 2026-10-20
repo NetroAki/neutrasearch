@@ -1,3 +1,6 @@
+//! The fold path exists on Linux only.
+#![cfg(target_os = "linux")]
+
 //! A fold must be indistinguishable from rebuilding the merged records: same
 //! records, same search answers, same directory totals.
 use neutra_core::{

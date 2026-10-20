@@ -85,6 +85,7 @@ impl DeltaIndex {
         })?;
         let writer = open_reset_writer(path, generation)?;
         let wal_file = File::open(path)?;
+        #[cfg(unix)]
         let identity = file_identity_from_metadata(&wal_file.metadata()?)?;
         let mut overlay = DeltaStore::open(path)?;
         overlay.clear(&overlay_cursor(

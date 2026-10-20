@@ -110,31 +110,31 @@ fn check_live_changes(
     query: &Query,
 ) {
     let mut delta = DeltaIndex::open(&path.with_extension("delta"), base.generation()).unwrap();
-    BrowserIndex::mark_delta(&path, &delta).unwrap();
+    BrowserIndex::mark_delta(path, &delta).unwrap();
     let edit = DeltaChange::Upsert(record("/new/stems", 500));
     delta.apply(edit.clone()).unwrap();
     delta.sync().unwrap();
     assert!(browser
-        .search_quick(&path, &query, &|| false)
+        .search_quick(path, query, &|| false)
         .unwrap()
         .is_none());
     let hits = browser
-        .search_quick_with_delta(&path, &query, Some(&mut delta), &|| false)
+        .search_quick_with_delta(path, query, Some(&mut delta), &|| false)
         .unwrap()
         .unwrap();
     assert_eq!(
         ranked(&hits),
-        ranked(&base.search_with_delta(&query, &delta).unwrap().0)
+        ranked(&base.search_with_delta(query, &delta).unwrap().0)
     );
-    BrowserIndex::apply_changes(&path, base.generation(), &[edit]).unwrap();
-    BrowserIndex::mark_delta(&path, &delta).unwrap();
+    BrowserIndex::apply_changes(path, base.generation(), &[edit]).unwrap();
+    BrowserIndex::mark_delta(path, &delta).unwrap();
     let hits = browser
-        .search_quick(&path, &query, &|| false)
+        .search_quick(path, query, &|| false)
         .unwrap()
         .unwrap();
     assert_eq!(
         ranked(&hits),
-        ranked(&base.search_with_delta(&query, &delta).unwrap().0)
+        ranked(&base.search_with_delta(query, &delta).unwrap().0)
     );
     assert_eq!(hits[0].record.path.as_ref(), "/new/stems");
     let changes = [
@@ -147,12 +147,12 @@ fn check_live_changes(
     // The catalog still holds a removed best match and the old modification
     // time. The merged page must agree with the authoritative base plus WAL.
     let hits = browser
-        .search_quick_with_delta(&path, &query, Some(&mut delta), &|| false)
+        .search_quick_with_delta(path, query, Some(&mut delta), &|| false)
         .unwrap()
         .unwrap();
     assert_eq!(
         ranked(&hits),
-        ranked(&base.search_with_delta(&query, &delta).unwrap().0)
+        ranked(&base.search_with_delta(query, &delta).unwrap().0)
     );
 }
 
