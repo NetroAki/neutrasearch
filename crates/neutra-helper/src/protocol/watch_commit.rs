@@ -1,3 +1,4 @@
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use super::*;
 #[cfg(target_os = "linux")]
 mod writes;

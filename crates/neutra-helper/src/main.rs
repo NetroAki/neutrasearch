@@ -41,6 +41,7 @@ use anyhow::{Context, Result};
 use neutra_core::CompactIndex;
 #[cfg(test)]
 use std::io::{Cursor, Write};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::time::Duration;
 
 /// Watched-event bursts (builds, checkouts) commit once after this quiet window.

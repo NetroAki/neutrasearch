@@ -1,3 +1,6 @@
+//! The deadlock was in the Unix lock path, so the stress test is Unix-only.
+#![cfg(unix)]
+
 use rusqlite::{Connection, OpenFlags};
 use std::{
     path::Path,

@@ -14,6 +14,7 @@ use neutra_core::proto::{
     read_frame, write_frame, ClientMsg, HelperMsg, HELPER_BUILD, PROTO_VERSION,
 };
 use neutra_core::{DeltaChange, Index};
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
