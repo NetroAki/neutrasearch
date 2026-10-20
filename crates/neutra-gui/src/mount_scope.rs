@@ -123,19 +123,6 @@ fn parse_macos_mount_output(output: &str) -> Vec<MountInfo> {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
-fn requested_mount(mountpoint: PathBuf) -> MountInfo {
-    MountInfo {
-        device: mountpoint
-            .to_string_lossy()
-            .trim_end_matches('\\')
-            .to_owned(),
-        mountpoint,
-        fs: neutra_core::FsKind::Ntfs,
-        source: neutra_core::MountSource::Local,
-    }
-}
-
 pub(crate) fn same_root(left: &Path, right: &Path) -> bool {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
