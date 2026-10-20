@@ -57,7 +57,8 @@ fn connect(path: &Path) -> Connection {
 fn stress() {
     let root = std::env::temp_dir().join(format!("ns-sqlite-churn-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
-    let path = root.join("live.sqlite");
+    // NOFOLLOW rejects directory aliases such as macOS /var.
+    let path = root.canonicalize().unwrap().join("live.sqlite");
     let db = connect(&path);
     db.execute_batch(
         "PRAGMA journal_mode=WAL; CREATE TABLE live(value INTEGER); INSERT INTO live VALUES(0);",
