@@ -14,9 +14,11 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 mod reconcile;
+mod seed;
 mod state;
 use reconcile::sweep_once;
-use state::{open_subvolumes, restore, save};
+use seed::prepare_seed;
+use state::{open_subvolumes, save};
 
 const ACTIVE_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
@@ -34,17 +36,21 @@ pub(crate) struct PreparedSweep {
     watched: Vec<Watched>,
     state: PathBuf,
     base_path: PathBuf,
+    base_generation: Option<u64>,
+    seed_identity: u32,
 }
 
 impl PreparedSweep {
     pub(crate) fn prepare(mounts: &[MountInfo], base: &Path) -> Result<Self> {
         let mut watched = open_subvolumes(mounts)?;
         let state = append_suffix(base, ".sweep");
-        restore(&mut watched, &state)?;
+        let binding = prepare_seed(&mut watched, base, &state)?;
         Ok(Self {
             watched,
             state,
             base_path: base.to_path_buf(),
+            base_generation: binding.generation,
+            seed_identity: binding.identity,
         })
     }
 
@@ -55,13 +61,43 @@ impl PreparedSweep {
         source: u32,
         requested: Arc<AtomicBool>,
     ) -> Result<()> {
-        save(&self.watched, &self.state)?;
+        let mut prepared = self;
+        // Watch readers are attached by WatchSession before this method. Replay
+        // the pre-ingest cursor synchronously so WatchReady cannot race it.
+        if let Some(expected) = prepared.base_generation {
+            let actual = neutra_core::CompactIndex::generation_on_disk(&prepared.base_path)?;
+            anyhow::ensure!(
+                actual == expected,
+                "compact base changed after native cursor preparation; retry watch startup"
+            );
+        }
+        for item in prepared.watched.iter_mut().filter(|item| item.active) {
+            if let Err(error) = sweep_once(&store, item, source) {
+                let reason = format!(
+                    "Native metadata replay failed at {}: {error:#}",
+                    item.mount.mountpoint.display()
+                );
+                let _ = crate::store::write_stale_marker(&prepared.base_path, &reason);
+                stale.store(true, Ordering::Release);
+                return Err(anyhow!("{reason}"));
+            }
+        }
+        if let Some(expected) = prepared.base_generation {
+            let actual = neutra_core::CompactIndex::generation_on_disk(&prepared.base_path)?;
+            anyhow::ensure!(
+                actual == expected,
+                "compact base changed during native replay; retry watch startup"
+            );
+        }
+        save(&prepared.watched, &prepared.state, prepared.seed_identity)?;
         std::thread::spawn(move || {
             let Self {
                 mut watched,
                 state,
                 base_path,
-            } = self;
+                seed_identity,
+                ..
+            } = prepared;
             if watched.is_empty() {
                 tracing::info!("no Btrfs subvolume to sweep");
                 return;
@@ -99,7 +135,7 @@ impl PreparedSweep {
                     }
                 }
                 if moved {
-                    if let Err(error) = save(&watched, &state) {
+                    if let Err(error) = save(&watched, &state, seed_identity) {
                         let reason = format!("cannot save native recovery cursor: {error:#}");
                         tracing::error!("{reason}");
                         if let Err(error) = crate::store::write_stale_marker(&base_path, &reason) {

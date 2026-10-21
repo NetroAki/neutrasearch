@@ -184,9 +184,32 @@ impl CompactIndex {
         if DirectorySummary::path_for(staged).is_file() {
             crate::TreeSummary::ensure(staged, generation)?;
         }
+        let cursors = match crate::native_cursor::load_seed(staged, generation) {
+            Ok(cursors) => Some(cursors),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match Self::generation_on_disk(destination) {
+                    Ok(previous) => match crate::native_cursor::load_seed(destination, previous) {
+                        Ok(cursors) => Some(cursors),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                        Err(error) => return Err(error),
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(cursors) = cursors.as_ref() {
+            // Keep a retryable seed before replacing the previous base.
+            crate::native_cursor::save_seed(staged, generation, cursors)?;
+        }
         files::publish_copy(staged, destination)?;
         DirectorySummary::publish(staged, destination, generation)?;
-        crate::TreeSummary::publish(staged, destination, generation)
+        crate::TreeSummary::publish(staged, destination, generation)?;
+        if let Some(cursors) = cursors {
+            crate::native_cursor::save_seed(destination, generation, &cursors)?;
+        }
+        Ok(())
     }
 }
 

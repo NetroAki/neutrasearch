@@ -8,7 +8,7 @@ impl Subvolume {
         min: Key,
         max: Key,
         min_transid: u64,
-        visit: &mut dyn FnMut(&SweepItem, &[u8]),
+        visit: &mut dyn FnMut(&SweepItem, &[u8]) -> Result<()>,
     ) -> Result<()> {
         // Single-inode lookups need at most one leaf per call. Zeroing a
         // megabyte for every parent/ref lookup dominated busy reconciliations.
@@ -78,7 +78,7 @@ impl Subvolume {
                     .checked_add(len)
                     .filter(|end| *end <= bytes.len())
                     .context("truncated Btrfs search item")?;
-                visit(&item, &bytes[pos..end]);
+                visit(&item, &bytes[pos..end])?;
                 pos = end;
                 last = (item.objectid, item.item_type, item.offset);
             }

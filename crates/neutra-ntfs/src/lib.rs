@@ -15,7 +15,9 @@ mod records;
 use anyhow::{bail, Context, Result};
 use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, u16le, u64le, Run};
 use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
-use records::{append_component, ensure_dir_path, parse_record, Alias, Entry};
+use records::{
+    append_component, ensure_dir_path, parse_record, Alias, Entry, InvalidFilenameEncoding,
+};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
@@ -131,6 +133,9 @@ pub fn scan_reader<R: Read + Seek>(
                 entries.insert(n, entry);
             }
             Ok(None) => {}
+            Err(error) if error.downcast_ref::<InvalidFilenameEncoding>().is_some() => {
+                return Err(error).with_context(|| format!("parse $MFT record {n}"));
+            }
             Err(_) => continue,
         }
     }

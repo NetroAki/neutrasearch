@@ -34,7 +34,10 @@ impl Output {
         let pairs_path = spill_dir.join("pairs.psp");
         Ok(Self {
             file,
-            pairs: BufWriter::with_capacity(1 << 20, File::create(&pairs_path)?),
+            pairs: BufWriter::with_capacity(
+                1 << 20,
+                crate::compact_spill::create_private_file(&pairs_path)?,
+            ),
             pairs_path,
             descs: Vec::new(),
             old_to_new: vec![u32::MAX; base.blocks.count],

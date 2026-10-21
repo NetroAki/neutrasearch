@@ -14,6 +14,10 @@ impl Session {
         serve_index: Option<std::path::PathBuf>,
         watch_mount: Option<(std::path::PathBuf, u32)>,
     ) -> Result<Self> {
+        if let Some(path) = serve_index.as_ref() {
+            neutra_core::CompactIndex::recover_rebuild(path)
+                .context("recover interrupted full rebuild")?;
+        }
         // Scans populate one resident index; searches never trigger a rescan.
         let index = Arc::new(RwLock::new(Index::default()));
         #[cfg(target_os = "linux")]

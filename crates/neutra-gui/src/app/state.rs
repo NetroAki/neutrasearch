@@ -22,6 +22,9 @@ pub(crate) struct NeutraApp {
     pub(crate) compact: Option<std::sync::Arc<CompactIndex>>,
     pub(crate) logo: egui::TextureHandle,
     pub(crate) scan_index: Option<SpillAccumulator>,
+    /// A lane failed during this scan; all staged batches must be discarded.
+    pub(crate) scan_failed: bool,
+    pub(crate) scan_cursors: Vec<neutra_core::NativeCursor>,
     pub(crate) query: String,
     pub(crate) hits: Vec<SearchHit>,
     pub(crate) search_stats: SearchStats,
@@ -131,6 +134,8 @@ impl NeutraApp {
             compact: restored.compact,
             logo,
             scan_index: None,
+            scan_failed: false,
+            scan_cursors: Vec::new(),
             query: startup_query(),
             hits: Vec::new(),
             search_stats: SearchStats::default(),

@@ -21,6 +21,7 @@ pub mod dir_tree;
 pub mod index;
 pub mod matcher;
 pub mod mounts;
+pub mod native_cursor;
 pub mod paths;
 pub mod proto;
 pub mod query;
@@ -42,6 +43,7 @@ pub use dir_tree::TreeSummary;
 pub use index::{Index, SearchHit, SearchStats};
 pub use matcher::QueryMatcher;
 pub use mounts::{FsKind, MountInfo, MountSource};
+pub use native_cursor::NativeCursor;
 pub use query::{
     MatchFields, Query, SortKey, ARCHIVE_EXTS, AUDIO_EXTS, DOC_EXTS, EXEC_EXTS, IMAGE_EXTS,
     VIDEO_EXTS,

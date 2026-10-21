@@ -6,19 +6,22 @@
 
 #[cfg(not(target_os = "macos"))]
 use anyhow::bail;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use neutra_core::{FileRecord, MountInfo, ScanStats};
 
 /// Spotlight query matching every indexed filesystem object. `public.item`
 /// is the root UTI for files and folders; `-0` preserves embedded newlines.
 pub const SPOTLIGHT_QUERY: &str = "kMDItemContentTypeTree == 'public.item'";
 
-pub fn parse_mdfind_nul(bytes: &[u8]) -> Vec<String> {
+pub fn parse_mdfind_nul(bytes: &[u8]) -> Result<Vec<String>> {
     bytes
         .split(|b| *b == 0)
         .filter(|s| !s.is_empty())
-        .filter_map(|s| std::str::from_utf8(s).ok())
-        .map(str::to_owned)
+        .map(|s| {
+            Ok(std::str::from_utf8(s)
+                .context("Spotlight path is not UTF-8")?
+                .to_owned())
+        })
         .collect()
 }
 
@@ -90,7 +93,16 @@ mod tests {
 
     #[test]
     fn parses_nul_paths_without_losing_newlines() {
-        let p = parse_mdfind_nul(b"/A/a file\0/A/with\nnewline\0");
+        let p = parse_mdfind_nul(b"/A/a file\0/A/with\nnewline\0").unwrap();
         assert_eq!(p, vec!["/A/a file", "/A/with\nnewline"]);
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_and_preserves_replacement_character() {
+        assert!(parse_mdfind_nul(b"/A/report-\xff\0").is_err());
+        assert_eq!(
+            parse_mdfind_nul("/A/report-\u{fffd}\0".as_bytes()).unwrap(),
+            vec!["/A/report-\u{fffd}"]
+        );
     }
 }

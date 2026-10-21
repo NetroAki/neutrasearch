@@ -22,11 +22,12 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
             }
         } else {
             let parent = node.parent;
-            if parent == u64::MAX || !ensure_dir_path(parent, &nodes, &names, &mut dir_paths) {
+            if parent == u64::MAX || !ensure_dir_path(parent, &nodes, &names, &mut dir_paths)? {
                 continue;
             }
             let parent_path = dir_paths.get(&parent).unwrap();
-            let name = node_name(node, &names);
+            let name =
+                node_name(node, &names).context("Btrfs filename arena contains invalid UTF-8")?;
             if kind == FileKind::Dir {
                 let relative = append_component(parent_path, name);
                 let full = prefix_path(&prefix, &relative);

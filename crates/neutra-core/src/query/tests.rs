@@ -159,3 +159,15 @@ fn executable_and_whole_word_options_narrow_matches() {
     assert!(!exe.passes_filters(&rec("/usr/bin/tool", 1)));
     assert!(exe.passes_filters(&rec("/opt/app/setup.exe", 1)));
 }
+
+#[cfg(unix)]
+#[test]
+fn unix_scope_treats_backslash_as_a_literal_filename_character() {
+    let mut query = Query::parse("");
+    query.scope_roots = vec!["/srv/allowed".into()];
+    query.scope_case_sensitive = true;
+    assert!(query.passes_filters(&rec("/srv/allowed/file.txt", 1)));
+    assert!(!query.passes_filters(&rec("/srv/allowed\\secret/file.txt", 1)));
+    assert!(!query.passes_filters(&rec("/srv/allowed-sibling/file.txt", 1)));
+    assert!(!query.passes_filters(&rec("/srv/allowed/../secret/file.txt", 1)));
+}

@@ -24,7 +24,7 @@ fn failed_cursor_replacement_keeps_the_previous_checkpoint() {
     let previous = "257 123 /home\n";
     std::fs::write(&state, previous).unwrap();
     std::fs::create_dir(append_suffix(&state, ".tmp")).unwrap();
-    assert!(save(&[], &state).is_err());
+    assert!(save(&[], &state, 42).is_err());
     assert_eq!(std::fs::read_to_string(&state).unwrap(), previous);
 }
 
@@ -34,10 +34,10 @@ fn malformed_cursor_is_not_treated_as_current_metadata() {
     let state = fixture.0.join("index.sweep");
     for invalid in ["257 broken /home\n", "0 123 /home\n", "257 0 /home\n"] {
         std::fs::write(&state, invalid).unwrap();
-        assert!(restore(&mut [], &state).is_err());
+        assert!(restore(&mut [], &state, None).is_err());
     }
     std::fs::write(&state, "257 123 /home/path with spaces\n").unwrap();
-    restore(&mut [], &state).unwrap();
+    restore(&mut [], &state, None).unwrap();
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn saved_cursor_is_private_and_renamed_into_place() {
     use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new("permissions");
     let state = fixture.0.join("index.sweep");
-    save(&[], &state).unwrap();
+    save(&[], &state, 42).unwrap();
     assert_eq!(
         std::fs::metadata(&state).unwrap().permissions().mode() & 0o777,
         0o600

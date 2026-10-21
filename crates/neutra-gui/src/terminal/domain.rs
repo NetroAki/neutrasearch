@@ -120,11 +120,14 @@ pub(super) fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> R
     );
     let mut spill = SpillAccumulator::begin(output)
         .map_err(|error| format!("cannot spill scan batches: {error}"))?;
-    let (completed_mounts, errors) = loop {
+    let mut cursors = Vec::new();
+    let mut lane_failed = false;
+    let completion = loop {
         match rx.recv() {
             Ok(super::Event::Message(HelperMsg::ScanBegin { mount })) => {
                 eprintln!("neutrasearch: indexing {}", mount.mountpoint.display());
             }
+            Ok(super::Event::Message(HelperMsg::ScanCursor { cursor })) => cursors.push(cursor),
             Ok(super::Event::Message(HelperMsg::Records(records))) => {
                 spill
                     .push_batch(
@@ -144,33 +147,36 @@ pub(super) fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> R
                 );
             }
             Ok(super::Event::Message(HelperMsg::ScanError { mount, error })) => {
+                lane_failed = true;
                 eprintln!(
                     "neutrasearch: skipped {}: {error}",
                     mount.mountpoint.display()
                 );
             }
             Ok(super::Event::Message(HelperMsg::ScanComplete { mounts, errors })) => {
-                break (mounts, errors);
+                break Ok((mounts, errors));
             }
-            Ok(super::Event::Message(HelperMsg::Error(error))) => return Err(error),
-            Ok(super::Event::Fatal(error)) => return Err(error),
+            Ok(super::Event::Message(HelperMsg::Error(error))) => break Err(error),
+            Ok(super::Event::Fatal(error)) => break Err(error),
             Ok(_) => {}
-            Err(_) => return Err("native scanner stopped before completing".into()),
+            Err(_) => break Err("native scanner stopped before completing".into()),
         }
     };
-    if !super::scan_has_reachable_lane(completed_mounts, errors) {
-        return Err(format!(
-            "no native filesystem completed successfully ({errors} error(s))"
-        ));
+    let (completed_mounts, errors) = completion?;
+    if let Some(message) =
+        scan_completion_error(completed_mounts, errors.max(u32::from(lane_failed)))
+    {
+        return Err(message);
     }
     if spill.is_empty() {
         return Err("native scanners returned no files; the previous index was kept".into());
     }
-    let built = CompactIndex::rebuild_streamed(
+    let built = CompactIndex::rebuild_streamed_with_cursors(
         spill
             .finish()
             .map_err(|error| format!("cannot publish {}: {error}", output.display()))?,
         output,
+        &cursors,
     )
     .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
     let remembered = neutra_core::paths::remember_index_path(output)
@@ -183,4 +189,9 @@ pub(super) fn build_machine_index(output: &Path, allow_zfs_enumerate: bool) -> R
         remembered.display()
     );
     Ok(())
+}
+
+pub(super) fn scan_completion_error(completed_mounts: u32, errors: u32) -> Option<String> {
+    (completed_mounts == 0 || errors > 0)
+        .then(|| format!("native scan failed ({errors} error(s)); previous index was kept"))
 }

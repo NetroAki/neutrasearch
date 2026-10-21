@@ -93,7 +93,11 @@ def self_test() -> None:
             helper = npm_dir / "bin" / "helpers" / helper_artifact_name(target)
             if not helper.is_file() or not Path(f"{helper}.sha256").is_file():
                 raise AssertionError(f"missing npm remote helper artifact for {target}")
-            expected_checksums = len(BINARIES) + 2
+            if "THIRD-PARTY-NOTICES.txt" not in npm_metadata["files"]:
+                raise AssertionError("npm package excludes third-party notices")
+            if (npm_dir / "THIRD-PARTY-NOTICES.txt").read_bytes() != (project / "THIRD-PARTY-NOTICES.txt").read_bytes():
+                raise AssertionError("npm package is missing third-party licence text")
+            expected_checksums = len(BINARIES) + 3
             if target.endswith("-unknown-linux-gnu"):
                 expected_checksums += len(PRIVATE) + len(LICENSES) + 2
             if len((npm_dir / "SHA256SUMS").read_text().splitlines()) != expected_checksums:

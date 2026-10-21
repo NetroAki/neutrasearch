@@ -50,6 +50,11 @@ pub(super) type DirCallback = unsafe extern "C" fn(
     *mut c_void,
 ) -> c_int;
 
+pub(super) struct DirIterData {
+    pub(super) links: Vec<(u32, String)>,
+    pub(super) error: Option<anyhow::Error>,
+}
+
 use neutra_core::FileKind;
 
 #[derive(Clone, Copy)]

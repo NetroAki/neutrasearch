@@ -169,7 +169,7 @@ def npm_platform_package(
         "os": [npm_os],
         "cpu": [npm_cpu],
         "preferUnplugged": True,
-        "files": ["bin", "SHA256SUMS", "README.md", "LICENSE"],
+        "files": ["bin", "SHA256SUMS", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.txt"],
         "bin": binary_links,
         "repository": {
             "type": "git",
@@ -179,6 +179,9 @@ def npm_platform_package(
     (package_dir / "package.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    notices = (project_root / "THIRD-PARTY-NOTICES.txt").read_bytes()
+    (package_dir / "THIRD-PARTY-NOTICES.txt").write_bytes(notices)
+    checksums.append(f"{sha256_bytes(notices)}  THIRD-PARTY-NOTICES.txt\n")
     (package_dir / "SHA256SUMS").write_text("".join(sorted(checksums)), encoding="utf-8")
     (package_dir / "README.md").write_text(
         f"# {package_name}\n\n"

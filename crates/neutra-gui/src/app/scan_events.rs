@@ -36,24 +36,31 @@ pub(crate) fn handle_scan_complete(app: &mut NeutraApp, mounts: u32, errors: u32
             format!("no supported native filesystems were discovered on {os}"),
             true,
         );
-    } else if crate::transport::scan_has_reachable_lane(mounts, errors) {
-        adopt_staging(app, staging, errors);
+    } else if scan_can_publish(mounts, errors, app.scan_failed) {
+        adopt_staging(app, staging);
     } else {
         end_scan_setup(app);
+        app.scan_failed = false;
         note(
             app,
             "scan",
-            "NO REACHABLE LOCATIONS",
-            format!("all {errors} unavailable native lane(s) were skipped; keeping the last complete index"),
+            "NATIVE SCAN FAILED",
+            format!("{errors} native lane(s) failed; keeping the last complete index"),
             true,
         );
     }
+    app.scan_failed = false;
+    app.scan_cursors.clear();
     // Persist per-mount totals gathered during ScanDone for progress %.
     app.save_settings();
     super::indexing_lifecycle::resume(app);
 }
 
-fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulator>, errors: u32) {
+fn scan_can_publish(mounts: u32, errors: u32, failed: bool) -> bool {
+    mounts > 0 && errors == 0 && !failed
+}
+
+fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulator>) {
     let Some(spill) = spill else { return };
     let runs = match spill.finish() {
         Ok(runs) => runs,
@@ -79,18 +86,21 @@ fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulato
         app.onboarding_scan = false;
         app.save_settings();
     }
-    if errors > 0 {
-        note(
-            app,
-            "scan",
-            "PARTIAL INDEX",
-            format!("indexed reachable locations; skipped {errors} unavailable native lane(s)"),
-            false,
-        );
-    }
     // The previous base stays searchable while the fresh one builds; the
     // spill directory vanishes with the finished runs.
     super::cache_events::build_streaming_cache_index(app, runs);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_can_publish;
+
+    #[test]
+    fn only_a_complete_error_free_scan_can_publish() {
+        assert!(scan_can_publish(2, 0, false));
+        assert!(!scan_can_publish(0, 0, false));
+        assert!(!scan_can_publish(2, 1, false));
+    }
 }
 
 /// Clear the one-shot onboarding state after any scan attempt.

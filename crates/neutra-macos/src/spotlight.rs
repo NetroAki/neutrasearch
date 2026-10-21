@@ -9,7 +9,7 @@ pub(super) fn paths(output: io::Result<Output>) -> Result<Vec<String>> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let paths = super::parse_mdfind_nul(&output.stdout);
+    let paths = super::parse_mdfind_nul(&output.stdout)?;
     if paths.is_empty() {
         bail!("Spotlight supplied no indexed objects for this volume");
     }
@@ -44,6 +44,15 @@ mod tests {
         assert_eq!(
             paths(output(0, b"/A/a file\0/A/with\nnewline\0", b"")).unwrap(),
             vec!["/A/a file", "/A/with\nnewline"]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_path_without_emitting_a_colliding_path() {
+        assert!(paths(output(0, b"/A/report-\xff\0", b"")).is_err());
+        assert_eq!(
+            paths(output(0, "/A/report-\u{fffd}\0".as_bytes(), b"")).unwrap(),
+            vec!["/A/report-\u{fffd}"]
         );
     }
 }

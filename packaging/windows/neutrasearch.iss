@@ -61,11 +61,53 @@ Name: "{autodesktop}\Neutrasearch"; Filename: "{app}\neutrasearch.exe"; WorkingD
 Filename: "{app}\neutrasearch.exe"; Description: "Launch Neutrasearch"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  ApprovedAccountPage: TInputQueryWizardPage;
+
+procedure InitializeWizard;
+begin
+  ApprovedAccountPage := CreateInputQueryPage(wpWelcome,
+    'Approve a Windows account', 'Who will use Neutrasearch?',
+    'This account may search file names, sizes and dates across all drives. If you supplied another administrator''s password to install, enter the account that will use the application. Upgrades keep the previous approval unless you choose an account here.');
+  ApprovedAccountPage.Add('Windows account (COMPUTER\name or DOMAIN\name; blank keeps the existing approval):', False);
+  if not FileExists(ExpandConstant('{app}\neutrasearch-helper.exe')) then
+    ApprovedAccountPage.Values[0] := GetUserNameString;
+end;
+
+function ValidateApprovedAccount: String;
+var
+  Account: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  if WizardSilent then exit;
+  Account := Trim(ApprovedAccountPage.Values[0]);
+  if Account = '' then
+  begin
+    if not FileExists(ExpandConstant('{app}\neutrasearch-helper.exe')) then
+      Result := 'Choose the Windows account that will use Neutrasearch.';
+    exit;
+  end;
+  if Pos('"', Account) <> 0 then
+  begin
+    Result := 'The Windows account name cannot contain a quotation mark.';
+    exit;
+  end;
+  StringChangeEx(Account, '''', '''''', True);
+  ResultCode := -1;
+  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoLogo -NoProfile -NonInteractive -Command "try { $a = [Security.Principal.NTAccount]::new(''' + Account + '''); $s = $a.Translate([Security.Principal.SecurityIdentifier]); if (-not $s.IsAccountSid()) { exit 1 }; exit 0 } catch { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    Result := 'The Windows account could not be found. Use COMPUTER\name or DOMAIN\name.';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   Parameters: String;
 begin
+  Result := ValidateApprovedAccount;
+  if Result <> '' then exit;
   { Stop and wait before [Files] replaces the service executable. }
   ResultCode := -1;
   Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference = ''Stop''; $s = Get-Service -Name ''NeutrasearchHelper'' -ErrorAction SilentlyContinue; if ($null -ne $s -and $s.Status -ne ''Stopped'') { sc.exe stop NeutrasearchHelper | Out-Null; if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1062) { exit $LASTEXITCODE }; $s.WaitForStatus(''Stopped'', [TimeSpan]::FromSeconds(30)) }; exit 0"';
@@ -109,6 +151,12 @@ begin
   begin
     ResultCode := -1;
     Parameters := ExpandConstant('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{app}\service\install-service.ps1" -InstallDir "{app}"');
+    if (not WizardSilent) and (Trim(ApprovedAccountPage.Values[0]) <> '') then
+    begin
+      if Pos('"', ApprovedAccountPage.Values[0]) <> 0 then
+        RaiseException('The Windows account name cannot contain a quotation mark.');
+      Parameters := Parameters + ' -AuthorizedUserAccount "' + Trim(ApprovedAccountPage.Values[0]) + '"';
+    end;
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException(Format('The Neutrasearch scanner service could not be installed (exit code %d). See C:\ProgramData\Neutrasearch\install-service.log for details.', [ResultCode]));

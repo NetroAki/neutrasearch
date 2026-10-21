@@ -10,6 +10,9 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod private;
+pub(crate) use private::create_file as create_private_file;
+
 /// Records per spill chunk: large enough to amortize file churn, small
 /// enough to sort comfortably beside a running scan.
 const CHUNK_RECORDS: usize = 1_000_000;
@@ -47,12 +50,12 @@ pub struct SpillAccumulator {
     chunks: Vec<PathBuf>,
     current: Vec<FileRecord>,
     count: u64,
+    owner: Vec<u8>,
 }
 
 impl SpillAccumulator {
-    /// Create the spill directory beside the destination index (same
-    /// filesystem, where the space already matters) and sweep any stale
-    /// spill from an interrupted build.
+    /// Create private ingest storage beside the output; an existing directory
+    /// is never evidence that this process owns its contents.
     pub fn begin(output: &Path) -> io::Result<Self> {
         if let Some(parent) = output.parent() {
             if !parent.as_os_str().is_empty() {
@@ -60,6 +63,11 @@ impl SpillAccumulator {
             }
         }
         let dir = output.with_extension("spill");
+        if dir == output || output.is_dir() {
+            return Err(invalid(
+                "index output must not use the spill directory suffix",
+            ));
+        }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]
@@ -90,16 +98,14 @@ impl SpillAccumulator {
                 format!("index preparation is already running: {error}"),
             )
         })?;
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
-        std::fs::create_dir_all(&dir)?;
+        let owner = private::prepare(&dir, output)?;
         Ok(Self {
             dir: Some(dir),
             lock: Some(lock),
             chunks: Vec::new(),
             current: Vec::new(),
             count: 0,
+            owner,
         })
     }
 
@@ -130,13 +136,13 @@ impl SpillAccumulator {
             return Err(invalid("spill accumulator is closed"));
         };
         let path = dir.join(format!("chunk-{:06}.run", self.chunks.len()));
-        let file = File::create(&path)?;
+        let file = create_private_file(&path)?;
+        self.chunks.push(path);
         let mut writer = BufWriter::with_capacity(1 << 20, file);
         for record in self.current.drain(..) {
             write_framed(&mut writer, &record)?;
         }
         writer.flush()?;
-        self.chunks.push(path);
         Ok(())
     }
 
@@ -162,6 +168,7 @@ impl SpillAccumulator {
             _lock: self.lock.take(),
             chunks: std::mem::take(&mut self.chunks),
             count: self.count,
+            owner: std::mem::take(&mut self.owner),
         })
     }
 }
@@ -169,7 +176,7 @@ impl SpillAccumulator {
 impl Drop for SpillAccumulator {
     fn drop(&mut self) {
         if let Some(dir) = self.dir.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            let _ = private::cleanup(&dir, &self.owner);
         }
     }
 }
@@ -181,6 +188,7 @@ pub struct SpillRuns {
     _lock: Option<File>,
     chunks: Vec<PathBuf>,
     count: u64,
+    owner: Vec<u8>,
 }
 
 impl SpillRuns {
@@ -207,7 +215,7 @@ impl SpillRuns {
 impl Drop for SpillRuns {
     fn drop(&mut self) {
         if let Some(dir) = self.dir.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            let _ = private::cleanup(&dir, &self.owner);
         }
     }
 }
@@ -217,6 +225,30 @@ impl Drop for SpillRuns {
 /// than beside the builders) because the spill directory it protects is
 /// created here.
 pub(crate) fn with_rebuild_lock<T>(
+    path: &Path,
+    build: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    with_writer_lock(path, || {
+        let mut delta = path.to_path_buf();
+        delta.set_extension("delta");
+        let built = build()?;
+        // Streamed publication installs a fresh WAL bound to the new base. Keep
+        // that WAL; legacy/test rebuilds still remove obsolete generation logs.
+        let published_generation = crate::CompactIndex::generation_on_disk(path).ok();
+        let wal_matches = published_generation
+            .is_some_and(|generation| crate::DeltaIndex::open_snapshot(&delta, generation).is_ok());
+        if !wal_matches {
+            match std::fs::remove_file(&delta) {
+                Ok(()) => crate::compact_build::sync_parent(&delta)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(built)
+    })
+}
+
+pub(crate) fn with_writer_lock<T>(
     path: &Path,
     build: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
@@ -266,13 +298,7 @@ pub(crate) fn with_rebuild_lock<T>(
             return Err(error);
         }
     }
-    let built = build()?;
-    match std::fs::remove_file(&delta) {
-        Ok(()) => crate::compact_build::sync_parent(&delta)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    Ok(built)
+    build()
 }
 
 #[cfg(test)]

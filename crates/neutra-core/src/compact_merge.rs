@@ -159,7 +159,7 @@ fn read_chunk(path: &Path) -> io::Result<Vec<FileRecord>> {
 }
 
 fn write_chunk(path: &Path, records: &[FileRecord]) -> io::Result<()> {
-    let file = File::create(path)?;
+    let file = crate::compact_spill::create_private_file(path)?;
     let mut writer = BufWriter::with_capacity(1 << 20, file);
     for record in records {
         write_framed(&mut writer, record)?;
@@ -259,7 +259,7 @@ pub(crate) fn sorted_pairs(
 }
 
 fn write_segment(path: &Path, segment: &[u64]) -> io::Result<()> {
-    let file = File::create(path)?;
+    let file = crate::compact_spill::create_private_file(path)?;
     let mut writer = BufWriter::with_capacity(1 << 20, file);
     for pair in segment {
         writer.write_all(&pair.to_le_bytes())?;

@@ -6,6 +6,17 @@ use anyhow::Context as _;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug)]
+pub(crate) struct InvalidFilenameEncoding;
+
+impl std::fmt::Display for InvalidFilenameEncoding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NTFS filename contains an unpaired UTF-16 surrogate")
+    }
+}
+
+impl std::error::Error for InvalidFilenameEncoding {}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub parent: u64,
@@ -76,9 +87,10 @@ pub(crate) fn parse_record(
                     if 66 + nl * 2 <= v.len() {
                         let words =
                             (0..nl).map(|i| u16::from_le_bytes([v[66 + i * 2], v[67 + i * 2]]));
-                        let name = std::char::decode_utf16(words)
-                            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-                            .collect::<String>();
+                        let mut name = String::new();
+                        for c in std::char::decode_utf16(words) {
+                            name.push(c.map_err(|_| anyhow::Error::new(InvalidFilenameEncoding))?);
+                        }
                         if name != "." && name != ".." {
                             let rank = match ns {
                                 1 | 3 => 3,
@@ -192,4 +204,37 @@ pub(crate) fn append_component(parent: &str, name: &str) -> String {
 
 pub(crate) fn filetime_to_unix(v: u64) -> i64 {
     (v / 10_000_000) as i64 - 11_644_473_600
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record_with_name(words: &[u16]) -> Vec<u8> {
+        let mut rec = vec![0u8; 256];
+        rec[20..22].copy_from_slice(&48u16.to_le_bytes());
+        rec[48..52].copy_from_slice(&0x30u32.to_le_bytes());
+        let attr_len = 16 + 24 + 66 + words.len() * 2;
+        rec[52..56].copy_from_slice(&(attr_len as u32).to_le_bytes());
+        rec[56] = 0;
+        rec[64..68].copy_from_slice(&((24 + 66 + words.len() * 2) as u32).to_le_bytes());
+        rec[68..70].copy_from_slice(&24u16.to_le_bytes());
+        let value = &mut rec[72..];
+        value[0..8].copy_from_slice(&5u64.to_le_bytes());
+        value[64] = words.len() as u8;
+        value[65] = 1;
+        for (i, word) in words.iter().enumerate() {
+            value[66 + i * 2..68 + i * 2].copy_from_slice(&word.to_le_bytes());
+        }
+        rec
+    }
+
+    #[test]
+    fn filename_decoder_rejects_lone_surrogates_and_keeps_literal_replacement_character() {
+        assert!(parse_record(&record_with_name(&[0xd800]), false).is_err());
+        let (entry, _, _) = parse_record(&record_with_name(&[0xfffd]), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.name, "\u{fffd}");
+    }
 }

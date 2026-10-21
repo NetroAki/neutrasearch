@@ -181,6 +181,13 @@ impl CompactIndex {
             .block(id as usize)
             .ok_or_else(|| invalid("path block ID out of range"))?;
         let compressed = checked(&self.map, d.offset as usize, d.len as usize)?;
+        if self.record_version >= 6
+            && (compressed.len() < 5
+                || compressed[..4] != [0x28, 0xb5, 0x2f, 0xfd]
+                || compressed[4] & 4 == 0)
+        {
+            return Err(invalid("path block is missing its content checksum"));
+        }
         let raw = zstd::stream::decode_all(compressed)?;
         self.release_block(id);
         let records: Vec<FileRecord> = if self.record_version >= 4 {

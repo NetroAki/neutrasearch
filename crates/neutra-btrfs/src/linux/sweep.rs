@@ -101,10 +101,11 @@ impl Subvolume {
             key,
             (self.tree_id, ROOT_ITEM, u64::MAX),
             0,
-            &mut |item, data| {
+            &mut |item, data| -> Result<()> {
                 if item.item_type == ROOT_ITEM && data.len() >= 168 {
                     found = found.max(le64(&data[160..]));
                 }
+                Ok(())
             },
         )?;
         if found == 0 {
@@ -123,7 +124,7 @@ impl Subvolume {
             (0, 0, 0),
             (u64::MAX, u32::MAX, u64::MAX),
             since,
-            &mut |item, data| {
+            &mut |item, data| -> Result<()> {
                 generation = generation.max(item.transid);
                 match item.item_type {
                     INODE_ITEM if data.len() >= 160 && le64(&data[8..]) >= since => {
@@ -134,6 +135,7 @@ impl Subvolume {
                     }
                     _ => {}
                 }
+                Ok(())
             },
         )?;
         let inodes = inodes.into_values().map(|inode| (inode, None)).collect();
@@ -162,10 +164,13 @@ impl Subvolume {
             (dir, DIR_INDEX, 0),
             (dir, DIR_INDEX, u64::MAX),
             0,
-            &mut |item, data| {
+            &mut |item, data| -> Result<()> {
                 if item.item_type == DIR_INDEX {
-                    out.extend(parse_dir_index(data));
+                    if let Some(child) = parse_dir_index(data)? {
+                        out.push(child);
+                    }
                 }
+                Ok(())
             },
         )?;
         Ok(out)
@@ -178,10 +183,11 @@ impl Subvolume {
             (ino, INODE_ITEM, 0),
             (ino, INODE_ITEM, 0),
             0,
-            &mut |item, data| {
+            &mut |item, data| -> Result<()> {
                 if item.item_type == INODE_ITEM && data.len() >= 160 {
                     found = Some(parse_inode(item.objectid, data));
                 }
+                Ok(())
             },
         )?;
         Ok(found)
@@ -195,10 +201,11 @@ impl Subvolume {
             (ino, INODE_REF, 0),
             (ino, INODE_REF, u64::MAX),
             0,
-            &mut |item, data| {
+            &mut |item, data| -> Result<()> {
                 if found.is_none() && item.item_type == INODE_REF {
-                    found = parse_ref(item.offset, data);
+                    found = parse_ref(item.offset, data)?;
                 }
+                Ok(())
             },
         )?;
         Ok(found)
@@ -212,20 +219,19 @@ impl Subvolume {
             (ino, INODE_REF, 0),
             (ino, INODE_EXTREF, u64::MAX),
             0,
-            &mut |item, data| match item.item_type {
-                INODE_REF => {
-                    found.extend(parse_refs(item.offset, data, false));
+            &mut |item, data| -> Result<()> {
+                match item.item_type {
+                    INODE_REF => found.extend(parse_refs(item.offset, data, false)?),
+                    INODE_EXTREF => found.extend(parse_refs(0, data, true)?),
+                    _ => {}
                 }
-                INODE_EXTREF => {
-                    found.extend(parse_refs(0, data, true));
-                }
-                _ => {}
+                Ok(())
             },
         )?;
         Ok(found)
     }
 
-    fn ino_lookup(&self, ino: u64) -> std::io::Result<(u64, String)> {
+    fn ino_lookup(&self, ino: u64) -> Result<(u64, String)> {
         // SAFETY: all-zero is a valid InoLookupArgs.
         let mut args: InoLookupArgs = unsafe { std::mem::zeroed() };
         args.tree_id = if self.tree_id == 0 { 0 } else { self.tree_id };
@@ -239,17 +245,15 @@ impl Subvolume {
             )
         };
         if rc < 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err(std::io::Error::last_os_error().into());
         }
         let end = args
             .name
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(args.name.len());
-        let path = String::from_utf8_lossy(&args.name[..end])
-            .trim_matches('/')
-            .to_string();
-        Ok((args.tree_id, path))
+        let path = std::str::from_utf8(&args.name[..end]).context("Btrfs path is not UTF-8")?;
+        Ok((args.tree_id, path.trim_matches('/').to_string()))
     }
 }
 

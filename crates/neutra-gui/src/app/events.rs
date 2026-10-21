@@ -7,6 +7,8 @@ use std::time::Duration;
 
 const MAX_EVENTS_PER_FRAME: usize = 64;
 const CACHE_BUILD_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+mod scan_tests;
 mod search_results;
 
 pub(crate) fn process_events(app: &mut NeutraApp) -> bool {
@@ -148,18 +150,24 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             let status = format!("indexing {key}");
             note(app, key, label, status, false);
         }
+        HelperMsg::ScanCursor { cursor } => {
+            if app.scanning && !app.cancelling && !app.scan_failed {
+                app.scan_cursors.push(cursor);
+            }
+        }
         HelperMsg::Records(records) => {
-            let roots = app.scan_roots.clone();
-            let batch = records
-                .into_iter()
-                .filter(|record| crate::record_in_roots(record.path.as_ref(), &roots))
-                .collect::<Vec<_>>();
-            count_staged(app, &batch);
-            if let Some(spill) = &mut app.scan_index {
-                if let Err(error) = spill.push_batch(batch) {
+            match ingest_scan_message(
+                &mut app.scan_index,
+                &mut app.scan_failed,
+                &app.scan_roots,
+                HelperMsg::Records(records),
+            ) {
+                ScanIngest::Records(batch) => count_staged(app, &batch),
+                ScanIngest::Failed(error) => {
                     end_scan(app);
-                    note(app, "scan", "NATIVE SCAN", error.to_string(), true);
+                    note(app, "scan", "NATIVE SCAN", error, true);
                 }
+                _ => unreachable!("records message has a records result"),
             }
         }
         HelperMsg::ScanDone { mount, stats } => {
@@ -184,11 +192,27 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
         }
         HelperMsg::ScanError { mount, error } => {
             app.active_scans = app.active_scans.saturating_sub(1);
+            let _ = ingest_scan_message(
+                &mut app.scan_index,
+                &mut app.scan_failed,
+                &app.scan_roots,
+                HelperMsg::ScanError {
+                    mount: mount.clone(),
+                    error: error.clone(),
+                },
+            );
+            app.scan_cursors.clear();
             let key = mount.mountpoint.display().to_string();
             let label = mount.fs.label().to_uppercase();
             note(app, key, label, error, true);
         }
         HelperMsg::ScanComplete { mounts, errors } => {
+            let _ = ingest_scan_message(
+                &mut app.scan_index,
+                &mut app.scan_failed,
+                &app.scan_roots,
+                HelperMsg::ScanComplete { mounts, errors },
+            );
             super::scan_events::handle_scan_complete(app, mounts, errors);
         }
         HelperMsg::Error(error) => {
@@ -212,6 +236,51 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             let status = format!("{changes} changes · {wal_bytes} bytes{suffix}");
             note(app, "delta", "LIVE DELTA", status, false);
         }
+    }
+}
+
+enum ScanIngest {
+    Records(Vec<neutra_core::FileRecord>),
+    Failed(String),
+    LaneEvent,
+    Complete,
+}
+
+fn ingest_scan_message(
+    staging: &mut Option<neutra_core::SpillAccumulator>,
+    failed: &mut bool,
+    roots: &[std::path::PathBuf],
+    message: HelperMsg,
+) -> ScanIngest {
+    match message {
+        HelperMsg::Records(records) => {
+            let batch = records
+                .into_iter()
+                .filter(|record| crate::record_in_roots(record.path.as_ref(), roots))
+                .collect::<Vec<_>>();
+            if let Some(spill) = staging {
+                if let Err(error) = spill.push_batch(batch.clone()) {
+                    *failed = true;
+                    *staging = None;
+                    return ScanIngest::Failed(error.to_string());
+                }
+            }
+            ScanIngest::Records(batch)
+        }
+        HelperMsg::ScanError { .. } => {
+            *failed = true;
+            *staging = None;
+            ScanIngest::LaneEvent
+        }
+        HelperMsg::ScanDone { .. } => ScanIngest::LaneEvent,
+        HelperMsg::ScanComplete { mounts, errors } => {
+            if mounts == 0 || errors > 0 || *failed {
+                *staging = None;
+                *failed = true;
+            }
+            ScanIngest::Complete
+        }
+        _ => ScanIngest::LaneEvent,
     }
 }
 
@@ -268,6 +337,8 @@ fn end_scan(app: &mut NeutraApp) {
     app.scanning = false;
     app.active_scans = 0;
     app.scan_index = None;
+    app.scan_failed = true;
+    app.scan_cursors.clear();
     app.scan_roots.clear();
     super::scan_events::end_scan_setup(app);
     super::indexing_lifecycle::resume(app);

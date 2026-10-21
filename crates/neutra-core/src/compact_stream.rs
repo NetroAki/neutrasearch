@@ -22,14 +22,36 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 impl CompactIndex {
+    pub fn recover_rebuild(path: &Path) -> io::Result<()> {
+        if !crate::compact::suffix_path(path, ".rebuilding").exists() {
+            return Ok(());
+        }
+        crate::compact_spill::with_writer_lock(path, || recover_streamed_publication(path))
+    }
+
     /// Rebuild from spilled runs with bounded RAM, then publish atomically.
     /// Callers that already hold every record in memory keep `rebuild`.
     pub fn rebuild_streamed(runs: SpillRuns, path: &Path) -> io::Result<BuildStats> {
-        with_rebuild_lock(path, || build_streamed(&runs, path))
+        Self::rebuild_streamed_with_cursors(runs, path, &[])
+    }
+
+    pub fn rebuild_streamed_with_cursors(
+        runs: SpillRuns,
+        path: &Path,
+        cursors: &[crate::NativeCursor],
+    ) -> io::Result<BuildStats> {
+        with_rebuild_lock(path, || {
+            recover_streamed_publication(path)?;
+            build_streamed(&runs, path, cursors)
+        })
     }
 }
 
-fn build_streamed(runs: &SpillRuns, path: &Path) -> io::Result<BuildStats> {
+fn build_streamed(
+    runs: &SpillRuns,
+    path: &Path,
+    cursors: &[crate::NativeCursor],
+) -> io::Result<BuildStats> {
     let started = Instant::now();
     let count = runs.len();
     let generation = new_generation();
@@ -38,14 +60,21 @@ fn build_streamed(runs: &SpillRuns, path: &Path) -> io::Result<BuildStats> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let temp = temp_path(path);
+    let staged = stage_path(path);
+    let marker = crate::compact::suffix_path(path, ".compacting");
+    let preparing = crate::compact::suffix_path(path, ".rebuilding");
+    // Readers interpret `.compacting` as a complete staged generation. Keep
+    // preparation under a distinct marker until the base and both sidecars
+    // are durable and verified.
+    write_marker(&preparing, generation)?;
+    let temp = temp_path(&staged);
     let mut file = open_private(&temp)?;
     let block_count = count.div_ceil(BLOCK_RECORDS as u64);
     file.get_ref().set_len(HEADER + block_count * DESC_SIZE)?;
     file.seek(SeekFrom::Start(HEADER + block_count * DESC_SIZE))?;
     let mut descs = Vec::with_capacity(block_count as usize);
     let pairs_path: PathBuf = runs.dir()?.join("pairs.psp");
-    let pairs_file = File::create(&pairs_path)?;
+    let pairs_file = crate::compact_spill::create_private_file(&pairs_path)?;
     let mut pairs = BufWriter::with_capacity(1 << 20, pairs_file);
     let merge = RunMerge::open(runs, SpillOrder::Compact)?;
     let mut block = Vec::with_capacity(BLOCK_RECORDS);
@@ -105,21 +134,40 @@ fn build_streamed(runs: &SpillRuns, path: &Path) -> io::Result<BuildStats> {
     file.write_all(&checksum.finalize().to_le_bytes())?;
     file.sync_all()?;
     drop(file);
-    replace_file(&temp, path)?;
-    clear_stale_marker(path)?;
-    sync_parent(path)?;
-    build_sidecar(runs, path, generation)?;
-    crate::TreeSummary::ensure(path, generation)?;
-    let bytes = std::fs::metadata(path)?.len();
-    Ok(BuildStats {
+    replace_file(&temp, &staged)?;
+    clear_stale_marker(&staged)?;
+    sync_parent(&staged)?;
+    build_sidecar(runs, &staged, generation)?;
+    crate::TreeSummary::ensure(&staged, generation)?;
+    let verified = CompactIndex::open(&staged)?;
+    if verified.generation() != generation {
+        return Err(invalid("staged compact rebuild generation mismatch"));
+    }
+    drop(verified);
+    crate::dir_summary::DirectorySummary::open_for_compact(&staged, generation)?;
+    crate::TreeSummary::open_for_compact(&staged, generation)?;
+    crate::native_cursor::save_seed(&staged, generation, cursors)?;
+    write_marker(&marker, generation)?;
+    let bytes = std::fs::metadata(&staged)?.len();
+    let stats = BuildStats {
         generation,
         records: count,
         blocks: descs.len() as u32,
         trigrams: dict.len() as u32,
         bytes,
         wall_ms: started.elapsed().as_millis() as u64,
-    })
+    };
+    publish_streamed_generation(path, &staged, generation)?;
+    Ok(stats)
 }
+
+mod publication;
+use publication::{
+    publish_streamed_generation, recover_streamed_publication, stage_path, write_marker,
+};
+
+#[cfg(test)]
+mod rebuild_tests;
 
 /// Encode one block exactly like the in-RAM writer, publish it immediately,
 /// and spill its (gram, block) pairs for the external postings sort.
@@ -136,7 +184,7 @@ pub(crate) fn encode_block(
     }
     let refs = block.iter().collect::<Vec<_>>();
     let raw = bincode::serialize(&refs).map_err(binerr)?;
-    let compressed = zstd::bulk::compress(&raw, 1)?;
+    let compressed = checked_compress(&raw)?;
     let offset = file.stream_position()?;
     file.write_all(&compressed)?;
     descs.push(BlockDesc {
@@ -149,6 +197,12 @@ pub(crate) fn encode_block(
         pairs.write_all(&pair.to_le_bytes())?;
     }
     Ok(())
+}
+
+pub(crate) fn checked_compress(raw: &[u8]) -> io::Result<Vec<u8>> {
+    let mut compressor = zstd::bulk::Compressor::new(1)?;
+    compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
+    compressor.compress(raw)
 }
 
 /// Stream the summary-order merge through the incremental feed into a fresh

@@ -38,10 +38,8 @@ impl CompactIndex {
     ///
     /// Startup path for readers (GUI, MCP, query CLI): opening a multi-gigabyte
     /// index would otherwise hash the entire file before the first search.
-    /// Structural corruption is still caught — headers, block descriptors, and
-    /// the trigram dictionary are bounds- and order-validated here, and every
-    /// block is checksum-failed by zstd/bincode at decode time. Full-payload
-    /// verification remains in `open` and on every write path.
+    /// Version 6 blocks verify their own Zstd content checksums on decode.
+    /// Older bases require whole-file validation because their blocks lack it.
     pub fn open_fast(path: &Path) -> io::Result<Self> {
         Self::open_impl(path, false)
     }
@@ -65,7 +63,11 @@ impl CompactIndex {
         }
         let data_len = map.len() - CHECKSUM_BYTES;
         let data = &map[..data_len];
-        if verify_payload {
+        let record_version = u32_at(data, 8)?;
+        if !(MIN_READABLE_VERSION..=VERSION).contains(&record_version) {
+            return Err(invalid("unsupported compact index version"));
+        }
+        if verify_payload || record_version < 6 {
             let expected_checksum = u32::from_le_bytes(
                 map[data_len..]
                     .try_into()
@@ -91,10 +93,6 @@ impl CompactIndex {
             if checksum != expected_checksum {
                 return Err(invalid("compact index checksum mismatch"));
             }
-        }
-        let record_version = u32_at(data, 8)?;
-        if !(MIN_READABLE_VERSION..=VERSION).contains(&record_version) {
-            return Err(invalid("unsupported compact index version"));
         }
         if u32_at(data, 12)? != BLOCK_RECORDS as u32 {
             return Err(invalid("unsupported path block size"));

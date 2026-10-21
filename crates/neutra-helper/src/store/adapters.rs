@@ -5,6 +5,7 @@ pub(crate) fn open_durable_pair(
     delta_path: &std::path::Path,
     compact_at: Option<u64>,
 ) -> Result<(CompactIndex, DeltaIndex)> {
+    CompactIndex::recover_rebuild(base_path).context("recover interrupted full rebuild")?;
     #[cfg(target_os = "linux")]
     let tail = super::maintenance::intent::check(base_path, delta_path)?;
     let pair = open_pair(base_path, delta_path, compact_at)?;

@@ -59,9 +59,39 @@ fn paths_resolve_and_cycles_stop() {
         },
     ];
     let mut cache = HashMap::from([(ROOT_INO, String::new())]);
-    assert!(ensure_dir_path(301, &nodes, &names, &mut cache));
+    assert!(ensure_dir_path(301, &nodes, &names, &mut cache).unwrap());
     assert_eq!(cache.get(&301).map(String::as_str), Some("a/b"));
     nodes[1].parent = 301;
     let mut cache = HashMap::from([(ROOT_INO, String::new())]);
-    assert!(!ensure_dir_path(301, &nodes, &names, &mut cache));
+    assert!(!ensure_dir_path(301, &nodes, &names, &mut cache).unwrap());
+}
+
+#[test]
+fn inode_names_reject_invalid_utf8_without_aliasing_replacement_character() {
+    let mut names = Vec::new();
+    let mut replacement = vec![0; 10];
+    replacement[8..10].copy_from_slice(&3u16.to_le_bytes());
+    replacement.extend_from_slice("\u{fffd}".as_bytes());
+    let good = parse_inode_ref(ROOT_INO, &replacement, &mut names)
+        .unwrap()
+        .unwrap();
+    let node = Node {
+        ino: 7,
+        parent: ROOT_INO,
+        meta: Meta {
+            size: 0,
+            disk: 0,
+            mode: 0,
+            mtime: 0,
+        },
+        name_off: good.name_off,
+        name_len: good.name_len,
+    };
+    assert_eq!(node_name(&node, &names).unwrap(), "\u{fffd}");
+
+    let mut invalid = vec![0; 10];
+    invalid[8..10].copy_from_slice(&1u16.to_le_bytes());
+    invalid.push(0xff);
+    assert!(parse_inode_ref(ROOT_INO, &invalid, &mut names).is_err());
+    assert_eq!(node_name(&node, &names).unwrap(), "\u{fffd}");
 }

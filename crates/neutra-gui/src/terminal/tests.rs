@@ -1,4 +1,5 @@
 use super::domain::parse_index;
+use super::domain::scan_completion_error;
 use super::view::{executable_name, parse_serve};
 use std::path::PathBuf;
 
@@ -47,4 +48,17 @@ fn serve_watch_has_explicit_source() {
     assert_eq!(index, PathBuf::from("files.nsx"));
     assert_eq!(watch, Some(PathBuf::from("/home")));
     assert_eq!(source, 4);
+}
+
+#[test]
+fn any_native_lane_error_fails_the_index_command_even_when_another_mount_succeeds() {
+    let error = scan_completion_error(2, 1).expect("partial scan must fail");
+    assert!(error.contains("1 error(s)"));
+    assert!(error.contains("previous index was kept"));
+}
+
+#[test]
+fn index_command_requires_at_least_one_completed_mount() {
+    assert!(scan_completion_error(0, 0).is_some());
+    assert!(scan_completion_error(2, 0).is_none());
 }

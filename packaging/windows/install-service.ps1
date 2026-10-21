@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $InstallDir,
-    [string] $AuthorizedUserSid
+    [string] $AuthorizedUserSid,
+    [string] $AuthorizedUserAccount
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,6 +58,13 @@ if ($LASTEXITCODE -ne 0) {
 # to files: those become inherit-only and make the executable unreadable.
 
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+if (-not [string]::IsNullOrWhiteSpace($AuthorizedUserAccount)) {
+    if (-not [string]::IsNullOrWhiteSpace($AuthorizedUserSid)) {
+        throw 'Specify either AuthorizedUserSid or AuthorizedUserAccount, not both'
+    }
+    $account = [Security.Principal.NTAccount]::new($AuthorizedUserAccount)
+    $AuthorizedUserSid = $account.Translate([Security.Principal.SecurityIdentifier]).Value
+}
 if ([string]::IsNullOrWhiteSpace($AuthorizedUserSid)) {
     $previous = Get-CimInstance -ClassName Win32_Service -Filter "Name = '$serviceName'"
     if ($null -ne $previous -and $previous.PathName -match ' --authorized-user (S-1-(?:[0-9]+-)+[0-9]+)$') {

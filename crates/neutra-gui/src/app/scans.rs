@@ -35,6 +35,8 @@ pub(crate) fn begin_scan_with_elevation(app: &mut NeutraApp, elevated: bool) {
     // Spill batches to disk as they arrive; the last complete index remains
     // searchable until the fresh build publishes.
     app.scan_index = neutra_core::SpillAccumulator::begin(&app.cache_path).ok();
+    app.scan_failed = false;
+    app.scan_cursors.clear();
     if app.scan_index.is_none() {
         app.scanning = false;
         app.scan_roots.clear();
@@ -91,6 +93,8 @@ pub(crate) fn cancel_scan(app: &mut NeutraApp) {
     }
     app.cancelling = true;
     app.scan_index = None;
+    app.scan_failed = false;
+    app.scan_cursors.clear();
     app.scan_cancelled
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }

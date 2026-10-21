@@ -91,3 +91,18 @@ fn allowed_roots_use_path_component_boundaries() {
     assert!(!path_is_allowed(Path::new(unsafe_path), &roots));
     assert!(!path_is_allowed(Path::new("relative/file.txt"), &roots));
 }
+
+#[cfg(unix)]
+#[test]
+fn unix_allowed_root_does_not_normalize_literal_backslashes() {
+    let roots = vec![PathBuf::from("/srv/allowed")];
+    assert!(path_is_allowed(Path::new("/srv/allowed/file.txt"), &roots));
+    assert!(!path_is_allowed(
+        Path::new("/srv/allowed\\secret/file.txt"),
+        &roots
+    ));
+    assert!(!path_is_allowed(
+        Path::new("/srv/allowed-sibling/file.txt"),
+        &roots
+    ));
+}

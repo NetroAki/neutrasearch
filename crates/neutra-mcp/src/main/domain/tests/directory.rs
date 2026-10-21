@@ -32,14 +32,26 @@ fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
     ];
     build_test_base(&records, &path);
     let mut store = Store::open(path.clone()).unwrap();
-    let result = call_tool(&mut store, &[], "neutra_directory", json!({"path":"/docs"}));
+    let result = call_tool(
+        &mut store,
+        &[PathBuf::from("/docs")],
+        "neutra_directory",
+        json!({"path":"/docs"}),
+    );
     assert_eq!(result["structuredContent"]["logical_bytes"], 10);
     assert_eq!(result["structuredContent"]["file_count"], 1);
+    let denied = call_tool(
+        &mut store,
+        &[PathBuf::from("/docs")],
+        "neutra_directory",
+        json!({"path":"/docs-sibling"}),
+    );
+    assert_eq!(denied["isError"], true);
     std::fs::remove_file(path).unwrap();
     assert_eq!(
         call_tool(
             &mut empty_store(),
-            &[],
+            &[PathBuf::from("/docs")],
             "neutra_directory",
             json!({"path":"/"})
         )["isError"],

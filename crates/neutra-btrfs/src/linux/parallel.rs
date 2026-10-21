@@ -146,7 +146,7 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
                 }
                 current_ino = Some(h.objectid);
             }
-            update_item(h, data, &mut names, &mut current_meta, &mut current_link);
+            update_item(h, data, &mut names, &mut current_meta, &mut current_link)?;
             pos = end;
             last = Some((h.objectid, h.item_type, h.offset));
         }
@@ -173,7 +173,7 @@ fn update_item(
     names: &mut Vec<u8>,
     current_meta: &mut Option<Meta>,
     current_link: &mut Option<Link>,
-) {
+) -> Result<()> {
     match h.item_type {
         INODE_ITEM if data.len() >= 148 => {
             *current_meta = Some(Meta {
@@ -184,9 +184,10 @@ fn update_item(
             })
         }
         INODE_REF if current_link.is_none() => {
-            *current_link = parse_inode_ref(h.offset, data, names)
+            *current_link = parse_inode_ref(h.offset, data, names)?
         }
-        INODE_EXTREF if current_link.is_none() => *current_link = parse_inode_extref(data, names),
+        INODE_EXTREF if current_link.is_none() => *current_link = parse_inode_extref(data, names)?,
         _ => {}
     }
+    Ok(())
 }

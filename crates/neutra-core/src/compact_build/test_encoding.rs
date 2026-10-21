@@ -19,7 +19,7 @@ pub(super) fn blocks(records: &[FileRecord], order: &[u32]) -> io::Result<Vec<En
                 .map(|id| &records[*id as usize])
                 .collect::<Vec<_>>();
             let raw = bincode::serialize(&refs).map_err(binerr)?;
-            let compressed = zstd::bulk::compress(&raw, 1)?;
+            let compressed = crate::compact_stream::checked_compress(&raw)?;
             grams.shrink_to_fit();
             Ok((compressed, grams, ids.len() as u16))
         })

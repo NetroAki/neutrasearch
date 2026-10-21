@@ -1,7 +1,7 @@
 use crate::mount_scope::{
     portable_path_in_root, record_in_roots, scope_within_selected_roots, select_mounts_for_roots,
 };
-use crate::transport::{remote_failure_is_offline, scan_has_reachable_lane};
+use crate::transport::remote_failure_is_offline;
 use neutra_core::MountInfo;
 use std::path::PathBuf;
 
@@ -97,14 +97,6 @@ fn network_roots_do_not_fall_back_to_scanning_the_parent_local_volume() {
     let local = select_mounts_for_roots(&[PathBuf::from("/home/alex")], &trusted);
     assert_eq!(local.len(), 1);
     assert_eq!(local[0].mountpoint, PathBuf::from("/"));
-}
-
-#[test]
-fn successful_empty_scans_still_replace_stale_results() {
-    assert!(scan_has_reachable_lane(1, 0));
-    assert!(scan_has_reachable_lane(3, 1));
-    assert!(!scan_has_reachable_lane(3, 3));
-    assert!(!scan_has_reachable_lane(0, 0));
 }
 
 #[test]

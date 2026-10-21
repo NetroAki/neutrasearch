@@ -43,7 +43,11 @@ fn portable_path(path: &Path) -> String {
 }
 
 pub(crate) fn portable_path_text(path: &str) -> String {
-    let replaced = path.replace('\\', "/");
+    let replaced = if cfg!(target_os = "windows") {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
     let mut normalized = if let Some(rest) = replaced.strip_prefix("//?/UNC/") {
         format!("//{rest}")
     } else if let Some(rest) = replaced

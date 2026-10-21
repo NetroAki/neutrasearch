@@ -14,51 +14,84 @@ pub(crate) fn safe_absolute_path(path: &str) -> bool {
     !path.contains('\0')
         && portable_absolute
         && !path
-            .split(['/', '\\'])
+            .split(if is_windows_path(path) {
+                &['/', '\\'][..]
+            } else {
+                &['/'][..]
+            })
             .any(|component| matches!(component, "." | ".."))
 }
 
 #[inline]
 pub(super) fn path_is_under(path: &str, root: &str) -> bool {
-    path.strip_prefix(root).is_some_and(|rest| {
-        rest.is_empty()
-            || root.ends_with('/')
-            || root.ends_with('\\')
-            || rest.starts_with('/')
-            || rest.starts_with('\\')
-    })
+    component_path_is_under(
+        path,
+        root,
+        is_windows_path(root) || is_windows_path(path),
+        true,
+    )
 }
 
 #[inline]
 pub(super) fn path_is_under_ci(path: &str, lower_root: &str) -> bool {
-    let (path, root) = if path.is_ascii() && lower_root.is_ascii() {
-        (
-            std::borrow::Cow::Borrowed(path),
-            std::borrow::Cow::Borrowed(lower_root),
-        )
+    component_path_is_under(
+        path,
+        lower_root,
+        is_windows_path(lower_root) || is_windows_path(path),
+        false,
+    )
+}
+
+fn is_windows_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    cfg!(target_os = "windows")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+        || path.starts_with("\\\\")
+}
+
+fn component_path_is_under(path: &str, root: &str, windows: bool, case_sensitive: bool) -> bool {
+    use std::borrow::Cow;
+
+    let path = if case_sensitive || path.is_ascii() {
+        Cow::Borrowed(path)
     } else {
-        (
-            std::borrow::Cow::Owned(path.to_lowercase()),
-            std::borrow::Cow::Owned(lower_root.to_lowercase()),
-        )
+        Cow::Owned(path.to_lowercase())
+    };
+    let root = if case_sensitive || root.is_ascii() {
+        Cow::Borrowed(root)
+    } else {
+        Cow::Owned(root.to_lowercase())
     };
     let Some(prefix) = path.as_bytes().get(..root.len()) else {
         return false;
     };
     let same_prefix = prefix.iter().zip(root.as_bytes()).all(|(left, right)| {
-        left.eq_ignore_ascii_case(right)
-            || (matches!(left, b'/' | b'\\') && matches!(right, b'/' | b'\\'))
+        if windows
+            && left != right
+            && matches!(*left, b'/' | b'\\')
+            && matches!(*right, b'/' | b'\\')
+        {
+            true
+        } else if case_sensitive {
+            left == right
+        } else {
+            left.eq_ignore_ascii_case(right)
+        }
     });
     if !same_prefix {
         return false;
     }
     path.len() == root.len()
-        || root.ends_with('/')
-        || root.ends_with('\\')
-        || path
-            .as_bytes()
-            .get(root.len())
-            .is_some_and(|next| matches!(next, b'/' | b'\\'))
+        || is_path_separator(root.as_bytes().last().copied(), windows)
+        || is_path_separator(path.as_bytes().get(root.len()).copied(), windows)
+}
+
+#[inline]
+fn is_path_separator(byte: Option<u8>, windows: bool) -> bool {
+    matches!(byte, Some(b'/')) || (windows && matches!(byte, Some(b'\\')))
 }
 
 /// Split input into tokens, respecting double quotes.

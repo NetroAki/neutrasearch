@@ -12,6 +12,17 @@ pub(super) fn run() -> Result<()> {
     let exclusions = exclusion_prefixes(&mountpoint);
     // Stream scan batches straight into the spill: one huge mount
     // materialized here peaked past 25 GiB.
+    #[allow(unused_mut)]
+    let mut cursors = Vec::new();
+    #[cfg(target_os = "linux")]
+    if mount.fs == neutra_core::FsKind::Btrfs {
+        let sub = neutra_btrfs::Subvolume::open(&mount.mountpoint)?;
+        cursors.push(neutra_core::NativeCursor {
+            mount: mount.mountpoint.to_string_lossy().into_owned(),
+            tree: sub.tree_id(),
+            since: sub.current_generation()?,
+        });
+    }
     let mut spill = neutra_core::SpillAccumulator::begin(&output)?;
     let mut spill_error: Option<std::io::Error> = None;
     let scan = dispatch_lane(&mount, &mut |record| {
@@ -30,7 +41,7 @@ pub(super) fn run() -> Result<()> {
     if let Some(error) = spill_error {
         anyhow::bail!("spill scan batches: {error}");
     }
-    let built = CompactIndex::rebuild_streamed(spill.finish()?, &output)?;
+    let built = CompactIndex::rebuild_streamed_with_cursors(spill.finish()?, &output, &cursors)?;
     println!("fs={} mount={} records={} scan_ms={} index_bytes={} blocks={} trigrams={} build_ms={} output={}",mount.fs.label(),mount.mountpoint.display(),scan.records,scan.wall_ms,built.bytes,built.blocks,built.trigrams,built.wall_ms,output.display());
     Ok(())
 }

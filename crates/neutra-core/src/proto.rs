@@ -7,6 +7,7 @@
 
 use crate::delta::DeltaChange;
 use crate::mounts::MountInfo;
+use crate::native_cursor::NativeCursor;
 use crate::query::Query;
 use crate::types::{FileRecord, ScanStats};
 use serde::{Deserialize, Serialize};
@@ -15,12 +16,12 @@ use std::io::{Read, Write};
 /// Protocol version; helper and client refuse to talk across major versions.
 /// Bumped for on-disk sizes in record frames: mixed-version peers fail the
 /// Hello handshake instead of silently shifting record fields.
-pub const PROTO_VERSION: u32 = 11;
+pub const PROTO_VERSION: u32 = 12;
 
 /// Bump this whenever the helper binary changes in a way that affects
 /// auto-provisioning decisions (client pushes a fresh copy when the remote
 /// reports an older build).
-pub const HELPER_BUILD: u32 = 11;
+pub const HELPER_BUILD: u32 = 12;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +66,10 @@ pub enum HelperMsg {
     ScanBegin {
         mount: MountInfo,
     },
+    /// Native metadata cursor captured before scanning this Btrfs subvolume.
+    ScanCursor {
+        cursor: NativeCursor,
+    },
     /// Batched to keep per-frame overhead tiny.
     Records(Vec<FileRecord>),
     ScanDone {
@@ -76,9 +81,7 @@ pub enum HelperMsg {
         error: String,
     },
     /// Terminates one Scan/ScanResident request, including the zero-mount case.
-    /// Fail-closed clients publish only when `errors == 0`. Interactive clients
-    /// may publish records from reachable lanes when `errors < mounts`, but must
-    /// surface the degraded result and replace—not retain—failed-source records.
+    /// Clients publish only when every requested native lane succeeds.
     ScanComplete {
         mounts: u32,
         errors: u32,

@@ -33,7 +33,7 @@ mod view;
 #[cfg(target_os = "windows")]
 pub(crate) use adapters::scan_via_windows_service;
 pub(crate) use adapters::spawn_network_watcher;
-pub(crate) use domain::{remote_failure_is_offline, scan_has_reachable_lane};
+pub(crate) use domain::remote_failure_is_offline;
 pub(crate) use helper_security::select_helper;
 #[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]

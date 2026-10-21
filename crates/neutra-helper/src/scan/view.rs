@@ -96,6 +96,31 @@ pub(crate) fn run_scan(
     );
     tracing::info!(target: "neutra_helper::protocol", "native scan begin emitted");
 
+    #[cfg(target_os = "linux")]
+    if mount.fs == FsKind::Btrfs {
+        let cursor = (|| -> Result<neutra_core::NativeCursor> {
+            let subvolume = neutra_btrfs::Subvolume::open(&mount.mountpoint)?;
+            Ok(neutra_core::NativeCursor {
+                mount: mount.mountpoint.to_string_lossy().into_owned(),
+                tree: subvolume.tree_id(),
+                since: subvolume.current_generation()?,
+            })
+        })();
+        match cursor {
+            Ok(cursor) => send_lossy(&out, &HelperMsg::ScanCursor { cursor }),
+            Err(error) => {
+                send_lossy(
+                    &out,
+                    &HelperMsg::ScanError {
+                        mount,
+                        error: format!("cannot capture Btrfs ingest cursor: {error:#}"),
+                    },
+                );
+                return false;
+            }
+        }
+    }
+
     let started = Instant::now();
     let mountpoint = mount.mountpoint.clone();
     // Precompute the per-scan predicates once. The record path is already

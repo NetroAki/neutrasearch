@@ -58,6 +58,9 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --bins --release --locked
+      - name: Check clean-Windows runtime dependencies
+        if: runner.os == 'Windows'
+        run: ./packaging/windows/check-runtime.ps1 -BinaryDirectory target/release
       - run: cargo run --release --locked --bin neutrasearch -- --version
       - run: cargo run --release --locked --bin neutrasearch -- index --help
       - run: cargo run --release --locked --bin neutrasearch -- search --help

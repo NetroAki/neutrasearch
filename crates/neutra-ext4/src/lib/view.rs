@@ -71,7 +71,10 @@ pub fn scan_image(
 
     let mut children = HashMap::<u32, Vec<(u32, String)>>::new();
     for dir in dirs {
-        let mut links = Vec::<(u32, String)>::new();
+        let mut links = DirIterData {
+            links: Vec::new(),
+            error: None,
+        };
         let rc = unsafe {
             ext2fs_dir_iterate2(
                 fs.0,
@@ -85,7 +88,10 @@ pub fn scan_image(
         if rc != 0 {
             return Err(err(rc, "ext2fs_dir_iterate2"));
         }
-        children.insert(dir, links);
+        if let Some(error) = links.error {
+            return Err(error);
+        }
+        children.insert(dir, links.links);
     }
 
     let mut stats = ScanStats::default();
@@ -152,14 +158,27 @@ pub(super) unsafe extern "C" fn dir_cb(
     }
     let n = (d.name_len & 0xff) as usize;
     if n == 0 || n > 255 {
+        if let Some(out) = unsafe { (data as *mut DirIterData).as_mut() } {
+            out.error = Some(anyhow::anyhow!("invalid ext4 filename length {n}"));
+        }
         return 0;
     }
-    let name = String::from_utf8_lossy(&d.name[..n]).into_owned();
+    let name = match std::str::from_utf8(&d.name[..n]) {
+        Ok(name) => name.to_owned(),
+        Err(error) => {
+            if let Some(out) = unsafe { (data as *mut DirIterData).as_mut() } {
+                out.error = Some(anyhow::anyhow!("ext4 filename is not UTF-8: {error}"));
+            }
+            return 0;
+        }
+    };
     if name == "." || name == ".." {
         return 0;
     }
     unsafe {
-        (&mut *(data as *mut Vec<(u32, String)>)).push((d.inode, name));
+        (&mut *(data as *mut DirIterData))
+            .links
+            .push((d.inode, name));
     }
     0
 }

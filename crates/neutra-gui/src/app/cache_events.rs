@@ -70,6 +70,7 @@ pub(crate) fn rebuild_cache_index(app: &mut NeutraApp) {
 /// completes. The previous base (if any) stays searchable until the new
 /// one publishes; nothing scan-sized ever sits in RAM.
 pub(crate) fn build_streaming_cache_index(app: &mut NeutraApp, runs: SpillRuns) {
+    let cursors = std::mem::take(&mut app.scan_cursors);
     let records_count = runs.len();
     let path = app.cache_path.clone();
     let tx = app.tx.clone();
@@ -85,11 +86,12 @@ pub(crate) fn build_streaming_cache_index(app: &mut NeutraApp, runs: SpillRuns) 
         lane.records = records_count;
     }
     std::thread::spawn(move || {
-        let built = CompactIndex::rebuild_streamed(runs, &path).and_then(|built| {
-            neutra_core::BrowserIndex::ensure(&path, built.generation)?;
-            neutra_core::TreeSummary::ensure(&path, built.generation)?;
-            CompactIndex::open_fast(&path)
-        });
+        let built =
+            CompactIndex::rebuild_streamed_with_cursors(runs, &path, &cursors).and_then(|built| {
+                neutra_core::BrowserIndex::ensure(&path, built.generation)?;
+                neutra_core::TreeSummary::ensure(&path, built.generation)?;
+                CompactIndex::open_fast(&path)
+            });
         match built {
             Ok(compact) => {
                 let _ = tx.send(Event::CompactReady(compact));

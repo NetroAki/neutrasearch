@@ -2028,6 +2028,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 

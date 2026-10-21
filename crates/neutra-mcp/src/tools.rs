@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub fn call_tool(index: &mut Store, allowed_roots: &[PathBuf], name: &str, args: Value) -> Value {
     match name {
         "neutra_search" => search::run(index, allowed_roots, args),
-        "neutra_directory" => directory::run(index, args),
+        "neutra_directory" => directory::run(index, allowed_roots, args),
         "neutra_status" => {
             let basename = index
                 .path()

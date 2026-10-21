@@ -24,9 +24,7 @@ use mount_scope::{
 use paths::{compact_cache_path, env_flag, legacy_cache_path};
 use settings::{gui_settings_path, load_gui_settings, save_gui_settings};
 use startup_access::request_elevated_restart;
-pub(crate) use transport::{
-    launch_file_action, scan_has_reachable_lane, spawn_local_helper, FileAction,
-};
+pub(crate) use transport::{launch_file_action, spawn_local_helper, FileAction};
 
 fn main() -> eframe::Result<()> {
     bootstrap::run()

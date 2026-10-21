@@ -125,44 +125,43 @@ mod linux {
     mod scan;
     pub use scan::scan;
 
-    fn store_name(parent: u64, bytes: &[u8], names: &mut Vec<u8>) -> Option<Link> {
-        let text = String::from_utf8_lossy(bytes);
-        let raw = text.as_bytes();
-        let off = u32::try_from(names.len()).ok()?;
-        let len = u16::try_from(raw.len()).ok()?;
+    fn store_name(parent: u64, bytes: &[u8], names: &mut Vec<u8>) -> Result<Option<Link>> {
+        std::str::from_utf8(bytes).context("Btrfs filename is not UTF-8")?;
+        let raw = bytes;
+        let off = u32::try_from(names.len()).context("Btrfs filename arena exceeds 4 GiB")?;
+        let len = u16::try_from(raw.len()).context("Btrfs filename exceeds 65535 bytes")?;
         names.extend_from_slice(raw);
-        Some(Link {
+        Ok(Some(Link {
             parent,
             name_off: off,
             name_len: len,
-        })
+        }))
     }
-    fn parse_inode_ref(parent: u64, data: &[u8], names: &mut Vec<u8>) -> Option<Link> {
+    fn parse_inode_ref(parent: u64, data: &[u8], names: &mut Vec<u8>) -> Result<Option<Link>> {
         if data.len() < 10 {
-            return None;
+            return Ok(None);
         }
         let n = u16::from_le_bytes([data[8], data[9]]) as usize;
         if data.len() < 10 + n {
-            return None;
+            return Ok(None);
         }
         store_name(parent, &data[10..10 + n], names)
     }
-    fn parse_inode_extref(data: &[u8], names: &mut Vec<u8>) -> Option<Link> {
+    fn parse_inode_extref(data: &[u8], names: &mut Vec<u8>) -> Result<Option<Link>> {
         if data.len() < 18 {
-            return None;
+            return Ok(None);
         }
         let parent = le64(data);
         let n = u16::from_le_bytes([data[16], data[17]]) as usize;
         if data.len() < 18 + n {
-            return None;
+            return Ok(None);
         }
         store_name(parent, &data[18..18 + n], names)
     }
-    fn node_name<'a>(node: &Node, names: &'a [u8]) -> &'a str {
-        std::str::from_utf8(
+    fn node_name<'a>(node: &Node, names: &'a [u8]) -> Result<&'a str> {
+        Ok(std::str::from_utf8(
             &names[node.name_off as usize..node.name_off as usize + node.name_len as usize],
-        )
-        .unwrap()
+        )?)
     }
 
     fn ensure_dir_path(
@@ -170,33 +169,34 @@ mod linux {
         nodes: &[Node],
         names: &[u8],
         cache: &mut HashMap<u64, String>,
-    ) -> bool {
+    ) -> Result<bool> {
         if cache.contains_key(&ino) {
-            return true;
+            return Ok(true);
         }
         let mut current = ino;
         let mut chain = Vec::<usize>::new();
         let mut seen = HashSet::new();
         while !cache.contains_key(&current) {
             let Ok(i) = nodes.binary_search_by_key(&current, |n| n.ino) else {
-                return false;
+                return Ok(false);
             };
             if kind_from_mode(nodes[i].meta.mode) != FileKind::Dir || !seen.insert(i) {
-                return false;
+                return Ok(false);
             }
             chain.push(i);
             let parent = nodes[i].parent;
             if parent == u64::MAX {
-                return false;
+                return Ok(false);
             }
             current = parent;
         }
         let mut path = cache.get(&current).unwrap().clone();
         for i in chain.into_iter().rev() {
-            path = append_component(&path, node_name(&nodes[i], names));
+            let name = node_name(&nodes[i], names)?;
+            path = append_component(&path, name);
             cache.insert(nodes[i].ino, path.clone());
         }
-        true
+        Ok(true)
     }
     fn append_component(parent: &str, name: &str) -> String {
         let mut p = String::with_capacity(parent.len() + name.len() + 1);
