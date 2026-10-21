@@ -166,7 +166,7 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
     })
 }
 
-fn update_item(
+pub(super) fn update_item(
     h: Header,
     data: &[u8],
     names: &mut Vec<u8>,

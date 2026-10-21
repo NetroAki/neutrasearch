@@ -126,7 +126,7 @@ fn native_packed_refs_and_extrefs_emit_every_alias() {
     let mut nodes = Vec::new();
     let mut inode = vec![0u8; 160];
     inode[52..56].copy_from_slice(&(libc::S_IFREG | 0o644).to_le_bytes());
-    update_item(
+    parallel::update_item(
         Header {
             objectid: 900,
             offset: 0,
