@@ -130,7 +130,8 @@ jobs:
               }
             }
             $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'NeutrasearchHelper'"
-            $expectedPath = '"{0}" --windows-service' -f (Join-Path $env:ProgramFiles 'Neutrasearch\neutrasearch-helper.exe')
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $expectedPath = '"{0}" --windows-service --authorized-user {1}' -f (Join-Path $env:ProgramFiles 'Neutrasearch\neutrasearch-helper.exe'), $sid
             if ($serviceConfig.PathName -ne $expectedPath) {
               throw "Unexpected service path: $($serviceConfig.PathName)"
             }

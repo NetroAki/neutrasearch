@@ -122,4 +122,4 @@ Neutrasearch indexes filenames, paths, and metadata—not file contents. Index f
 
 ## Privacy on shared machines
 
-Neutrasearch indexes every drive from filesystem tables, so the index lists names, sizes and dates of files that individual accounts may not be able to open. On Windows the background service answers any local user. On Linux the index lives in the account that runs the watch service. Use it on machines where all local users may see each other's file names.
+Neutrasearch indexes every drive from filesystem tables, so the index lists names, sizes and dates of files that individual accounts may not be able to open. On Windows the installer approves its account for machine-wide metadata access; the service accepts only that account, SYSTEM and administrators. Upgrades preserve the approved account. Administrators deploying for another user can pass `-AuthorizedUserSid` to the installed `service/install-service.ps1`. On Linux the index belongs to the account running the watch service. Keep the index private: its metadata can include paths that the approved user cannot open.

@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string] $InstallDir
+    [string] $InstallDir,
+    [string] $AuthorizedUserSid
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,8 +56,23 @@ if ($LASTEXITCODE -ne 0) {
 # ACEs from this protected directory. OI/CI grants must not be applied directly
 # to files: those become inherit-only and make the executable unreadable.
 
-$binaryPath = '"{0}" --windows-service' -f $executable
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+if ([string]::IsNullOrWhiteSpace($AuthorizedUserSid)) {
+    $previous = Get-CimInstance -ClassName Win32_Service -Filter "Name = '$serviceName'"
+    if ($null -ne $previous -and $previous.PathName -match ' --authorized-user (S-1-(?:[0-9]+-)+[0-9]+)$') {
+        $AuthorizedUserSid = $Matches[1]
+    } else {
+        $AuthorizedUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
+}
+if ($AuthorizedUserSid -notmatch '^S-1-(?:[0-9]+-)+[0-9]+$') {
+    throw 'AuthorizedUserSid must be a numeric Windows account SID'
+}
+$approvedSid = [Security.Principal.SecurityIdentifier]::new($AuthorizedUserSid)
+if (-not $approvedSid.IsAccountSid()) {
+    throw 'AuthorizedUserSid must identify an individual Windows account'
+}
+$binaryPath = '"{0}" --windows-service --authorized-user {1}' -f $executable, $approvedSid.Value
 if ($null -ne $existing) {
     if ($existing.Status -ne 'Stopped') {
         & "$env:SystemRoot\System32\sc.exe" stop $serviceName | Out-Null

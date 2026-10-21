@@ -2,6 +2,7 @@
 //! The local named pipe accepts only the installed GUI client.
 
 mod domain;
+mod permissions;
 mod pipe;
 mod state;
 mod view;

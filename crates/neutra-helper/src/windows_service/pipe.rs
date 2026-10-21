@@ -11,7 +11,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -21,11 +21,12 @@ use windows_sys::Win32::System::Services::SERVICE_RUNNING;
 pub(super) fn service_body() -> Result<()> {
     init_service_logging()?;
     validate_installed_service_files()?;
+    let acl = super::permissions::pipe_acl(std::env::args().skip(2))?;
     service_log("service starting");
     report_status(SERVICE_RUNNING, 0, 0);
 
     while !STOP_REQUESTED.load(Ordering::Acquire) {
-        let pipe = create_pipe().context("create privileged scanner pipe")?;
+        let pipe = create_pipe(&acl).context("create privileged scanner pipe")?;
         service_log("pipe created; waiting for client");
         let connected = unsafe { ConnectNamedPipe(pipe, null_mut()) };
         if connected == 0 && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
@@ -72,11 +73,8 @@ pub(super) fn service_body() -> Result<()> {
     Ok(())
 }
 
-fn create_pipe() -> Result<HANDLE> {
-    // SYSTEM and Administrators have full control. Authenticated local users
-    // may connect, but remote clients are rejected and the executable path is
-    // authenticated immediately after connection.
-    let sddl = wide("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)");
+fn create_pipe(acl: &str) -> Result<HANDLE> {
+    let sddl = wide(acl);
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
     let converted = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -98,7 +96,7 @@ fn create_pipe() -> Result<HANDLE> {
     let handle = unsafe {
         CreateNamedPipeW(
             path.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             64 * 1024,

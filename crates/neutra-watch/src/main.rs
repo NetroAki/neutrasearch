@@ -40,7 +40,12 @@ fn fail(message: String) -> ! {
 fn main() {
     #[cfg(target_os = "linux")]
     unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
+            fail(format!(
+                "cannot protect the watcher process: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
     }
     #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some("--resume-after") {

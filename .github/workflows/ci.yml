@@ -63,6 +63,15 @@ jobs:
       - run: cargo run --release --locked --bin neutrasearch -- search --help
       - run: cargo run --release --locked --bin neutrasearch-helper -- --version
       - run: cargo run --release --locked --bin neutrasearch-helper -- --build
+      - name: Keep Windows binaries for isolated VM checks
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-service-qa
+          path: |
+            target/release/neutrasearch.exe
+            target/release/neutrasearch-helper.exe
+          retention-days: 3
       - name: Reject directory-walking APIs in native lanes
         if: runner.os == 'Linux'
         shell: bash

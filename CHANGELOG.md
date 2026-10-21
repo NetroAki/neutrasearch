@@ -4,6 +4,15 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-10-21
+
+- Restrict the Windows scanner pipe to the account approved during installation,
+  SYSTEM and administrators. Preserve the approved account during upgrades and
+  reject service startup when that approval is missing.
+- Prevent the GUI from creating competing scanner pipe instances or granting
+  a pipe server impersonation rights.
+- Stop the Linux helper and watcher if process memory protection cannot be set.
+
 ## [0.1.30] - 2026-10-21
 
 ### Known limits

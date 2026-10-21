@@ -13,12 +13,17 @@ pub(crate) fn scan_via_windows_service(
     mounts: Vec<MountInfo>,
     roots: Vec<PathBuf>,
 ) -> Result<bool, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_APPEND_DATA, FILE_GENERIC_READ, FILE_GENERIC_WRITE, SECURITY_IDENTIFICATION,
+        SECURITY_SQOS_PRESENT,
+    };
     const PIPE: &str = r"\\.\pipe\Neutrasearch.Helper.v1";
     let deadline = Instant::now() + Duration::from_secs(5);
     let pipe = loop {
         match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
+            .access_mode((FILE_GENERIC_READ | FILE_GENERIC_WRITE) & !FILE_APPEND_DATA)
+            .custom_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION)
             .open(PIPE)
         {
             Ok(pipe) => break pipe,
