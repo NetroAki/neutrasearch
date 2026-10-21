@@ -67,13 +67,20 @@ Filename: "{app}\neutrasearch.exe"; Description: "Launch Neutrasearch"; Flags: n
 var
   ApprovedAccountPage: TInputQueryWizardPage;
 
+// The app directory constant is unavailable until the directory is chosen, so
+// the pages that run earlier look for a previous install in the default place.
+function HelperAlreadyInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{autopf}\Neutrasearch\neutrasearch-helper.exe'));
+end;
+
 procedure InitializeWizard;
 begin
   ApprovedAccountPage := CreateInputQueryPage(wpWelcome,
     'Approve a Windows account', 'Who will use Neutrasearch?',
     'This account may search file names, sizes and dates across all drives. If you supplied another administrator''s password to install, enter the account that will use the application. Upgrades keep the previous approval unless you choose an account here.');
   ApprovedAccountPage.Add('Windows account (COMPUTER\name or DOMAIN\name; blank keeps the existing approval):', False);
-  if not FileExists(ExpandConstant('{app}\neutrasearch-helper.exe')) then
+  if not HelperAlreadyInstalled then
     ApprovedAccountPage.Values[0] := GetUserNameString;
 end;
 
@@ -87,7 +94,7 @@ begin
   Account := Trim(ApprovedAccountPage.Values[0]);
   if Account = '' then
   begin
-    if not FileExists(ExpandConstant('{app}\neutrasearch-helper.exe')) then
+    if not HelperAlreadyInstalled then
       Result := 'Choose the Windows account that will use Neutrasearch.';
     exit;
   end;

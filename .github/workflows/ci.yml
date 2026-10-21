@@ -77,6 +77,26 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
           & $compiler "/DAppVersion=$version" "/DBinDir=$binDir" "/DOutputDir=$outputDir" 'packaging/windows/neutrasearch.iss'
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+      - name: Install the Windows installer twice and check the service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'neutrasearch-installer') -Filter '*-setup.exe' | Select-Object -First 1).FullName
+          try {
+            foreach ($pass in 1..2) {
+              $log = Join-Path $env:RUNNER_TEMP "setup-$pass.log"
+              $process = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log") -Wait -PassThru
+              if ($process.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "Installer pass $pass exited $($process.ExitCode)" }
+              (Get-Service NeutrasearchHelper).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+            }
+          } finally {
+            $service = Get-Service NeutrasearchHelper -ErrorAction SilentlyContinue
+            if ($null -ne $service) {
+              if ($service.Status -ne 'Stopped') { sc.exe stop NeutrasearchHelper | Out-Null; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) }
+              sc.exe delete NeutrasearchHelper | Out-Null
+            }
+          }
       - run: cargo run --release --locked --bin neutrasearch -- --version
       - run: cargo run --release --locked --bin neutrasearch -- index --help
       - run: cargo run --release --locked --bin neutrasearch -- search --help
