@@ -135,8 +135,7 @@ fn unix_backslash_names_and_case_variants_stay_distinct_sidecar_paths() {
     .unwrap();
     assert!(hidden
         .get(0, "/srv/allowed")
-        .map_or(true, |entry| entry.logical_bytes == 0
-            && entry.children.is_empty()));
+        .is_none_or(|entry| entry.logical_bytes == 0 && entry.children.is_empty()));
     assert_eq!(
         hidden.get(0, "/srv/allowed\\secret").unwrap().logical_bytes,
         5

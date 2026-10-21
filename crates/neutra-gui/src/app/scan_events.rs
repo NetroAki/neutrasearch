@@ -91,6 +91,12 @@ fn adopt_staging(app: &mut NeutraApp, spill: Option<neutra_core::SpillAccumulato
     super::cache_events::build_streaming_cache_index(app, runs);
 }
 
+/// Clear the one-shot onboarding state after any scan attempt.
+pub(super) fn end_scan_setup(app: &mut NeutraApp) {
+    app.onboarding_scan = false;
+    app.setup_focus_requested = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::scan_can_publish;
@@ -101,10 +107,4 @@ mod tests {
         assert!(!scan_can_publish(0, 0, false));
         assert!(!scan_can_publish(2, 1, false));
     }
-}
-
-/// Clear the one-shot onboarding state after any scan attempt.
-pub(super) fn end_scan_setup(app: &mut NeutraApp) {
-    app.onboarding_scan = false;
-    app.setup_focus_requested = true;
 }

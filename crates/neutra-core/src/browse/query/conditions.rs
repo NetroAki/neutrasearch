@@ -65,10 +65,16 @@ pub(super) fn scope_clause(root: &str, sensitive: bool, values: &mut Vec<Value>)
         "path"
     } else if sensitive {
         "replace(path,char(92),'/')"
+    } else if root.starts_with('/') && !cfg!(windows) {
+        "lower(path)"
     } else {
         "lower(replace(path,char(92),'/'))"
     };
-    let normalized = root.replace('\\', "/");
+    let normalized = if root.starts_with('/') && !cfg!(windows) {
+        root.to_owned()
+    } else {
+        root.replace('\\', "/")
+    };
     let root = if sensitive {
         normalized
     } else {
@@ -80,4 +86,24 @@ pub(super) fn scope_clause(root: &str, sensitive: bool, values: &mut Vec<Value>)
     past.push('0');
     values.extend([Value::Text(root), Value::Text(prefix), Value::Text(past)]);
     format!("({path}=? OR ({path}>=? AND {path}<?))")
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    #[test]
+    fn unix_literal_backslash_scopes_keep_their_spelling() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE entries(path TEXT); INSERT INTO entries VALUES('/allowed/name\\/keep.txt'),('/allowed/name/other.txt');").unwrap();
+        let mut values = Vec::new();
+        let clause = scope_clause("/allowed/name\\", true, &mut values);
+        let paths: Vec<String> = db
+            .prepare(&format!("SELECT path FROM entries WHERE {clause}"))
+            .unwrap()
+            .query_map(rusqlite::params_from_iter(values.iter()), |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(paths, ["/allowed/name\\/keep.txt"]);
+    }
 }

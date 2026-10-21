@@ -44,6 +44,7 @@ pub(super) fn ensure(index_path: &Path, generation: u64) -> io::Result<()> {
         return Ok(());
     }
     let base = CompactIndex::open_fast(index_path)?;
+    base.require_current_order()?;
     if base.generation() != generation {
         return Err(io::Error::other(
             "index replaced before building browse orders",

@@ -188,6 +188,7 @@ impl CompactIndex {
         delta: Option<&DeltaIndex>,
         limit: usize,
     ) -> io::Result<Option<Vec<FileRecord>>> {
+        self.require_current_order()?;
         let prefix = dir_prefix(dir);
         let mut cursor = Cursor::seek(self, &prefix)?;
         let mut out = Vec::new();

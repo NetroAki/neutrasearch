@@ -88,8 +88,8 @@ impl CompactIndex {
         if let Some(overlay) = delta {
             let parts = overlay.scan_upserts(
                 rayon::current_num_threads(),
-                Vec::<(u32, FileRecord)>::new,
-                |part: &mut Vec<(u32, FileRecord)>, view| {
+                || (0u64, Vec::<(u32, FileRecord)>::new()),
+                |(count, part), view| {
                     if cancelled() {
                         return Err(io::Error::new(
                             io::ErrorKind::Interrupted,
@@ -97,23 +97,26 @@ impl CompactIndex {
                         ));
                     }
                     if let Some(hit) = Self::view_hit(&matcher, view) {
-                        part.push(hit);
+                        *count += 1;
+                        if past_cursor(q.sort, hit.0, &hit.1, after) {
+                            part.push(hit);
+                        }
+                        if q.limit > 0 && part.len() >= prune_at {
+                            retain_best(part, q.limit, &cmp);
+                        }
                     }
                     Ok(())
                 },
             )?;
-            for part in parts {
-                for (score, record) in part {
-                    matched += 1;
-                    if past_cursor(q.sort, score, &record, after) {
-                        ranked.push((score, record));
-                    }
-                    if q.limit > 0 && ranked.len() >= prune_at {
-                        retain_best(&mut ranked, q.limit, &cmp);
-                    }
+            for (count, mut part) in parts {
+                matched += count;
+                ranked.append(&mut part);
+                if q.limit > 0 && ranked.len() >= prune_at {
+                    retain_best(&mut ranked, q.limit, &cmp);
                 }
             }
         }
+
         if q.limit > 0 {
             retain_best(&mut ranked, q.limit, &cmp);
         }

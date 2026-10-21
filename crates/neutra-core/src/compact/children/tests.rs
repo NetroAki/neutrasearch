@@ -96,6 +96,7 @@ fn legacy_v6_children_keep_backslash_separator_behavior() {
 
     let index = CompactIndex::open_fast(&path).unwrap();
     assert_eq!(index.record_version, 6);
+    assert!(index.subtree_records("/d", None, 100).is_err());
     assert_eq!(
         names(&index.directory_children("/d", None).unwrap()),
         ["/d/a0"]

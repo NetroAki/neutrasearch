@@ -71,6 +71,7 @@ impl BrowserIndex {
             ));
         }
         let base = CompactIndex::open_fast(&updates::base_path(index))?;
+        base.require_current_order()?;
         if base.generation().to_string() != found.2 {
             return Err(io::Error::other("pinned browse base generation mismatch"));
         }

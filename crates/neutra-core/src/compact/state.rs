@@ -2,6 +2,12 @@ use super::*;
 use std::io;
 
 impl CompactIndex {
+    pub(crate) fn require_current_order(&self) -> io::Result<()> {
+        if !cfg!(windows) && self.record_version < 7 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "legacy Unix index needs a native metadata rebuild before ordered subtree or catalog operations"));
+        }
+        Ok(())
+    }
     pub fn mapped_bytes(&self) -> usize {
         self.map.len()
     }

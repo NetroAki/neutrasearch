@@ -142,5 +142,5 @@ pub(super) fn parse_size_num(s: &str) -> Option<u64> {
         't' | 'T' => (&s[..s.len() - 1], 1u64 << 40),
         _ => (s, 1),
     };
-    digits.parse::<u64>().ok().map(|n| n * mult)
+    digits.parse::<u64>().ok().and_then(|n| n.checked_mul(mult))
 }

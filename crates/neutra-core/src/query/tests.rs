@@ -21,6 +21,11 @@ fn rec(path: &str, size: u64) -> FileRecord {
 
 #[test]
 fn parses_filters() {
+    assert_eq!(super::syntax::parse_size_num("16777216T"), None);
+    assert_eq!(
+        super::syntax::parse_size_num("18446744073709551615"),
+        Some(u64::MAX)
+    );
     let q = Query::parse("main ext:rs,toml size:>1k kind:file under:/src");
     assert_eq!(q.terms, vec!["main"]);
     assert_eq!(q.exts, vec!["rs", "toml"]);

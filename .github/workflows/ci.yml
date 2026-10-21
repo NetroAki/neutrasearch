@@ -58,6 +58,9 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --bins --release --locked
+      - name: Build isolated Windows GUI fixture
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked -p neutra-core --example gui_fixture
       - name: Check clean-Windows runtime dependencies
         if: runner.os == 'Windows'
         run: ./packaging/windows/check-runtime.ps1 -BinaryDirectory target/release
@@ -87,6 +90,8 @@ jobs:
           path: |
             target/release/neutrasearch.exe
             target/release/neutrasearch-helper.exe
+            target/release/neutrasearch-query.exe
+            target/release/examples/gui_fixture.exe
             ${{ runner.temp }}/neutrasearch-installer/*.exe
           retention-days: 3
       - name: Reject directory-walking APIs in native lanes

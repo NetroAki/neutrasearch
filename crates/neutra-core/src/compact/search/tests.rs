@@ -87,3 +87,39 @@ fn assert_pages(index: &CompactIndex, delta: &DeltaIndex, sort: SortKey, regex: 
         .collect();
     assert_eq!(actual, expected, "cursor order disagrees for {sort:?}");
 }
+
+#[test]
+fn broad_live_matches_keep_exact_counts_and_bounded_pages() {
+    let dir = std::env::temp_dir().join(format!("neutra-overlay-topn-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("index.nsx");
+    CompactIndex::build(&[], &path).unwrap();
+    let index = CompactIndex::open_fast(&path).unwrap();
+    let wal = path.with_extension("delta");
+    let mut delta = DeltaIndex::open(&wal, index.generation()).unwrap();
+    delta
+        .apply_batch((0..2048).map(|n| DeltaChange::Upsert(record(n))))
+        .unwrap();
+    let mut query = Query::parse("call");
+    query.limit = 10;
+    query.sort = SortKey::PathAsc;
+    let first = index.search_with_delta(&query, &delta).unwrap();
+    assert_eq!(first.1.matched, 2048);
+    assert_eq!(first.0.len(), 10);
+    drop(delta);
+    let snapshot = DeltaIndex::open_snapshot(&wal, index.generation()).unwrap();
+    let second = index
+        .search_after_interruptible(
+            &query,
+            Some(&snapshot),
+            Some(&first.0.last().unwrap().record),
+            &|| false,
+        )
+        .unwrap();
+    assert_eq!(second.1.matched, 2048);
+    assert_eq!(second.0.len(), 10);
+    assert!(second.0[0].record.path > first.0.last().unwrap().record.path);
+    drop(snapshot);
+    drop(index);
+    std::fs::remove_dir_all(dir).unwrap();
+}

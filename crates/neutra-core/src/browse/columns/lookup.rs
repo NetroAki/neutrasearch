@@ -59,6 +59,7 @@ impl<'a> BlockReader<'a> {
 
     /// First id whose path is not before the argument in base order.
     pub(in crate::browse) fn path_lower_bound(&mut self, path: &str) -> io::Result<u32> {
+        self.base.require_current_order()?;
         let blocks = self.base.block_count();
         let (mut low, mut high) = (0usize, blocks);
         while low < high {
