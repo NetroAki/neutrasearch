@@ -80,13 +80,16 @@ mod linux {
         name_len: u16,
     }
 
-    fn finish_node(
-        nodes: &mut Vec<Node>,
-        ino: u64,
-        meta: &mut Option<Meta>,
-        link: &mut Option<Link>,
-    ) {
-        if let Some(m) = meta.take() {
+    /// A temporary inode record while its metadata and all references are
+    /// collected. Links are emitted as nodes only after metadata is known.
+    #[derive(Default)]
+    struct PendingInode {
+        meta: Option<Meta>,
+        links: Vec<Link>,
+    }
+
+    fn finish_node(nodes: &mut Vec<Node>, ino: u64, pending: &mut PendingInode) {
+        if let Some(m) = pending.meta.take() {
             if ino == ROOT_INO {
                 nodes.push(Node {
                     ino,
@@ -95,17 +98,19 @@ mod linux {
                     name_off: 0,
                     name_len: 0,
                 });
-            } else if let Some(l) = link.take() {
-                nodes.push(Node {
-                    ino,
-                    parent: l.parent,
-                    meta: m,
-                    name_off: l.name_off,
-                    name_len: l.name_len,
-                });
+            } else {
+                for l in pending.links.drain(..) {
+                    nodes.push(Node {
+                        ino,
+                        parent: l.parent,
+                        meta: m,
+                        name_off: l.name_off,
+                        name_len: l.name_len,
+                    });
+                }
             }
         }
-        *link = None;
+        pending.links.clear();
     }
 
     const IOC_WRITE: u64 = 1;
@@ -137,26 +142,42 @@ mod linux {
             name_len: len,
         }))
     }
-    fn parse_inode_ref(parent: u64, data: &[u8], names: &mut Vec<u8>) -> Result<Option<Link>> {
-        if data.len() < 10 {
-            return Ok(None);
-        }
-        let n = u16::from_le_bytes([data[8], data[9]]) as usize;
-        if data.len() < 10 + n {
-            return Ok(None);
-        }
-        store_name(parent, &data[10..10 + n], names)
+    fn parse_inode_ref(
+        parent: u64,
+        data: &[u8],
+        names: &mut Vec<u8>,
+        links: &mut Vec<Link>,
+    ) -> Result<()> {
+        parse_refs(parent, data, false, names, links)
     }
-    fn parse_inode_extref(data: &[u8], names: &mut Vec<u8>) -> Result<Option<Link>> {
-        if data.len() < 18 {
-            return Ok(None);
+    fn parse_inode_extref(data: &[u8], names: &mut Vec<u8>, links: &mut Vec<Link>) -> Result<()> {
+        let parent = if data.len() >= 8 { le64(data) } else { 0 };
+        parse_refs(parent, data, true, names, links)
+    }
+    fn parse_refs(
+        parent: u64,
+        mut data: &[u8],
+        extended: bool,
+        names: &mut Vec<u8>,
+        links: &mut Vec<Link>,
+    ) -> Result<()> {
+        let header = if extended { 18 } else { 10 };
+        while data.len() >= header {
+            let len = u16::from_le_bytes(data[header - 2..header].try_into().unwrap()) as usize;
+            let end = header
+                .checked_add(len)
+                .filter(|end| len > 0 && *end <= data.len())
+                .context("truncated Btrfs inode reference")?;
+            let link_parent = if extended { le64(data) } else { parent };
+            if let Some(link) = store_name(link_parent, &data[header..end], names)? {
+                links.push(link);
+            }
+            data = &data[end..];
         }
-        let parent = le64(data);
-        let n = u16::from_le_bytes([data[16], data[17]]) as usize;
-        if data.len() < 18 + n {
-            return Ok(None);
+        if !data.is_empty() {
+            bail!("truncated Btrfs inode reference header");
         }
-        store_name(parent, &data[18..18 + n], names)
+        Ok(())
     }
     fn node_name<'a>(node: &Node, names: &'a [u8]) -> Result<&'a str> {
         Ok(std::str::from_utf8(

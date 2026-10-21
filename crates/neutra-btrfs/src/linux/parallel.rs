@@ -75,8 +75,7 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
     let mut nodes = Vec::<Node>::with_capacity(256_000);
     let mut names = Vec::<u8>::with_capacity(8 * 1024 * 1024);
     let mut current_ino = None;
-    let mut current_meta = None;
-    let mut current_link = None;
+    let mut current = PendingInode::default();
     let mut cursor = (range_min, INODE_ITEM, 0u64);
     let mut batches = 0u64;
     let mut storage = vec![0u64; SEARCH_V2_HEADER / 8 + SEARCH_BUF_U64S];
@@ -142,11 +141,11 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
             let data = &bytes[pos..end];
             if current_ino != Some(h.objectid) {
                 if let Some(old) = current_ino {
-                    finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
+                    finish_node(&mut nodes, old, &mut current);
                 }
                 current_ino = Some(h.objectid);
             }
-            update_item(h, data, &mut names, &mut current_meta, &mut current_link)?;
+            update_item(h, data, &mut names, &mut current)?;
             pos = end;
             last = Some((h.objectid, h.item_type, h.offset));
         }
@@ -158,7 +157,7 @@ fn scan_range(mount: PathBuf, tree_id: u64, range_min: u64, range_max: u64) -> R
         cursor = next;
     }
     if let Some(old) = current_ino {
-        finish_node(&mut nodes, old, &mut current_meta, &mut current_link);
+        finish_node(&mut nodes, old, &mut current);
     }
     Ok(Shard {
         nodes,
@@ -171,22 +170,19 @@ fn update_item(
     h: Header,
     data: &[u8],
     names: &mut Vec<u8>,
-    current_meta: &mut Option<Meta>,
-    current_link: &mut Option<Link>,
+    current: &mut PendingInode,
 ) -> Result<()> {
     match h.item_type {
         INODE_ITEM if data.len() >= 148 => {
-            *current_meta = Some(Meta {
+            current.meta = Some(Meta {
                 size: le64(&data[16..]),
                 disk: le64(&data[24..]),
                 mode: le32(&data[52..]),
                 mtime: le64(&data[136..]) as i64,
             })
         }
-        INODE_REF if current_link.is_none() => {
-            *current_link = parse_inode_ref(h.offset, data, names)?
-        }
-        INODE_EXTREF if current_link.is_none() => *current_link = parse_inode_extref(data, names)?,
+        INODE_REF => parse_inode_ref(h.offset, data, names, &mut current.links)?,
+        INODE_EXTREF => parse_inode_extref(data, names, &mut current.links)?,
         _ => {}
     }
     Ok(())
