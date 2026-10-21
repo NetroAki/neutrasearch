@@ -1,4 +1,3 @@
-use crate::dir_summary::compare_paths;
 use crate::CompactIndex;
 use crate::FsKind;
 
@@ -109,11 +108,11 @@ fn normalizes_windows_and_unc_paths() {
 #[test]
 fn unix_backslash_names_and_case_variants_stay_distinct_sidecar_paths() {
     assert_ne!(
-        compare_paths("/srv/allowed", "/srv/allowed\\secret"),
+        crate::dir_summary::compare_paths("/srv/allowed", "/srv/allowed\\secret"),
         std::cmp::Ordering::Equal
     );
     assert_ne!(
-        compare_paths("/srv/allowed", "/srv/ALLOWED"),
+        crate::dir_summary::compare_paths("/srv/allowed", "/srv/ALLOWED"),
         std::cmp::Ordering::Equal
     );
     let lower =

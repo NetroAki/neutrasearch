@@ -130,7 +130,11 @@ fn failed_staged_copy_leaves_no_partial_destination() {
     let target = root.join("target");
     std::fs::create_dir_all(source.join("locked")).unwrap();
     std::fs::write(source.join("first"), "bytes").unwrap();
-    std::fs::set_permissions(source.join("locked"), std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(
+        source.join("locked"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
     let unreadable = std::fs::read_dir(source.join("locked")).is_err();
     let outcome = copy::copy(&source, &target);
     std::fs::set_permissions(
