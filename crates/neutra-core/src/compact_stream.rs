@@ -32,7 +32,10 @@ impl CompactIndex {
     /// Rebuild from spilled runs with bounded RAM, then publish atomically.
     /// Callers that already hold every record in memory keep `rebuild`.
     pub fn rebuild_streamed(runs: SpillRuns, path: &Path) -> io::Result<BuildStats> {
-        Self::rebuild_streamed_with_cursors(runs, path, &[])
+        with_rebuild_lock(path, || {
+            recover_streamed_publication(path)?;
+            build_streamed(&runs, path, None)
+        })
     }
 
     pub fn rebuild_streamed_with_cursors(
@@ -42,7 +45,7 @@ impl CompactIndex {
     ) -> io::Result<BuildStats> {
         with_rebuild_lock(path, || {
             recover_streamed_publication(path)?;
-            build_streamed(&runs, path, cursors)
+            build_streamed(&runs, path, Some(cursors))
         })
     }
 }
@@ -50,7 +53,7 @@ impl CompactIndex {
 fn build_streamed(
     runs: &SpillRuns,
     path: &Path,
-    cursors: &[crate::NativeCursor],
+    cursors: Option<&[crate::NativeCursor]>,
 ) -> io::Result<BuildStats> {
     let started = Instant::now();
     let count = runs.len();
@@ -146,7 +149,9 @@ fn build_streamed(
     drop(verified);
     crate::dir_summary::DirectorySummary::open_for_compact(&staged, generation)?;
     crate::TreeSummary::open_for_compact(&staged, generation)?;
-    crate::native_cursor::save_seed(&staged, generation, cursors)?;
+    if let Some(cursors) = cursors {
+        crate::native_cursor::save_seed(&staged, generation, cursors)?;
+    }
     write_marker(&marker, generation)?;
     let bytes = std::fs::metadata(&staged)?.len();
     let stats = BuildStats {

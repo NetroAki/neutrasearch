@@ -173,3 +173,29 @@ fn rebuilt_cursor_seed_is_bound_to_published_generation() {
     assert!(crate::native_cursor::load_seed(&path, built.generation + 1).is_err());
     clean(&path);
 }
+
+#[test]
+fn compact_publication_preserves_ingest_seed_across_generations() {
+    let path = paths("cursor-compaction");
+    clean(&path);
+    let cursors = vec![crate::NativeCursor {
+        mount: "/mnt/a".into(),
+        tree: 257,
+        since: 42,
+    }];
+    CompactIndex::rebuild_streamed_with_cursors(
+        runs(vec![rec("/mnt/a/old", 1)], &path),
+        &path,
+        &cursors,
+    )
+    .unwrap();
+    let staged = crate::compact::suffix_path(&path, ".compact");
+    let built =
+        CompactIndex::rebuild_streamed(runs(vec![rec("/mnt/a/new", 2)], &staged), &staged).unwrap();
+    CompactIndex::publish(&staged, &path).unwrap();
+    assert_eq!(
+        crate::native_cursor::load_seed(&path, built.generation).unwrap(),
+        cursors
+    );
+    clean(&path);
+}

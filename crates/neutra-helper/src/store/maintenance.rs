@@ -117,6 +117,7 @@ fn clean_stage(staged: &std::path::Path) -> Result<()> {
     for path in [
         staged.to_path_buf(),
         append_suffix(staged, ".new"),
+        append_suffix(staged, ".ingest-cursor"),
         DirectorySummary::path_for(staged),
         TreeSummary::path_for(staged),
     ] {
