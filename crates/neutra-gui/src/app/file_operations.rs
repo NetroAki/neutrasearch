@@ -90,7 +90,12 @@ impl FileOperations {
     pub(crate) fn confirm_rename(&mut self) {
         if let Some(from) = self.rename.clone() {
             let name = self.rename_name.trim();
-            if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name.contains('/')
+                || (cfg!(windows) && name.contains(['\\', ':']))
+            {
                 self.message = Some(("Enter a valid file name".into(), true));
                 return;
             }

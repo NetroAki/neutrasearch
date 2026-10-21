@@ -220,7 +220,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
             // extended attributes and ACLs, and the original would then be
             // removed. Refuse so the source stays untouched.
             Err(e) if is_cross_device(&e) => Err(format!(
-                "cannot move {} to another volume here; copy it and remove the original instead",
+                "cannot move {} to another volume here; copy it, check the copy, then remove the original yourself",
                 source.display()
             )),
             Err(e) => Err(format!("cannot move {}: {e}", source.display())),

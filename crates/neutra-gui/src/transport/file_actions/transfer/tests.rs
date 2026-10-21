@@ -167,3 +167,47 @@ fn staged_copy_publishes_the_whole_tree_without_replacing() {
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_copy_keeps_file_streams_and_refuses_folders_with_streams() {
+    let root = sandbox();
+    let source = root.join("source");
+    std::fs::write(&source, "main").unwrap();
+    std::fs::write(format!("{}:note", source.display()), "stream").unwrap();
+    let target = root.join("target");
+    copy_path_noreplace(&source, &target).unwrap();
+    assert_eq!(
+        std::fs::read(format!("{}:note", target.display())).unwrap(),
+        b"stream"
+    );
+    let folder = root.join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(format!("{}:note", folder.display()), "stream").unwrap();
+    assert!(copy_path_noreplace(&folder, &root.join("folder-copy")).is_err());
+    assert!(!root.join("folder-copy").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_copy_keeps_extended_attributes() {
+    let root = sandbox();
+    let source = root.join("source");
+    std::fs::write(&source, "main").unwrap();
+    assert!(Command::new("xattr")
+        .args(["-w", "com.neutrasearch.test", "kept"])
+        .arg(&source)
+        .status()
+        .unwrap()
+        .success());
+    let target = root.join("target");
+    copy_path_noreplace(&source, &target).unwrap();
+    let out = Command::new("xattr")
+        .args(["-p", "com.neutrasearch.test"])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "kept");
+    std::fs::remove_dir_all(root).unwrap();
+}

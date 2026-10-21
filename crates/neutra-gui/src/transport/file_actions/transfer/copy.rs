@@ -77,6 +77,44 @@ fn copy_file(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
+/// Create the folder with the source's attributes. A folder that carries
+/// named data streams cannot be copied faithfully, so refuse it.
+#[cfg(windows)]
+fn create_dir_like(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateDirectoryExW, FindClose, FindFirstStreamW, FindStreamInfoStandard,
+        WIN32_FIND_STREAM_DATA,
+    };
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
+    let (from, to) = (wide(source), wide(target));
+    let mut data = WIN32_FIND_STREAM_DATA {
+        StreamSize: 0,
+        cStreamName: [0; 296],
+    };
+    // SAFETY: the path is NUL-terminated and data matches the requested level.
+    let handle = unsafe {
+        FindFirstStreamW(
+            from.as_ptr(),
+            FindStreamInfoStandard,
+            (&mut data as *mut WIN32_FIND_STREAM_DATA).cast(),
+            0,
+        )
+    };
+    if handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        // SAFETY: handle came from a successful FindFirstStreamW.
+        unsafe { FindClose(handle) };
+        return Err(io::Error::other(
+            "the folder has alternate data streams that a copy cannot carry",
+        ));
+    }
+    // SAFETY: both buffers are NUL-terminated and outlive the call.
+    if unsafe { CreateDirectoryExW(from.as_ptr(), to.as_ptr(), std::ptr::null()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(not(target_os = "macos"))]
 fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
@@ -95,6 +133,9 @@ fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {
         }
     }
     if metadata.is_dir() {
+        #[cfg(windows)]
+        create_dir_like(source, target)?;
+        #[cfg(not(windows))]
         fs::create_dir(target)?;
         for entry in fs::read_dir(source)? {
             let entry = entry?;
