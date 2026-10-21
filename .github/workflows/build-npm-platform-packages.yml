@@ -44,10 +44,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Require the version to match the workspace
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           workspace=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-          if [ "$workspace" != "${{ inputs.version }}" ]; then
-            echo "input ${{ inputs.version }} does not match workspace $workspace" >&2
+          if [ "$workspace" != "$INPUT_VERSION" ]; then
+            echo "input $INPUT_VERSION does not match workspace $workspace" >&2
             exit 1
           fi
       - uses: actions/setup-python@v6
@@ -72,13 +74,15 @@ jobs:
       - name: Smoke native applications
         run: cargo run --release --locked --target "${{ matrix.target }}" --bin neutrasearch -- --version
       - name: Prepare platform npm package
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: >-
           python packaging/tools/package_release.py npm-platform
           --project-root .
           --target-dir "target/${{ matrix.target }}/release"
           --output-dir dist/npm
           --target "${{ matrix.target }}"
-          --version "${{ inputs.version }}"
+          --version "$INPUT_VERSION"
       - name: Pack platform npm package
         run: npm pack
         working-directory: dist/npm/${{ matrix.package }}
