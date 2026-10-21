@@ -25,7 +25,7 @@ jobs:
           node-version: '22'
           registry-url: https://registry.npmjs.org
       - name: Use current npm CLI for trusted publishing
-        run: npm install --global npm@latest
+        run: npm install --global npm@12.2.0
       - name: Test package
         run: npm test
         working-directory: packages/pi-neutrasearch

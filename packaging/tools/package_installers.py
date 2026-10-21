@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import io
 import os
 import plistlib
@@ -162,6 +163,24 @@ def build_deb(project_root: Path, target_dir: Path, output_dir: Path, target: st
         for name in ("README.md", "LICENSE", "CHANGELOG.md", "THIRD-PARTY-NOTICES.txt"):
             shutil.copyfile(require_file(project_root / name), docs / name)
 
+        payload = sorted(
+            path for path in root.rglob("*") if path.is_file() and "DEBIAN" not in path.relative_to(root).parts
+        )
+        (control / "md5sums").write_text(
+            "".join(
+                f"{hashlib.md5(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}\n"
+                for path in payload
+            ),
+            encoding="utf-8",
+        )
+        installed_kib = max(1, -(-sum(path.stat().st_size for path in payload) // 1024))
+        control_file = control / "control"
+        control_file.write_text(
+            control_file.read_text(encoding="utf-8").replace(
+                "Homepage:", f"Installed-Size: {installed_kib}\nHomepage:", 1
+            ),
+            encoding="utf-8",
+        )
         control_archive = tar_gz_tree(control)
         data_archive = tar_gz_tree(root, exclude="DEBIAN")
         write_ar(
