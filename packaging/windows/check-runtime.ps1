@@ -2,8 +2,25 @@ param([Parameter(Mandatory = $true)][string] $BinaryDirectory)
 
 $ErrorActionPreference = 'Stop'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-$dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dumpbin)) {
+$dumpbin = $null
+if (Test-Path -LiteralPath $vswhere) {
+    $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($dumpbin)) {
+        # Some runner images omit the component id vswhere filters on.
+        $install = & $vswhere -latest -products '*' -property installationPath | Select-Object -First 1
+        if (-not [string]::IsNullOrWhiteSpace($install)) {
+            $dumpbin = Get-ChildItem -Path (Join-Path $install 'VC\Tools\MSVC') -Filter dumpbin.exe -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match 'Hostx64\\x64' } |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($dumpbin)) {
+    $command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+    if ($null -ne $command) { $dumpbin = $command.Source }
+}
+if ([string]::IsNullOrWhiteSpace($dumpbin)) {
     throw 'Could not locate dumpbin to verify Windows runtime dependencies'
 }
 $binaries = @(Get-ChildItem -LiteralPath $BinaryDirectory -Filter '*.exe' -File)
