@@ -122,10 +122,10 @@ fn unix_backslash_names_and_case_variants_stay_distinct_sidecar_paths() {
             .get(0, "/srv/allowed")
             .unwrap()
             .logical_bytes;
-    let mixed =
+    let mixed_summary =
         DirectorySummary::from_records(&[record("/srv/ALLOWED/a.txt", 1, FileKind::File)], 1)
-            .unwrap()
-            .get(0, "/srv/allowed");
+            .unwrap();
+    let mixed = mixed_summary.get(0, "/srv/allowed");
     assert_eq!(lower, 1);
     assert!(mixed.is_none());
     let hidden = DirectorySummary::from_records(

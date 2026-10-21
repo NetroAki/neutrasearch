@@ -26,6 +26,13 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   enforce configured roots for MCP directory queries.
 - Verify each new compact block on decode without hashing the whole index at
   startup. Include licence notices in npm platform packages.
+- Preserve Unix backslashes and case-sensitive macOS paths in folder listings
+  and MCP scopes. Earlier Unix folder summaries require an index rebuild;
+  their filename search remains available.
+- Index every Btrfs hardlink alias. Reject invalid live filename encodings
+  instead of replacing them with another file's name.
+- Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots;
+  continue watching new events without claiming missed changes were recovered.
 
 ## [0.1.30] - 2026-10-21
 
