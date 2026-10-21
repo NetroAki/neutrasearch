@@ -275,8 +275,6 @@ pub(super) fn note(
 }
 
 use ingest::count_staged;
-#[cfg(test)]
-use ingest::longest_mount;
 use ingest::{ingest_scan_message, ScanIngest};
 
 fn end_scan(app: &mut NeutraApp) {

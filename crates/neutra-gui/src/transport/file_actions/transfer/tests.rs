@@ -15,6 +15,41 @@ fn rename_preserves_an_existing_destination() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn folder_copy_collision_preserves_source_and_destination() {
+    let root = sandbox();
+    let source = root.join("source");
+    let target = root.join("target");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("child"), "source bytes").unwrap();
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("child"), "keep these bytes").unwrap();
+    assert!(copy_path_noreplace(&source, &target).is_err());
+    assert_eq!(
+        std::fs::read(source.join("child")).unwrap(),
+        b"source bytes"
+    );
+    assert_eq!(
+        std::fs::read(target.join("child")).unwrap(),
+        b"keep these bytes"
+    );
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn missing_folder_source_leaves_no_target_or_staging() {
+    let root = sandbox();
+    let source = root.join("missing");
+    let target = root.join("target");
+    assert!(copy_path_noreplace(&source, &target).is_err());
+    assert!(!target.exists());
+    assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn folder_copy_rejects_its_own_descendant_before_creating_it() {

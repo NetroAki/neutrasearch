@@ -10,6 +10,9 @@ mod build;
 mod lookup;
 mod prefilter;
 mod scan;
+mod validation;
+#[cfg(test)]
+mod validation_tests;
 mod write;
 
 pub(super) use build::build;
@@ -21,7 +24,7 @@ use crate::FileRecord;
 use memmap2::Mmap;
 use std::{fs::File, io, path::Path};
 
-const MAGIC: &[u8; 8] = b"NSCOL003";
+const MAGIC: &[u8; 8] = b"NSCOL004";
 const HEADER: usize = 128;
 pub(super) const INITIAL_DEPTH: usize = 4097;
 pub(super) const OTHER_EXT: u16 = u16::MAX;
@@ -101,40 +104,16 @@ impl Columns {
         // SAFETY: the file is private to the index owner and never modified
         // after publication; replacement is by atomic rename of a new file.
         let map = unsafe { Mmap::map(&file)? };
-        let invalid = |message: &'static str| io::Error::new(io::ErrorKind::InvalidData, message);
-        if map.len() < HEADER || &map[..8] != MAGIC {
-            return Err(invalid("browse columns have an unknown format"));
-        }
-        let word = |at: usize| u64::from_le_bytes(map[at..at + 8].try_into().unwrap());
-        if word(8) != base_generation || word(16) != records {
-            return Err(invalid("browse columns belong to another base"));
-        }
-        let len = records as usize;
-        let (attrs, size, mtime, perm) = (word(24), word(32), word(40), word(48));
-        let (initial, ext_at, ext_count) = (word(56), word(64), word(72) as usize);
-        let end = word(80);
-        if end as usize != map.len() || (perm as usize) + len * 4 > map.len() {
-            return Err(invalid("browse columns are truncated"));
-        }
-        let mut exts = Vec::with_capacity(ext_count);
-        let mut at = ext_at as usize;
-        for _ in 0..ext_count {
-            let size = *map.get(at).ok_or_else(|| invalid("bad extension table"))? as usize;
-            let bytes = map
-                .get(at + 1..at + 1 + size)
-                .ok_or_else(|| invalid("bad extension table"))?;
-            exts.push(String::from_utf8_lossy(bytes).into_owned().into_boxed_str());
-            at += 1 + size;
-        }
+        let checked = validation::validate(&map, base_generation, records)?;
         Ok(Self {
-            len,
-            attrs: attrs as usize,
-            size: size as usize,
-            mtime: mtime as usize,
-            perm: perm as usize,
-            initial_table: initial as usize,
-            ext_overflow: word(88) != 0,
-            exts,
+            len: checked.len,
+            attrs: checked.attrs,
+            size: checked.size,
+            mtime: checked.mtime,
+            perm: checked.perm,
+            initial_table: checked.initial_table,
+            ext_overflow: checked.ext_overflow,
+            exts: checked.exts,
             map,
         })
     }

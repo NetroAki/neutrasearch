@@ -82,10 +82,6 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         let directory = std::fs::symlink_metadata(source)
             .map_err(|error| error.to_string())?
             .is_dir();
-        if directory {
-            std::fs::create_dir(target)
-                .map_err(|error| format!("cannot create destination folder: {error}"))?;
-        }
         let refused = || {
             conflict_or(
                 &format!(
@@ -96,14 +92,23 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 target,
             )
         };
-        if !directory && std::fs::symlink_metadata(target).is_ok() {
+        if std::fs::symlink_metadata(target).is_ok() {
             return Err(refused());
         }
-        // A file is copied beside its destination under a private name and then
-        // renamed into place without replacing, so a destination created while
-        // the copy runs is reported instead of skipped silently.
-        let staged = (!directory).then(|| staging_name(target));
-        let copy_target = staged.as_deref().unwrap_or(target);
+
+        // Keep the payload inside an owner-only sibling directory so cp cannot
+        // encounter a competing destination and silently skip it.
+        let staged_dir = staging_name(target);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&staged_dir)
+            .map_err(|error| format!("cannot create private staging directory: {error}"))?;
+        let staged = staged_dir.join("payload");
         let from = if directory {
             source.join(".")
         } else {
@@ -118,28 +123,32 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 "--reflink=auto",
                 "--sparse=auto",
                 "--preserve=all",
-                "--update=none",
                 "--",
             ])
             .arg(&from)
-            .arg(copy_target)
-            .status()
-            .map_err(|e| format!("cannot start cp to copy {}: {e}", source.display()))?;
-        let Some(staged) = staged else {
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(refused())
-            };
+            .arg(&staged)
+            .status();
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => {
+                cleanup_staging(&staged_dir);
+                return Err(format!(
+                    "cannot start cp to copy {}: {error}",
+                    source.display()
+                ));
+            }
         };
         if !status.success() {
-            let _ = std::fs::remove_file(&staged);
+            cleanup_staging(&staged_dir);
             return Err(refused());
         }
         match rename_noreplace_io(&staged, target) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                cleanup_staging(&staged_dir);
+                Ok(())
+            }
             Err(_) => {
-                let _ = std::fs::remove_file(&staged);
+                cleanup_staging(&staged_dir);
                 Err(refused())
             }
         }
@@ -148,6 +157,11 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     {
         copy::copy(source, target)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_staging(path: &Path) {
+    let _ = std::fs::remove_dir_all(path);
 }
 
 fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {

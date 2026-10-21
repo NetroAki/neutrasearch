@@ -7,6 +7,8 @@ use crate::browse::short_counts::Counts;
 use crate::CompactIndex;
 use std::{fs::File, io, path::Path};
 
+const CRC_AT: u64 = 96;
+
 mod parts;
 mod runs;
 
@@ -124,5 +126,16 @@ fn build_into(
         header[8 + index * 8..16 + index * 8].copy_from_slice(&word.to_le_bytes());
     }
     write_all_at(file, &header, 0)?;
+    let total = tail.total;
+    let mut crc = crc32fast::Hasher::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut offset = 0u64;
+    while offset < total {
+        let take = (total - offset).min(buffer.len() as u64) as usize;
+        crate::browse::columns::write::read_exact_at(file, &mut buffer[..take], offset)?;
+        crc.update(&buffer[..take]);
+        offset += take as u64;
+    }
+    write_all_at(file, &crc.finalize().to_le_bytes(), CRC_AT)?;
     Ok(BuildOutput { counts, unix_paths })
 }

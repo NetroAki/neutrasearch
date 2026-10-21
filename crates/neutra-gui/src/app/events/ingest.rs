@@ -66,7 +66,7 @@ pub(super) fn count_staged(app: &mut NeutraApp, batch: &[neutra_core::FileRecord
     }
 }
 
-pub(super) fn longest_mount(mounts: &[String], path: &str) -> Option<String> {
+fn longest_mount(mounts: &[String], path: &str) -> Option<String> {
     mounts
         .iter()
         .filter(|mount| {
