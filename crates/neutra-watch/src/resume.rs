@@ -35,7 +35,7 @@ fn wait_for_exit(pid: i32) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    unsafe { libc::poll(&mut descriptor, 1, 30_000) > 0 }
+    unsafe { libc::poll(&mut descriptor, 1, -1) > 0 }
 }
 
 #[cfg(test)]

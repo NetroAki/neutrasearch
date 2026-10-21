@@ -132,7 +132,8 @@ fn report(tx: crate::app::EventSender, result: Result<(), String>, success: &str
 }
 
 pub(crate) fn resume_after_exit() {
-    if isolated() || !retained() {
+    static SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if isolated() || !retained() || SCHEDULED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
     let Some(helper) = installed_helper() else {

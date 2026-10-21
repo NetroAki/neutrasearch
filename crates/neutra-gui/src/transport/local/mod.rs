@@ -107,6 +107,8 @@ fn scan_command(elevated_requested: bool) -> Result<Command, String> {
         if let Some(helper) = indexing_access::installed_helper() {
             indexing_access::authorize(&helper)?;
             indexing_access::control_watcher("stop")?;
+            // A crash or kill during the rebuild must not leave live updates off.
+            indexing_access::resume_after_exit();
             return Ok(Command::new(helper));
         }
     }
