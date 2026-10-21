@@ -75,7 +75,7 @@ pub fn save_seed(base: &Path, generation: u64, cursors: &[NativeCursor]) -> io::
 
 /// Load a cursor seed only when it matches the currently published base.
 pub fn load_seed(base: &Path, generation: u64) -> io::Result<Vec<NativeCursor>> {
-    let mut file = open_seed(&seed_path(base))?;
+    let file = open_seed(&seed_path(base))?;
     if file.metadata()?.len() > MAX_SEED_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

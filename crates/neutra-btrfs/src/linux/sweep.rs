@@ -151,7 +151,14 @@ impl Subvolume {
     pub fn dir_path(&self, ino: u64) -> Result<Option<String>> {
         match self.ino_lookup(ino) {
             Ok((_, path)) => Ok(Some(path)),
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => Ok(None),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error)
+                    == Some(libc::ENOENT) =>
+            {
+                Ok(None)
+            }
             Err(error) => Err(error).context("BTRFS_IOC_INO_LOOKUP"),
         }
     }

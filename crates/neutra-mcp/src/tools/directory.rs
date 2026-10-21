@@ -11,13 +11,13 @@ pub(super) fn run(index: &mut Store, allowed_roots: &[PathBuf], args: Value) -> 
     let source = args.get("source").and_then(Value::as_u64).unwrap_or(0) as u32;
     match index.directory_summary(source, path) {
         Ok(Some(entry)) => {
-            if !path_is_allowed(Path::new(&entry.path), allowed_roots) {
+            if !path_is_allowed(Path::new(entry.path.as_ref()), allowed_roots) {
                 return json!({"isError":true,"content":[{"type":"text","text":"directory path is outside the configured allowed roots"}]});
             }
             let children = entry
                 .children
                 .iter()
-                .filter(|child| path_is_allowed(Path::new(&child.path), allowed_roots))
+                .filter(|child| path_is_allowed(Path::new(child.path.as_ref()), allowed_roots))
                 .collect::<Vec<_>>();
             json!({
                 "content":[{"type":"text","text":format!(
