@@ -19,7 +19,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub(crate) const MAGIC: &[u8; 8] = b"NEUDIR01";
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 /// Oldest readable sidecar layout. Version 1 entries lack on-disk totals;
 /// they decode through the frozen layout with physical bytes unset.
 pub(crate) const MIN_READABLE_VERSION: u32 = 1;
@@ -115,6 +115,7 @@ impl DirectorySummary {
 
     /// Open the sidecar only when it belongs to the expected compact base.
     pub fn open_for_compact(index_path: &Path, generation: u64) -> io::Result<Self> {
+        require_current_paths(index_path)?;
         let (stored_generation, entries) = read_sidecar(&directory_summary_path(index_path))?;
         if stored_generation != generation {
             return Err(invalid(format!(
@@ -247,3 +248,15 @@ use test_writer::write_sidecar_from_order;
 
 #[cfg(test)]
 pub(crate) use aggregate::summary_order;
+
+pub(crate) fn require_current_paths(index_path: &Path) -> io::Result<()> {
+    let mut file = File::open(directory_summary_path(index_path))?;
+    let mut header = [0; 12];
+    file.read_exact(&mut header)?;
+    if u32::from_le_bytes(header[8..12].try_into().unwrap()) < 3 && !cfg!(windows) {
+        return Err(invalid(
+            "directory summary uses older path semantics; rebuild the native metadata index",
+        ));
+    }
+    Ok(())
+}

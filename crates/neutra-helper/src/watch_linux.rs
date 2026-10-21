@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 mod collection;
 mod deletion_coverage;
 mod events;
+#[cfg(test)]
+mod path_tests;
 mod records;
 mod resolve;
 mod root;
@@ -263,12 +265,19 @@ fn stale(error: &io::Error) -> bool {
     )
 }
 
-fn insert_remove(changes: &mut BTreeMap<String, DeltaChange>, path: &Path) {
-    let Some(path) = path.to_str() else {
-        return;
-    };
+pub(crate) fn insert_remove(
+    changes: &mut BTreeMap<String, DeltaChange>,
+    path: &Path,
+) -> io::Result<()> {
+    let path = path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fanotify event path is not valid UTF-8",
+        )
+    })?;
     let path = path.to_owned();
     changes.insert(path.clone(), DeltaChange::Remove(path.into_boxed_str()));
+    Ok(())
 }
 
 pub(crate) fn insert_upsert(changes: &mut BTreeMap<String, DeltaChange>, record: FileRecord) {

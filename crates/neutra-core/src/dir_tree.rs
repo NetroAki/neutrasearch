@@ -11,7 +11,7 @@ use std::io::Read;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"NEUTREE2";
+const MAGIC: &[u8; 8] = b"NEUTREE3";
 const PREFIX: usize = 16;
 /// Folders up to this depth ("/" is 0) keep their children listed.
 const MAX_DEPTH: usize = 3;
@@ -162,6 +162,7 @@ impl TreeSummary {
     }
 
     fn build(index_path: &Path, generation: u64) -> io::Result<()> {
+        crate::dir_summary::require_current_paths(index_path)?;
         let mut file = std::fs::File::open(directory_summary_path(index_path))?;
         let mut header = [0u8; 12];
         file.read_exact(&mut header)?;

@@ -133,13 +133,7 @@ impl MountWatcher {
             return Ok(());
         }
         let parent = parent_inode(&path);
-        let record =
-            make_record(&path, &stat, parent, &self.mount, self.source).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "fanotify event path is not valid UTF-8",
-                )
-            })?;
+        let record = make_record(&path, &stat, parent, &self.mount, self.source)?;
         insert_upsert(changes, record);
         Ok(())
     }

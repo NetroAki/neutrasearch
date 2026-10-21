@@ -131,7 +131,12 @@ impl CompactIndex {
         limit: usize,
     ) -> io::Result<DirListing> {
         let prefix = dir_prefix(dir);
-        let low = self.first_directory_block(&prefix)?;
+        let legacy = !cfg!(windows) && self.record_version < 7;
+        let low = if legacy {
+            0
+        } else {
+            self.first_directory_block(&prefix)?
+        };
         let mut listing = Listing::new(limit.min(Self::MAX_LISTED_FILES));
         let mut previous = if low > 0 {
             self.read_block(low as u32 - 1)?.pop()
@@ -159,7 +164,8 @@ impl CompactIndex {
                 if !duplicate && !shadowed && starts_with_folded(&record.path, &prefix) {
                     listing.absorb(&record, &prefix);
                 }
-                if compare_index_paths(&record.path, &prefix) == Ordering::Greater
+                if !legacy
+                    && compare_index_paths(&record.path, &prefix) == Ordering::Greater
                     && !starts_with_folded(&record.path, &prefix)
                 {
                     past = true;

@@ -24,7 +24,7 @@ pub(super) fn sidecar_generation(bytes: &[u8]) -> io::Result<u64> {
         return Err(invalid("not a Neutrasearch directory summary"));
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if version != VERSION && version != MIN_READABLE_VERSION {
+    if !(MIN_READABLE_VERSION..=VERSION).contains(&version) {
         return Err(invalid("unsupported directory summary version"));
     }
     let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
@@ -44,7 +44,7 @@ pub(super) fn sidecar_generation(bytes: &[u8]) -> io::Result<u64> {
 /// Version comes from the sidecar header, never from probing the frame:
 /// old and new frames share a bincode prefix, so sniffing misdecodes.
 pub(super) fn decode_entry(version: u32, frame: &[u8]) -> bincode::Result<DirectorySummaryEntry> {
-    if version == VERSION {
+    if version >= 2 {
         bincode::deserialize(frame)
     } else {
         Ok(DirectorySummaryEntry::from(bincode::deserialize::<
@@ -112,7 +112,7 @@ pub(crate) fn walk_frames(
         return Err(invalid("not a Neutrasearch directory summary"));
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if version != VERSION && version != MIN_READABLE_VERSION {
+    if !(MIN_READABLE_VERSION..=VERSION).contains(&version) {
         return Err(invalid("unsupported directory summary version"));
     }
     let generation = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
@@ -150,7 +150,7 @@ pub(crate) fn walk_file_frames(
     }
     let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
     let generation = u64::from_le_bytes(header[12..20].try_into().unwrap());
-    if (version != VERSION && version != MIN_READABLE_VERSION) || generation == 0 {
+    if !(MIN_READABLE_VERSION..=VERSION).contains(&version) || generation == 0 {
         return Err(invalid("invalid directory summary header"));
     }
     let trailer = length - TRAILER_BYTES as u64;

@@ -2,8 +2,8 @@
 use memmap2::Mmap;
 
 pub(crate) const MAGIC: &[u8; 8] = b"NEUTIDX1";
-pub(crate) const VERSION: u32 = 6;
-/// Version 6 adds verified block checksums; version 3 lacks on-disk sizes.
+pub(crate) const VERSION: u32 = 7;
+/// Version 7 preserves Unix path bytes; version 6 adds block checksums.
 pub(crate) const MIN_READABLE_VERSION: u32 = 3;
 pub(crate) const HEADER: u64 = 64;
 pub(crate) const CHECKSUM_BYTES: usize = 4;
