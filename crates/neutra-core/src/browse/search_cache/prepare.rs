@@ -19,6 +19,19 @@ impl BrowserIndex {
         after: Option<&FileRecord>,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Vec<SearchHit>, SearchStats)> {
+        // A newly published index carries an empty WAL even for base-only callers.
+        let empty_delta = if delta.is_none()
+            && std::fs::metadata(index.with_extension("delta"))
+                .is_ok_and(|m| m.len() == crate::DELTA_HEADER_BYTES)
+        {
+            Some(DeltaIndex::open_snapshot(
+                &index.with_extension("delta"),
+                base.generation(),
+            )?)
+        } else {
+            None
+        };
+        let delta = delta.or(empty_delta.as_ref());
         if cancelled() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,

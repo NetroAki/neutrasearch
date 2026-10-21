@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 pub(crate) struct WatchSession {
     readers: Vec<Box<dyn Watch>>,
-    sweep: PreparedSweep,
+    mounts: Vec<MountInfo>,
     limitations: Vec<String>,
     source: u32,
 }
@@ -37,10 +37,10 @@ impl WatchSession {
             "no supported local filesystem is mounted; native watches cannot start"
         );
         let excluded = crate::scan::watch_exclusions(base);
-        let sweep = PreparedSweep::prepare(&mounts, base)?;
+
         let mut readers: Vec<Box<dyn Watch>> = Vec::new();
         let mut limitations = Vec::new();
-        for mount in mounts {
+        for mount in mounts.iter().cloned() {
             tracing::info!(mount = %mount.mountpoint.display(), fs = %mount.fs.label(), "attaching native watch");
             match FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
                 Ok(reader) => readers.push(Box::new(reader)),
@@ -71,7 +71,7 @@ impl WatchSession {
         }
         Ok(Self {
             readers,
-            sweep,
+            mounts,
             limitations,
             source,
         })
@@ -93,6 +93,6 @@ impl WatchSession {
                 Arc::clone(&requested),
             );
         }
-        self.sweep.start(store, stale, self.source, requested)
+        PreparedSweep::prepare(&self.mounts, &path)?.start(store, stale, self.source, requested)
     }
 }

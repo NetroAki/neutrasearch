@@ -153,7 +153,6 @@ impl DirectorySummary {
             }
             drop(bytes);
             storage::link_or_write_atomic(&staged, &destination)?;
-            std::fs::remove_file(staged)?;
         } else {
             remove_if_present(&destination)?;
         }

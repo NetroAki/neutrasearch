@@ -73,7 +73,15 @@ pub(super) fn ensure(index_path: &Path, generation: u64) -> io::Result<()> {
     super::updates::pin_base(index_path)?;
     crate::compact_build::replace_file(&columns_temporary, &columns)?;
     crate::compact_build::replace_file(&temporary, &destination)?;
-    crate::compact_build::sync_parent(&destination)
+    crate::compact_build::sync_parent(&destination)?;
+    let wal = index_path.with_extension("delta");
+    if std::fs::metadata(&wal).is_ok_and(|m| m.len() == crate::DELTA_HEADER_BYTES) {
+        let empty = crate::DeltaIndex::open_snapshot(&wal, generation)?;
+        if empty.wal_bytes() == crate::DELTA_HEADER_BYTES {
+            BrowserIndex::mark_delta(index_path, &empty)?;
+        }
+    }
+    Ok(())
 }
 
 /// Open the browse prep lock, reusing a stale unlocked file from a failed

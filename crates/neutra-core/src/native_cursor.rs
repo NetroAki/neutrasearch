@@ -222,3 +222,12 @@ pub fn seed_identity(cursors: &[NativeCursor]) -> io::Result<u32> {
         bincode::serialize(&ordered).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(crc32fast::hash(&bytes))
 }
+
+/// Restore the cursor sidecar after a base was published but its seed was not.
+pub fn publish_seed(staged: &Path, destination: &Path, generation: u64) -> io::Result<()> {
+    match load_seed(staged, generation) {
+        Ok(cursors) => save_seed(destination, generation, &cursors),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}

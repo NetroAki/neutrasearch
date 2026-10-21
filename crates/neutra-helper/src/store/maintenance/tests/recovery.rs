@@ -72,3 +72,40 @@ fn interrupted_publication_before_wal_replace_keeps_all_original_events() {
     drop(recovered);
     remove_store(&path, &delta);
 }
+
+#[test]
+fn published_base_recovers_its_cursor_before_watch_startup() {
+    let (mut store, path, delta) = fixture("seed-after-base");
+    let previous = store.base.as_ref().unwrap().generation();
+    let cursors = vec![neutra_core::NativeCursor {
+        mount: "/fixture".into(),
+        tree: 257,
+        since: 42,
+    }];
+    neutra_core::native_cursor::save_seed(&path, previous, &cursors).unwrap();
+    let prepared = store.freeze_compaction().unwrap().unwrap().build().unwrap();
+    let generation = prepared.built.generation;
+    store.publish_compaction(prepared).unwrap();
+    // Restore the durable evidence at the crash boundary after base replacement.
+    let stage = compaction_stage(&path);
+    std::fs::hard_link(&path, &stage).unwrap();
+    let stage_dirs = DirectorySummary::path_for(&stage);
+    if !stage_dirs.exists() {
+        std::fs::hard_link(DirectorySummary::path_for(&path), &stage_dirs).unwrap();
+    }
+    let stage_tree = TreeSummary::path_for(&stage);
+    if !stage_tree.exists() {
+        std::fs::hard_link(TreeSummary::path_for(&path), &stage_tree).unwrap();
+    }
+    neutra_core::native_cursor::save_seed(&stage, generation, &cursors).unwrap();
+    neutra_core::native_cursor::save_seed(&path, previous, &cursors).unwrap();
+    write_compaction_marker(&compaction_marker(&path), generation).unwrap();
+    drop(store);
+    let recovered = DurableStore::open(&path).unwrap();
+    assert_eq!(
+        neutra_core::native_cursor::load_seed(&path, generation).unwrap(),
+        cursors
+    );
+    drop(recovered);
+    remove_store(&path, &delta);
+}

@@ -108,6 +108,7 @@ fn open_pair(
         if staged_path.is_file() {
             DirectorySummary::publish(&staged_path, base_path, expected_generation)?;
             TreeSummary::publish(&staged_path, base_path, expected_generation)?;
+            neutra_core::native_cursor::publish_seed(&staged_path, base_path, expected_generation)?;
             let _ = std::fs::remove_file(&staged_path);
         }
         neutra_core::BrowserIndex::recover_generation(base_path, expected_generation)
