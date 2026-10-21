@@ -77,9 +77,9 @@ pub(crate) fn request_tree_model(app: &mut NeutraApp) {
 }
 
 pub(crate) fn ranked_ready(app: &NeutraApp) -> bool {
-    app.compact.as_ref().is_some_and(|compact| {
-        neutra_core::BrowserIndex::is_current(&app.cache_path, compact.generation())
-    })
+    app.compact
+        .as_ref()
+        .is_some_and(|compact| app.rank_generation == Some(compact.generation()))
 }
 
 /// Build the sorted leader lists once per index generation so newest-first

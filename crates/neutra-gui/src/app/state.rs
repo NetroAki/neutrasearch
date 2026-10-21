@@ -100,6 +100,7 @@ pub(crate) struct NeutraApp {
     /// The shallow folder summary is being built; the tree waits for it.
     pub(crate) tree_summary_pending: bool,
     pub(crate) rank_pending: bool,
+    pub(crate) rank_generation: Option<u64>,
     pub(crate) delta_stamp: Option<Option<(std::time::SystemTime, u64)>>,
     pub(crate) delta_checked: Instant,
     /// Directories with a fetch in flight. Guards against duplicate spawns
@@ -208,6 +209,7 @@ impl NeutraApp {
             tree_building: false,
             tree_summary_pending: false,
             rank_pending: false,
+            rank_generation: None,
             delta_stamp: None,
             delta_checked: Instant::now(),
             tree_pending: BTreeSet::new(),

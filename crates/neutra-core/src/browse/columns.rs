@@ -105,6 +105,16 @@ impl Columns {
         // after publication; replacement is by atomic rename of a new file.
         let map = unsafe { Mmap::map(&file)? };
         let checked = validation::validate(&map, base_generation, records)?;
+        #[cfg(unix)]
+        // Validation touches every page; release that resident set before idle.
+        // SAFETY: this immutable mapping owns the entire advised range.
+        unsafe {
+            libc::madvise(
+                map.as_ptr() as *mut libc::c_void,
+                map.len(),
+                libc::MADV_DONTNEED,
+            );
+        }
         Ok(Self {
             len: checked.len,
             attrs: checked.attrs,

@@ -108,7 +108,10 @@ fn handle_event(app: &mut NeutraApp, event: Event) {
         Event::SearchDone { id, result } => search_results::apply(app, id, result),
         Event::Ranked { generation, ok } => {
             app.rank_pending = false;
-            if ok && generation == crate::app::queries::data_generation(app) {
+            if generation != crate::app::queries::data_generation(app) {
+                app.ensure_ranked();
+            } else if ok {
+                app.rank_generation = Some(generation);
                 app.requery_unless_huge();
             } else if !ok {
                 note(
