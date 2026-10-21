@@ -42,6 +42,42 @@ fn publish_staged(source: &Path, target: &Path) -> io::Result<()> {
     result
 }
 
+/// macOS copies through cp, which uses copyfile(3) to keep resource forks,
+/// extended attributes and ACLs that a byte copy would drop.
+#[cfg(target_os = "macos")]
+fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {
+    let status = std::process::Command::new("/bin/cp")
+        .args(["-pR", "--"])
+        .arg(source)
+        .arg(target)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        let _ = fs::remove_dir_all(target).or_else(|_| fs::remove_file(target));
+        Err(io::Error::other(format!("cp exited with {status}")))
+    }
+}
+
+/// CopyFileW carries alternate data streams, attributes and timestamps, and
+/// refuses to replace an existing target.
+#[cfg(windows)]
+fn copy_file(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(Some(0)).collect() };
+    let (from, to) = (wide(source), wide(target));
+    // SAFETY: both buffers are NUL-terminated and outlive the call.
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::CopyFileW(from.as_ptr(), to.as_ptr(), 1)
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_symlink() {
@@ -66,6 +102,14 @@ fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {
         }
         return fs::set_permissions(target, metadata.permissions());
     }
+    #[cfg(windows)]
+    return copy_file(source, target);
+    #[cfg(not(windows))]
+    copy_regular_file(source, target, &metadata)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn copy_regular_file(source: &Path, target: &Path, metadata: &fs::Metadata) -> io::Result<()> {
     let mut input = fs::File::open(source)?;
     let mut output = fs::OpenOptions::new()
         .write(true)

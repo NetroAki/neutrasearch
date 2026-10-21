@@ -6,10 +6,8 @@
 The first run creates the index from supported local native filesystems. The
 helper uses each filesystem's native metadata interface and refuses an
 unsupported filesystem instead of walking its directory tree. There is no
-directory-walk fallback. Once an index exists, the watch service starts the
-`neutrasearch-watch-all` supervisor. For each interactive account, it checks
-for a missing index (and builds only in that case), then runs the delta watcher
-as that user. File changes are appended to the index's delta WAL and become
+directory-walk fallback. Once an approved account has an index, its
+`neutrasearch-watch@UID` service runs the delta watcher as that user. File changes are appended to the index's delta WAL and become
 visible to searches without a full rescan.
 
 The service reports ready only after every account's native readers have
@@ -23,8 +21,9 @@ no directory-walk fallback. Btrfs subvolume mounts use the native transaction
 sweep when a filesystem-wide fanotify mark is unavailable. NTFS/FUSE mounts
 that need a mount mark receive saved-file updates only; rename and delete
 updates are unavailable, and the GUI reports that limitation. If a watcher
-fails or its event queue overflows, the helper marks the index stale and the
-GUI disables it until the index is rebuilt. These cases do not trigger an
+fails, or its event queue overflows on a filesystem without transaction
+recovery, the helper marks the index stale and the GUI disables it until the
+index is rebuilt. Btrfs recovers from overflow by replaying its transactions. These cases do not trigger an
 automatic full rescan. Run `neutrasearch index` for a full rebuild. The package
 does not enable a launch-time scan or a daily scan timer.
 

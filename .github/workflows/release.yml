@@ -209,6 +209,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
-          args=(--verify-tag --generate-notes)
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" 'index($0,"## [" v "]")==1{p=1;next} /^## /{p=0} p' CHANGELOG.md > notes.md
+          if [[ ! -s notes.md ]]; then echo "no changelog section for $version" >&2; exit 1; fi
+          args=(--verify-tag --notes-file notes.md)
           if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*

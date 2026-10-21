@@ -152,7 +152,7 @@ fn reveal(path: &Path) -> Result<Option<PathBuf>, String> {
     #[cfg(target_os = "windows")]
     {
         let mut c = Command::new("explorer.exe");
-        c.arg(format!("/select,{}", path.display()));
+        c.arg("/select,").arg(path);
         c.spawn()
             .map(|child| {
                 drop(child);

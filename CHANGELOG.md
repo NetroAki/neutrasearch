@@ -11,8 +11,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   and administrators; keep that approval across upgrades. The GUI cannot create
   competing pipe instances and verifies the installed service before talking.
 - Stop the Linux helper and watcher if memory protection cannot be set.
-- Link the Windows C runtime so clean installations start without a
-  redistributable.
+- Link the Windows C runtime so clean installs start.
 - Keep the last complete index when a scan lane fails; stage rebuilds and
   recover interrupted publication without discarding live edits.
 - Capture Btrfs recovery cursors first and replay later changes before
@@ -24,8 +23,8 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Reject corrupt allocated NTFS records and bound attribute-list sizes and
   \$MFT runs by the device size, so forged volumes fail with an error.
 - Write Windows service and installer logs in the restricted installation
-  folder. Publish Windows and macOS folder copies atomically; moving to another
-  volume there refuses rather than risk losing metadata. Pi setup no longer
+  folder. Windows and macOS copies publish atomically and keep
+  alternate streams, forks and attributes; moves across volumes there refuse. Pi setup no longer
   replaces files or app bundles it did not create.
 - Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots.
 - Debian package: install on Debian 13 and current Ubuntu, never stall an

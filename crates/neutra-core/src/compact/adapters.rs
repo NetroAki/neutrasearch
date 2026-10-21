@@ -112,7 +112,7 @@ impl CompactIndex {
         let desc_offset = u64_at(data, 32)? as usize;
         let dict_offset = u64_at(data, 48)? as usize;
         for i in 0..block_count {
-            let p = desc_offset + i * DESC_SIZE as usize;
+            let p = desc_offset.saturating_add(i.saturating_mul(DESC_SIZE as usize));
             let d = BlockDesc {
                 offset: u64_at(data, p)?,
                 len: u32_at(data, p + 8)?,
@@ -122,7 +122,7 @@ impl CompactIndex {
         }
         let mut previous_gram = None;
         for i in 0..dict_count {
-            let p = dict_offset + i * DICT_SIZE as usize;
+            let p = dict_offset.saturating_add(i.saturating_mul(DICT_SIZE as usize));
             let d = DictEntry {
                 gram: u32_at(data, p)?,
                 len: u32_at(data, p + 4)?,
