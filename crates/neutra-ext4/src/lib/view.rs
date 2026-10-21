@@ -48,7 +48,7 @@ pub fn scan_image(
             continue;
         }
         let kind = kind(inode.mode);
-        let disk = (inode.blocks as u64).saturating_mul(512);
+        let disk = unsafe { ext2fs_get_stat_i_blocks(fs.0, &mut inode) }.saturating_mul(512);
         let size = if kind == FileKind::File {
             inode.size as u64 | ((inode.size_high as u64) << 32)
         } else {

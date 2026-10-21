@@ -26,6 +26,8 @@ unsafe extern "C" {
         inode: *mut Ext2Inode,
     ) -> ErrCode;
     pub(super) fn ext2fs_close_inode_scan(scan: InodeScan);
+    /// Allocated size in 512-byte units, including the high bits and huge-file inodes.
+    pub(super) fn ext2fs_get_stat_i_blocks(fs: Ext2Filsys, inode: *mut Ext2Inode) -> u64;
     pub(super) fn ext2fs_dir_iterate2(
         fs: Ext2Filsys,
         dir: u32,

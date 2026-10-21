@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +31,7 @@ function writeExecutable(file, content, isOurs, skipped) {
     skipped.push(file);
     return false;
   }
-  const temporary = `${file}.neutrasearch-${process.pid}.tmp`;
+  const temporary = `${file}.neutrasearch-${process.pid}-${crypto.randomBytes(4).toString("hex")}.tmp`;
   fs.writeFileSync(temporary, content, { mode: 0o755, flag: "wx" });
   fs.renameSync(temporary, file);
   return true;
@@ -122,28 +123,45 @@ function installWindows(application, home, runPowerShell) {
   return ["Windows Start Menu/Neutrasearch.lnk", "Windows Desktop/Neutrasearch.lnk"];
 }
 
+function bundleIsOurs(app) {
+  const stat = lstatOrNull(app);
+  if (!stat) return true;
+  if (!stat.isDirectory()) return false;
+  const info = path.join(app, "Contents", "Info.plist");
+  const infoStat = lstatOrNull(info);
+  return Boolean(infoStat && infoStat.isFile() && fs.readFileSync(info, "utf8").includes("dev.pi.neutrasearch"));
+}
+
 function installMac(application, home, packageRoot, skipped) {
-  const app = path.join(home, "Applications", "Neutrasearch.app");
-  const existingInfo = path.join(app, "Contents", "Info.plist");
-  if (lstatOrNull(app) && !(fs.existsSync(existingInfo) && fs.readFileSync(existingInfo, "utf8").includes("dev.pi.neutrasearch"))) {
+  const applications = path.join(home, "Applications");
+  const app = path.join(applications, "Neutrasearch.app");
+  fs.mkdirSync(applications, { recursive: true });
+  if (!bundleIsOurs(app)) {
     skipped.push(app);
     return [];
   }
-  const contents = path.join(app, "Contents");
+  // Build the whole bundle in a fresh private directory, then swap it in, so no
+  // write ever follows a link inside an existing bundle.
+  const staging = fs.mkdtempSync(path.join(applications, ".Neutrasearch-"));
+  const staged = path.join(staging, "Neutrasearch.app");
+  const contents = path.join(staged, "Contents");
   const launcher = path.join(contents, "MacOS", "Neutrasearch");
   fs.mkdirSync(path.dirname(launcher), { recursive: true });
-  fs.writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(application)} "$@"\n`, { mode: 0o755 });
-  fs.chmodSync(launcher, 0o755);
+  fs.writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(application)} "$@"\n`, { mode: 0o755, flag: "wx" });
   const resources = path.join(contents, "Resources");
   fs.mkdirSync(resources, { recursive: true });
   fs.copyFileSync(
     path.join(packageRoot, "assets", "Neutrasearch.icns"),
     path.join(resources, "Neutrasearch.icns"),
+    fs.constants.COPYFILE_EXCL,
   );
   fs.writeFileSync(
     path.join(contents, "Info.plist"),
     `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleName</key><string>Neutrasearch</string><key>CFBundleDisplayName</key><string>Neutrasearch</string><key>CFBundleIdentifier</key><string>dev.pi.neutrasearch</string><key>CFBundleExecutable</key><string>Neutrasearch</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>Neutrasearch.icns</string></dict></plist>\n`,
   );
+  if (lstatOrNull(app)) fs.renameSync(app, path.join(staging, "previous.app"));
+  fs.renameSync(staged, app);
+  fs.rmSync(staging, { recursive: true, force: true });
   const created = [app];
   const desktop = path.join(home, "Desktop");
   if (fs.existsSync(desktop)) {

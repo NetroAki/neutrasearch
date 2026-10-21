@@ -116,3 +116,23 @@ test("macOS setup keeps a user's own app bundle and desktop folder", () => {
   assert.equal(created.skipped.length, 1);
   fs.rmSync(value.root, { recursive: true, force: true });
 });
+
+test("macOS setup never writes through links inside an existing bundle", () => {
+  const value = fixture();
+  const app = path.join(value.home, "Applications", "Neutrasearch.app");
+  const document = path.join(value.root, "precious.txt");
+  fs.writeFileSync(document, "my document");
+  fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(path.join(app, "Contents", "Info.plist"), "dev.pi.neutrasearch");
+  fs.symlinkSync(document, path.join(app, "Contents", "MacOS", "Neutrasearch"));
+  const created = installShortcuts(value.application, {
+    platform: "darwin",
+    home: value.home,
+    packageRoot: value.packageRoot,
+  });
+  assert.equal(fs.readFileSync(document, "utf8"), "my document");
+  assert(created.includes(app));
+  assert(!fs.lstatSync(path.join(app, "Contents", "MacOS", "Neutrasearch")).isSymbolicLink());
+  assert.deepEqual(fs.readdirSync(path.join(value.home, "Applications")), ["Neutrasearch.app"]);
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
