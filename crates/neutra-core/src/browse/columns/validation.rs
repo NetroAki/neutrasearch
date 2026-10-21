@@ -158,5 +158,5 @@ pub(super) fn validate(map: &Mmap, generation: u64, records: u64) -> io::Result<
 }
 
 fn align(value: usize) -> usize {
-    value & !7
+    value.div_ceil(8) * 8
 }
