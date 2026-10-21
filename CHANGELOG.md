@@ -24,13 +24,14 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   changes before announcing live updates as ready.
 - Create private, owned spill storage; reject lossy filename conversions and
   enforce configured roots for MCP directory queries.
-- Verify each new compact block on decode without hashing the whole index at
-  startup. Include licence notices in npm platform packages.
+- Verify routing metadata at startup and blocks on decode. Include licence
+  notices in npm platform packages.
 - Preserve Unix backslashes and case-sensitive macOS paths in folder listings
   and MCP scopes. Earlier Unix folder summaries require an index rebuild;
   their filename search remains available.
 - Index every Btrfs hardlink alias. Reject invalid live filename encodings
   instead of replacing them with another file's name.
+- Reject corrupt allocated NTFS records; retain names from earlier extensions.
 - Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots;
   continue watching new events without claiming missed changes were recovered.
 

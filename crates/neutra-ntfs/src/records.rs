@@ -82,6 +82,9 @@ pub(crate) fn parse_record(
             anyhow::bail!("invalid attribute length {len} at offset {p}");
         }
         let resident = rec[p + 8] == 0;
+        if !resident && len < 64 {
+            anyhow::bail!("short non-resident attribute header at offset {p}");
+        }
         if typ == 0x20 {
             attr_list = true;
         }
@@ -105,6 +108,9 @@ pub(crate) fn parse_record(
             }
             {
                 let v = &rec[p + value_off..p + value_end];
+                if (typ == 0x30 && v.len() < 66) || (typ == 0x10 && v.len() < 16) {
+                    anyhow::bail!("truncated NTFS attribute value");
+                }
                 if typ == 0x80 && rec[p + 9] == 0 {
                     data_alloc = Some(value_len as u64);
                     data_size = Some(value_len as u64);

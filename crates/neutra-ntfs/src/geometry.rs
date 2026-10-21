@@ -29,7 +29,7 @@ fn read_signed(b: &[u8]) -> i64 {
     }
     let u = read_unsigned(b);
     let bits = b.len() * 8;
-    if b[b.len() - 1] & 0x80 != 0 {
+    if bits < 64 && b[b.len() - 1] & 0x80 != 0 {
         (u | (!0u64 << bits)) as i64
     } else {
         u as i64
@@ -60,7 +60,7 @@ pub(crate) fn read_geometry<R: Read + Seek>(r: &mut R) -> Result<Geometry> {
     let mft_lcn = u64::from_le_bytes(b[48..56].try_into().unwrap());
     let encoded = b[64] as i8;
     let record = if encoded < 0 {
-        1u64.checked_shl((-encoded) as u32)
+        1u64.checked_shl((-(encoded as i16)) as u32)
             .context("record shift")?
     } else {
         cluster
@@ -74,7 +74,9 @@ pub(crate) fn read_geometry<R: Read + Seek>(r: &mut R) -> Result<Geometry> {
         sector,
         cluster,
         record,
-        mft_offset: mft_lcn * cluster,
+        mft_offset: mft_lcn
+            .checked_mul(cluster)
+            .context("MFT offset overflow")?,
     })
 }
 pub(crate) fn mft_runs(rec: &[u8], cluster: u64) -> Result<(Vec<Run>, u64)> {
@@ -136,9 +138,13 @@ pub(crate) fn parse_runlist(data: &[u8], cluster: u64) -> Result<Vec<Run>> {
         out.push(Run {
             logical,
             len,
-            physical: (lcn as u64) * cluster,
+            physical: (lcn as u64)
+                .checked_mul(cluster)
+                .context("physical run offset overflow")?,
         });
-        logical += len;
+        logical = logical
+            .checked_add(len)
+            .context("logical run offset overflow")?;
     }
     Ok(out)
 }
@@ -180,6 +186,21 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].physical, 5 * 4096);
         assert_eq!(r[1].physical, 3 * 4096);
+    }
+
+    #[test]
+    fn full_width_signed_runs_and_overflow_fail_safely() {
+        assert_eq!(read_signed(&[0xff; 8]), -1);
+        let mut run = vec![0x81, 1];
+        run.extend_from_slice(&i64::MAX.to_le_bytes());
+        run.push(0);
+        assert!(parse_runlist(&run, 4096).is_err());
+        let mut boot = vec![0; 512];
+        boot[3..7].copy_from_slice(b"NTFS");
+        boot[11..13].copy_from_slice(&512u16.to_le_bytes());
+        boot[13] = 8;
+        boot[64] = 128;
+        assert!(read_geometry(&mut std::io::Cursor::new(boot)).is_err());
     }
     #[test]
     fn usa_repairs() {
