@@ -47,7 +47,7 @@ pub fn scan(mount: &MountInfo, sink: &mut dyn FnMut(FileRecord)) -> Result<ScanS
             Ok(md) => md,
             // Spotlight can list a path that was removed after the query ran.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => bail!("cannot read metadata for {path}: {error}"),
+            Err(error) => anyhow::bail!("cannot read metadata for {path}: {error}"),
         };
         let kind = if md.file_type().is_dir() {
             stats.dirs += 1;
