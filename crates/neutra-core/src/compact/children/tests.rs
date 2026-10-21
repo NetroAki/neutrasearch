@@ -56,6 +56,78 @@ fn children_skip_subtrees_and_keep_odd_neighbours() {
 }
 
 #[test]
+#[cfg(not(windows))]
+fn unix_literal_backslash_is_a_child_in_v7_ordered_indexes() {
+    let records = vec![
+        rec("/d", FileKind::Dir, 1),
+        rec("/d/a0", FileKind::File, 2),
+        rec("/d/a\\b", FileKind::File, 3),
+    ];
+    let path = std::env::temp_dir().join(format!(
+        "neutra-children-backslash-{}.idx",
+        std::process::id()
+    ));
+    CompactIndex::build(&records, &path).unwrap();
+    let index = CompactIndex::open_fast(&path).unwrap();
+    assert_eq!(
+        names(&index.directory_children("/d", None).unwrap()),
+        ["/d/a0", "/d/a\\b"]
+    );
+    drop(index);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+#[cfg(not(windows))]
+fn legacy_v6_children_keep_backslash_separator_behavior() {
+    let records = vec![
+        rec("/d", FileKind::Dir, 1),
+        rec("/d/a0", FileKind::File, 2),
+        rec("/d/a\\b", FileKind::File, 3),
+    ];
+    let path = std::env::temp_dir().join(format!("neutra-children-v6-{}.idx", std::process::id()));
+    CompactIndex::build(&records, &path).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
+    let checksum_at = bytes.len() - crate::compact::CHECKSUM_BYTES;
+    let checksum = crc32fast::hash(&bytes[..checksum_at]);
+    bytes[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let index = CompactIndex::open_fast(&path).unwrap();
+    assert_eq!(index.record_version, 6);
+    assert_eq!(
+        names(&index.directory_children("/d", None).unwrap()),
+        ["/d/a0"]
+    );
+    drop(index);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_backslash_descendants_are_skipped_as_subtrees() {
+    let records = vec![
+        rec("C:/d", FileKind::Dir, 1),
+        rec("C:/d/a", FileKind::Dir, 2),
+        rec("C:/d/a/child.txt", FileKind::File, 3),
+        rec("C:/d/b.txt", FileKind::File, 4),
+    ];
+    let path = std::env::temp_dir().join(format!(
+        "neutra-children-windows-{}.idx",
+        std::process::id()
+    ));
+    CompactIndex::build(&records, &path).unwrap();
+    let index = CompactIndex::open_fast(&path).unwrap();
+    assert_eq!(
+        names(&index.directory_children("C:/d", None).unwrap()),
+        ["C:/d/a", "C:/d/b.txt"]
+    );
+    drop(index);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn subtree_lists_everything_below_and_honours_the_limit() {
     let (path, index) = fixture("tree");
     let all = index.subtree_records("/d/a", None, 100).unwrap().unwrap();

@@ -127,3 +127,22 @@ fn gapped_continuation_fails_closed() {
     let (mut disk, rec0, base) = fixture(3);
     assert!(complete_mft_runs(&mut disk, &rec0, 4096, 1024, 512, base).is_err());
 }
+
+#[test]
+fn malformed_attribute_list_run_offsets_fail_without_panicking() {
+    for offset in [0u16, 63, 1000] {
+        let (mut disk, mut rec0, base) = fixture(2);
+        rec0[88..90].copy_from_slice(&offset.to_le_bytes());
+        assert!(complete_mft_runs(&mut disk, &rec0, 4096, 1024, 512, base).is_err());
+    }
+}
+
+#[test]
+fn malformed_extension_run_offsets_fail_without_panicking() {
+    for offset in [0u16, 63, 1000] {
+        let (mut disk, rec0, base) = fixture(2);
+        let start = 10 * 4096 + 5 * 1024 + 56 + 32;
+        disk.get_mut()[start..start + 2].copy_from_slice(&offset.to_le_bytes());
+        assert!(complete_mft_runs(&mut disk, &rec0, 4096, 1024, 512, base).is_err());
+    }
+}

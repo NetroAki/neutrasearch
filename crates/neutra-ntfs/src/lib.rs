@@ -9,15 +9,14 @@
 //! unresolved `$ATTRIBUTE_LIST` are counted as skipped rather than invented.
 
 mod attr_list;
+mod extensions;
 mod geometry;
 mod records;
 
 use anyhow::{bail, Context, Result};
-use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, u16le, u64le, Run};
+use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, u64le, Run};
 use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
-use records::{
-    append_component, ensure_dir_path, parse_record, Alias, Entry, InvalidFilenameEncoding,
-};
+use records::{append_component, ensure_dir_path, parse_record, Alias, Entry};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
@@ -76,55 +75,26 @@ pub fn scan_reader<R: Read + Seek>(
     let mut entries = HashMap::<u64, Entry>::with_capacity(record_count.min(4_000_000) as usize);
     let mut aliases = HashMap::<u64, Vec<Alias>>::new();
     let mut skipped_attr_list = 0u64;
+    let mut extensions = Vec::new();
     let mut buf = vec![0u8; g.record as usize];
     let mut run_cursor = RunCursor::default();
     for n in 0..record_count {
         run_cursor
             .read(&mut r, &runs, n * g.record, &mut buf)
             .with_context(|| format!("read $MFT record {n}"))?;
-        if &buf[..4] != b"FILE" {
+        let Some(flags) = records::prepare_allocated(&mut buf, g.sector as usize)
+            .with_context(|| format!("validate allocated $MFT record {n}"))?
+        else {
             continue;
-        }
-        let flags = u16le(&buf, 22).unwrap_or(0);
-        if flags & 1 == 0 {
-            continue;
-        }
-        if apply_fixup(&mut buf, g.sector as usize).is_err() {
-            continue;
-        }
+        };
         let base_ref = u64le(&buf, 32).unwrap_or(0);
         match parse_record(&buf, flags & 2 != 0) {
-            Ok(Some((entry, mut extra_names, has_attr_list))) => {
+            Ok(Some((entry, extra_names, has_attr_list))) => {
                 if has_attr_list {
                     skipped_attr_list += 1;
                 }
                 if base_ref != 0 {
-                    let base_id = base_ref & 0x0000_ffff_ffff_ffff;
-                    let base_sequence = (base_ref >> 48) as u16;
-                    if let Some(base) = entries
-                        .get_mut(&base_id)
-                        .filter(|base| base_sequence == 0 || base.sequence == base_sequence)
-                    {
-                        if entry.size > base.size {
-                            base.size = entry.size;
-                        }
-                        if entry.alloc > base.alloc {
-                            base.alloc = entry.alloc;
-                        }
-                        extra_names.push(Alias {
-                            parent: entry.parent,
-                            parent_sequence: entry.parent_sequence,
-                            name: entry.name,
-                        });
-                        let dest = aliases.entry(base_id).or_default();
-                        for alias in extra_names {
-                            if !dest.contains(&alias)
-                                && !(alias.parent == base.parent && alias.name == base.name)
-                            {
-                                dest.push(alias);
-                            }
-                        }
-                    }
+                    extensions.push((base_ref, entry, extra_names));
                     continue;
                 }
                 if !extra_names.is_empty() {
@@ -133,13 +103,11 @@ pub fn scan_reader<R: Read + Seek>(
                 entries.insert(n, entry);
             }
             Ok(None) => {}
-            Err(error) if error.downcast_ref::<InvalidFilenameEncoding>().is_some() => {
-                return Err(error).with_context(|| format!("parse $MFT record {n}"));
-            }
-            Err(_) => continue,
+            Err(error) => return Err(error).with_context(|| format!("parse $MFT record {n}")),
         }
     }
 
+    extensions::merge(extensions, &mut entries, &mut aliases);
     let mut stats = ScanStats::default();
     // Store one portable path spelling in the index. Windows volume roots arrive
     // as `C:\\`; trimming both separators avoids producing `C:\\/name`.

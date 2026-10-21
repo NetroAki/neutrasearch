@@ -22,7 +22,8 @@ function canonicalDirectory(input) {
 }
 
 function comparable(value, platform = process.platform) {
-  const normalized = path.resolve(value).replace(/[\\/]+$/, "");
+  const api = platform === "win32" ? path.win32 : path.posix;
+  const normalized = api.resolve(value).replace(platform === "win32" ? /\\+$/ : /\/+$/, "");
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
@@ -30,7 +31,8 @@ export function pathIsInside(candidate, root, platform = process.platform) {
   const normalizedCandidate = comparable(candidate, platform);
   const normalizedRoot = comparable(root, platform);
   if (normalizedCandidate === normalizedRoot) return true;
-  return normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+  const separator = platform === "win32" ? "\\" : "/";
+  return normalizedCandidate.startsWith(`${normalizedRoot}${separator}`);
 }
 
 export function resolveScope(requested, cwd, env = process.env, platform = process.platform) {
@@ -73,7 +75,6 @@ export function compactSearchResult(payload, options) {
     }
     safe.push(candidate);
   }
-
   const lines = [
     `scope=${scope}`,
     `matched=${Number(payload.matched || 0)} returned=${safe.length} search_us=${Number(payload.search_us || 0)}`,

@@ -12,29 +12,33 @@ use crate::RunCursor;
 
 /// Locate the non-resident `$ATTRIBUTE_LIST` in record 0 and return
 /// `(runs covering its value, value size in bytes)`.
-fn attribute_list_extent(rec0: &[u8], cluster_size: u64) -> Option<(Vec<Run>, u64)> {
-    let mut p = u16le(rec0, 20)? as usize;
+fn attribute_list_extent(rec0: &[u8], cluster_size: u64) -> Result<Option<(Vec<Run>, u64)>> {
+    let mut p = u16le(rec0, 20).context("attribute-list offset")? as usize;
     loop {
-        if p + 16 > rec0.len() {
-            return None;
-        }
-        let kind = u32le(rec0, p)?;
+        let kind = u32le(rec0, p).context("truncated attribute-list header")?;
         if kind == 0xFFFF_FFFF {
-            return None;
+            return Ok(None);
         }
-        let length = u32le(rec0, p + 4)? as usize;
-        if length == 0 || p + length > rec0.len() {
-            return None;
+        let length = u32le(rec0, p + 4).context("attribute-list length")? as usize;
+        let end = p
+            .checked_add(length)
+            .context("attribute-list range overflow")?;
+        if length < 16 || end > rec0.len() {
+            bail!("invalid attribute-list attribute length");
         }
-        let non_resident = rec0[p + 8] != 0;
-        if kind == 0x20 && non_resident {
-            let run_offset = u16le(rec0, p + 32)? as usize;
-            let real = u64le(rec0, p + 48)?;
-            let data = &rec0[p + run_offset..p + length];
-            let runs = parse_runlist(data, cluster_size).ok()?;
-            return Some((runs, real));
+        if kind == 0x20 && rec0[p + 8] != 0 {
+            if length < 64 {
+                bail!("short non-resident attribute-list header");
+            }
+            let run_offset = u16le(rec0, p + 32).context("attribute-list run offset")? as usize;
+            if run_offset < 64 || run_offset > length {
+                bail!("invalid attribute-list run offset");
+            }
+            let real = u64le(rec0, p + 48).context("attribute-list size")?;
+            let runs = parse_runlist(&rec0[p + run_offset..end], cluster_size)?;
+            return Ok(Some((runs, real)));
         }
-        p += length;
+        p = end;
     }
 }
 
@@ -148,20 +152,50 @@ fn extension_record_runs<R: Read + Seek>(
         );
     }
     let mut p = u16le(&record, 20).context("extension record attribute offset")? as usize;
-    while p + 16 <= record.len() {
+    if p > record.len() {
+        bail!(
+            "extension record {} attribute offset exceeds record size",
+            entry.record
+        );
+    }
+    loop {
+        let header_end = p
+            .checked_add(4)
+            .context("extension attribute header range overflow")?;
+        if header_end > record.len() {
+            bail!(
+                "extension record {} has a truncated attribute header at {p}",
+                entry.record
+            );
+        }
         let kind = u32le(&record, p).ok_or_else(|| anyhow::anyhow!("attribute type overrun"))?;
         if kind == 0xFFFF_FFFF {
             break;
         }
-        let length = u32le(&record, p + 4).unwrap_or(0) as usize;
-        if length == 0 || p + length > record.len() {
-            break;
+        if p.checked_add(16).is_none_or(|end| end > record.len()) {
+            bail!("truncated extension attribute header");
+        }
+        let length = u32le(&record, p + 4).context("extension attribute length")? as usize;
+        let end = p
+            .checked_add(length)
+            .context("extension attribute range overflow")?;
+        if length < 16 || end > record.len() {
+            bail!(
+                "extension record {} has invalid attribute length {length} at {p}",
+                entry.record
+            );
         }
         let non_resident = record[p + 8] != 0;
         let attribute_id = u16le(&record, p + 14).unwrap_or(0);
         let lowest_vcn = u64le(&record, p + 16).unwrap_or(0);
         if kind == 0x80 && non_resident && record[p + 9] == 0 && attribute_id == entry.attribute_id
         {
+            if length < 64 {
+                bail!(
+                    "extension record {} has a short non-resident $DATA header",
+                    entry.record
+                );
+            }
             if lowest_vcn != entry.lowest_vcn {
                 bail!(
                     "extension record {} covers vcn {} but the list says {}",
@@ -171,9 +205,21 @@ fn extension_record_runs<R: Read + Seek>(
                 );
             }
             let run_offset = u16le(&record, p + 32).context("extension runlist offset")? as usize;
-            return parse_runlist(&record[p + run_offset..p + length], cluster_size);
+            if run_offset < 64 || run_offset > length {
+                bail!(
+                    "extension record {} has invalid runlist offset {run_offset}",
+                    entry.record
+                );
+            }
+            let start = p
+                .checked_add(run_offset)
+                .context("extension runlist start overflow")?;
+            return parse_runlist(
+                record.get(start..end).context("extension runlist range")?,
+                cluster_size,
+            );
         }
-        p += length;
+        p = end;
     }
     bail!(
         "extension record {} has no $DATA extension (attribute id {})",
@@ -193,7 +239,7 @@ pub(crate) fn complete_mft_runs<R: Read + Seek>(
     sector_size: u64,
     mut runs: Vec<Run>,
 ) -> Result<Vec<Run>> {
-    let Some((list_runs, list_size)) = attribute_list_extent(rec0, cluster_size) else {
+    let Some((list_runs, list_size)) = attribute_list_extent(rec0, cluster_size)? else {
         return Ok(runs);
     };
     let declared_size = mft_data_size(rec0).unwrap_or(0);

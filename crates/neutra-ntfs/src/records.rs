@@ -6,6 +6,18 @@ use anyhow::Context as _;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+pub(crate) fn prepare_allocated(record: &mut [u8], sector: usize) -> Result<Option<u16>> {
+    if record.get(..4) != Some(b"FILE".as_slice()) {
+        return Ok(None);
+    }
+    let flags = u16le(record, 22).context("record allocation flags")?;
+    if flags & 1 == 0 {
+        return Ok(None);
+    }
+    crate::geometry::apply_fixup(record, sector)?;
+    Ok(Some(flags))
+}
+
 #[derive(Debug)]
 pub(crate) struct InvalidFilenameEncoding;
 
@@ -40,6 +52,9 @@ pub(crate) fn parse_record(
     header_dir: bool,
 ) -> Result<Option<(Entry, Vec<Alias>, bool)>> {
     let mut p = u16le(rec, 20).context("attribute offset")? as usize;
+    if p > rec.len() {
+        anyhow::bail!("attribute offset {p} exceeds record size {}", rec.len());
+    }
     let sequence = u16le(rec, 16).context("record sequence")?;
     let mut mtime = 0i64;
     let mut best: Option<(u8, Entry)> = None;
@@ -47,14 +62,24 @@ pub(crate) fn parse_record(
     let mut attr_list = false;
     let mut data_size = None::<u64>;
     let mut data_alloc = None::<u64>;
-    while p + 16 <= rec.len() {
-        let typ = u32le(rec, p).unwrap();
+    loop {
+        let Some(header_end) = p.checked_add(4) else {
+            anyhow::bail!("attribute header range overflow");
+        };
+        if header_end > rec.len() {
+            anyhow::bail!("truncated attribute header at offset {p}");
+        }
+        let typ = u32le(rec, p).context("attribute type")?;
         if typ == 0xffff_ffff {
             break;
         }
+        if p.checked_add(16).is_none_or(|end| end > rec.len()) {
+            anyhow::bail!("truncated attribute header at offset {p}");
+        }
         let len = u32le(rec, p + 4).context("attr len")? as usize;
-        if len < 16 || p + len > rec.len() {
-            break;
+        let end = p.checked_add(len).context("attribute range overflow")?;
+        if len < 16 || end > rec.len() {
+            anyhow::bail!("invalid attribute length {len} at offset {p}");
         }
         let resident = rec[p + 8] == 0;
         if typ == 0x20 {
@@ -65,10 +90,21 @@ pub(crate) fn parse_record(
             data_size = u64le(rec, p + 48);
         }
         if resident {
-            let value_len = u32le(rec, p + 16).unwrap_or(0) as usize;
-            let value_off = u16le(rec, p + 20).unwrap_or(0) as usize;
-            if value_off + value_len <= len {
-                let v = &rec[p + value_off..p + value_off + value_len];
+            if len < 24 {
+                anyhow::bail!("short resident attribute header at offset {p}");
+            }
+            let value_len = u32le(rec, p + 16).context("resident value length")? as usize;
+            let value_off = u16le(rec, p + 20).context("resident value offset")? as usize;
+            let value_end = value_off
+                .checked_add(value_len)
+                .context("resident value range overflow")?;
+            if value_off < 24 || value_end > len {
+                anyhow::bail!(
+                    "resident value range {value_off}..{value_end} exceeds attribute length {len}"
+                );
+            }
+            {
+                let v = &rec[p + value_off..p + value_end];
                 if typ == 0x80 && rec[p + 9] == 0 {
                     data_alloc = Some(value_len as u64);
                     data_size = Some(value_len as u64);
@@ -84,7 +120,10 @@ pub(crate) fn parse_record(
                     let flags = u32le(v, 56).unwrap_or(0);
                     let nl = v[64] as usize;
                     let ns = v[65];
-                    if 66 + nl * 2 <= v.len() {
+                    if 66 + nl * 2 > v.len() {
+                        anyhow::bail!("truncated NTFS filename");
+                    }
+                    {
                         let words =
                             (0..nl).map(|i| u16::from_le_bytes([v[66 + i * 2], v[67 + i * 2]]));
                         let mut name = String::new();
@@ -127,7 +166,7 @@ pub(crate) fn parse_record(
                 }
             }
         }
-        p += len;
+        p = end;
     }
     if let Some((_, mut e)) = best {
         e.mtime = mtime;
@@ -207,34 +246,4 @@ pub(crate) fn filetime_to_unix(v: u64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn record_with_name(words: &[u16]) -> Vec<u8> {
-        let mut rec = vec![0u8; 256];
-        rec[20..22].copy_from_slice(&48u16.to_le_bytes());
-        rec[48..52].copy_from_slice(&0x30u32.to_le_bytes());
-        let attr_len = 16 + 24 + 66 + words.len() * 2;
-        rec[52..56].copy_from_slice(&(attr_len as u32).to_le_bytes());
-        rec[56] = 0;
-        rec[64..68].copy_from_slice(&((24 + 66 + words.len() * 2) as u32).to_le_bytes());
-        rec[68..70].copy_from_slice(&24u16.to_le_bytes());
-        let value = &mut rec[72..];
-        value[0..8].copy_from_slice(&5u64.to_le_bytes());
-        value[64] = words.len() as u8;
-        value[65] = 1;
-        for (i, word) in words.iter().enumerate() {
-            value[66 + i * 2..68 + i * 2].copy_from_slice(&word.to_le_bytes());
-        }
-        rec
-    }
-
-    #[test]
-    fn filename_decoder_rejects_lone_surrogates_and_keeps_literal_replacement_character() {
-        assert!(parse_record(&record_with_name(&[0xd800]), false).is_err());
-        let (entry, _, _) = parse_record(&record_with_name(&[0xfffd]), false)
-            .unwrap()
-            .unwrap();
-        assert_eq!(entry.name, "\u{fffd}");
-    }
-}
+mod tests;

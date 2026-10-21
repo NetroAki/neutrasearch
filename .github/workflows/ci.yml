@@ -87,6 +87,7 @@ jobs:
           path: |
             target/release/neutrasearch.exe
             target/release/neutrasearch-helper.exe
+            ${{ runner.temp }}/neutrasearch-installer/*.exe
           retention-days: 3
       - name: Reject directory-walking APIs in native lanes
         if: runner.os == 'Linux'

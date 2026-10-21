@@ -82,6 +82,15 @@ test("component boundaries prevent sibling-prefix scope escape", () => {
   assert(!pathIsInside(path.join("/work", "application"), path.join("/work", "app")));
 });
 
+test("trailing literal backslash is not trimmed into the scope itself on unix", () => {
+  assert(!pathIsInside("/workspace/project/private.txt", "/workspace/project\\", "linux"));
+});
+
+test("Windows scope syntax is checked with Windows separators on any host", () => {
+  assert(pathIsInside("C:\\workspace\\project\\src\\main.rs", "C:\\workspace\\project", "win32"));
+  assert(!pathIsInside("C:\\workspace\\project-old\\secret.txt", "C:\\workspace\\project", "win32"));
+});
+
 test("macOS scope authorization preserves case-sensitive volume paths", () => {
   assert(pathIsInside("/Volumes/Data/project/file", "/Volumes/Data/project", "darwin"));
   assert(!pathIsInside("/Volumes/Data/Project/file", "/Volumes/Data/project", "darwin"));
