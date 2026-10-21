@@ -105,7 +105,7 @@ fn normalizes_windows_and_unc_paths() {
 }
 
 #[test]
-fn publish_moves_the_generation_bound_sidecar_with_the_base() {
+fn publish_retains_recovery_sidecar_until_transaction_cleanup() {
     let base_path =
         std::env::temp_dir().join(format!("neutra-dir-publish-{}.nsx", std::process::id()));
     let staged_path =
@@ -124,7 +124,7 @@ fn publish_moves_the_generation_bound_sidecar_with_the_base() {
         .children
         .iter()
         .any(|child| child.path.as_ref() == "/new.txt"));
-    assert!(!DirectorySummary::path_for(&staged_path).exists());
+    assert!(DirectorySummary::path_for(&staged_path).exists());
     cleanup(&base_path);
     cleanup(&staged_path);
 }
