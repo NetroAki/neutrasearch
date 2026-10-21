@@ -17,6 +17,15 @@ def run(*args):
     subprocess.run(args, check=True, timeout=30)
 
 
+def tool(name):
+    # Debian and Ubuntu install setcap under /usr/sbin; Arch and Fedora use /usr/bin.
+    for directory in ('/usr/sbin', '/usr/bin'):
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise RuntimeError(f'Required system tool not found: {name}')
+
+
 def trusted(path, directory=False):
     info = path.lstat()
     expected = stat.S_ISDIR if directory else stat.S_ISREG
@@ -67,7 +76,7 @@ def write_rule(user):
 
 
 def restore(helper):
-    run('/usr/bin/setfacl', '-b', str(helper))
+    run(tool('setfacl'), '-b', str(helper))
     helper.chmod(0o700)
     for marker in STATE.iterdir():
         trusted(marker)
@@ -77,10 +86,10 @@ def restore(helper):
             continue
         if marker.read_text().strip() != user.pw_name:
             continue
-        run('/usr/bin/setfacl', '-m', f'u:{user.pw_uid}:rx', str(helper))
+        run(tool('setfacl'), '-m', f'u:{user.pw_uid}:rx', str(helper))
         write_rule(user)
-        run('/usr/bin/systemctl', 'enable', f'neutrasearch-watch@{user.pw_uid}.service')
-    run('/usr/bin/setcap', 'cap_dac_read_search,cap_sys_admin=ep', str(helper))
+        run(tool('systemctl'), 'enable', f'neutrasearch-watch@{user.pw_uid}.service')
+    run(tool('setcap'), 'cap_dac_read_search,cap_sys_admin=ep', str(helper))
 
 
 def main():

@@ -58,6 +58,16 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --bins --release --locked
+      - name: Install the Debian package and check the helper capabilities
+        if: runner.os == 'Linux'
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          python packaging/tools/package_installers.py linux-deb \
+            --project-root . --target-dir target/release --output-dir dist-deb \
+            --target x86_64-unknown-linux-gnu --version "$version"
+          sudo apt-get install -y ./dist-deb/*.deb
+          getcap /usr/lib/neutrasearch/neutrasearch-helper | grep -q cap_dac_read_search
+          sudo apt-get remove -y neutrasearch
       - name: Build isolated Windows GUI fixture
         if: runner.os == 'Windows'
         run: cargo build --release --locked -p neutra-core --example gui_fixture

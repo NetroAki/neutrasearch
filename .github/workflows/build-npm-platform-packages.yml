@@ -74,6 +74,7 @@ jobs:
       - name: Smoke native applications
         run: cargo run --release --locked --target "${{ matrix.target }}" --bin neutrasearch -- --version
       - name: Prepare platform npm package
+        shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: >-
