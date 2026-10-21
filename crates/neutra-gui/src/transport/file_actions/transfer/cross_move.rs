@@ -21,6 +21,19 @@ struct Key {
     ctime: (i64, i64),
 }
 
+/// Flush the whole filesystem that holds `path` to disk.
+pub(super) fn sync_volume(path: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // The parent is a real directory on the same volume even when the entry is a link.
+    let handle = fs::File::open(path.parent().unwrap_or(Path::new(".")))?;
+    // SAFETY: the descriptor stays open for the duration of the call.
+    if unsafe { libc::syncfs(handle.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 fn key(path: &Path) -> io::Result<Key> {
     let m = fs::symlink_metadata(path)?;
     let dir = m.is_dir();
@@ -33,6 +46,11 @@ fn key(path: &Path) -> io::Result<Key> {
             (0, 0)
         } else {
             (m.mtime(), m.mtime_nsec())
+        },
+        ctime: if dir {
+            (0, 0)
+        } else {
+            (m.ctime(), m.ctime_nsec())
         },
     })
 }
@@ -83,6 +101,28 @@ fn collect(path: &Path, out: &mut Vec<(PathBuf, Key)>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_a_same_size_edit_that_restored_its_modification_time() {
+        let root = std::env::temp_dir().join(format!("ns-cross-ctime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("f");
+        fs::write(&file, "aaaa").unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        let snapshot = Snapshot::take(&root).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&file, "bbbb").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(snapshot.remove_unchanged(), 2);
+        assert_eq!(fs::read(&file).unwrap(), b"bbbb");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn keeps_files_that_appear_or_change_after_the_snapshot() {

@@ -199,6 +199,13 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         let snapshot = cross_move::Snapshot::take(source)
             .map_err(|e| format!("cannot move {}: {e}", source.display()))?;
         copy_path_noreplace(source, target).map_err(|e| e.replace("copy", "move"))?;
+        // Make the copy durable on the destination volume before the source goes.
+        cross_move::sync_volume(target).map_err(|e| {
+            format!(
+                "moved {} but could not flush it to disk: {e}",
+                source.display()
+            )
+        })?;
         match snapshot.remove_unchanged() {
             0 => Ok(()),
             left => Err(format!(
