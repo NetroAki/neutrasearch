@@ -83,7 +83,7 @@ impl CompactIndex {
     /// per WAL change when overlays are built — a full scan here would make
     /// overlay construction quadratic.
     pub fn records_by_path(&self, path: &str) -> io::Result<Vec<FileRecord>> {
-        if !cfg!(windows) && self.record_version < 7 {
+        if !cfg!(windows) && (self.record_version < 7 || super::domain::windows_syntax(path)) {
             let mut found = Vec::new();
             for block in 0..self.blocks.count {
                 found.extend(
@@ -123,7 +123,7 @@ impl CompactIndex {
         source: Option<u32>,
         path: &str,
     ) -> io::Result<Option<FileRecord>> {
-        if !cfg!(windows) && self.record_version < 7 {
+        if !cfg!(windows) && (self.record_version < 7 || super::domain::windows_syntax(path)) {
             return Ok(self
                 .records_by_path(path)?
                 .into_iter()

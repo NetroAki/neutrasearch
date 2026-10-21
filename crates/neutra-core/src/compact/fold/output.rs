@@ -7,7 +7,7 @@ use crate::compact_build::{open_private, write_u16, write_u32, write_u64, BuildS
 use crate::compact_merge::{sorted_pairs, write_postings_from_pairs};
 use crate::compact_stream::encode_block;
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 pub(super) struct Output {
@@ -132,19 +132,7 @@ impl Output {
         write_u64(&mut self.file, generation)?;
         self.file.flush()?;
         let mut file = self.file.into_inner().map_err(|error| error.into_error())?;
-        file.sync_all()?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut checksum = crc32fast::Hasher::new();
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            checksum.update(&buffer[..read]);
-        }
-        file.write_all(&checksum.finalize().to_le_bytes())?;
-        file.sync_all()?;
+        crate::compact::checksums::finish(&mut file)?;
         self.sidecar.finish()?;
         Ok(BuildStats {
             generation,

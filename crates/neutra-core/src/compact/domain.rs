@@ -77,8 +77,20 @@ pub(super) fn equivalent_index_path(left: &str, right: &str) -> bool {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        left == right
+        if windows_syntax(left) && windows_syntax(right) {
+            left.replace('\\', "/") == right.replace('\\', "/")
+        } else {
+            left == right
+        }
     }
+}
+
+pub(super) fn windows_syntax(path: &str) -> bool {
+    path.starts_with("\\\\")
+        || (path.len() >= 3
+            && path.as_bytes()[0].is_ascii_alphabetic()
+            && path.as_bytes()[1] == b':'
+            && matches!(path.as_bytes()[2], b'/' | b'\\'))
 }
 
 pub(crate) fn suffix_path(path: &Path, suffix: &str) -> PathBuf {

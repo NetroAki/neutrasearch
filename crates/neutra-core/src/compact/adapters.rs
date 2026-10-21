@@ -38,8 +38,8 @@ impl CompactIndex {
     ///
     /// Startup path for readers (GUI, MCP, query CLI): opening a multi-gigabyte
     /// index would otherwise hash the entire file before the first search.
-    /// Version 6 blocks verify their own Zstd content checksums on decode.
-    /// Older bases require whole-file validation because their blocks lack it.
+    /// Version 8 validates routing metadata at open and block checksums on decode.
+    /// Older bases require whole-file validation.
     pub fn open_fast(path: &Path) -> io::Result<Self> {
         Self::open_impl(path, false)
     }
@@ -67,7 +67,7 @@ impl CompactIndex {
         if !(MIN_READABLE_VERSION..=VERSION).contains(&record_version) {
             return Err(invalid("unsupported compact index version"));
         }
-        if verify_payload || record_version < 6 {
+        if verify_payload || record_version < 8 {
             let expected_checksum = u32::from_le_bytes(
                 map[data_len..]
                     .try_into()
@@ -93,6 +93,14 @@ impl CompactIndex {
             if checksum != expected_checksum {
                 return Err(invalid("compact index checksum mismatch"));
             }
+        }
+        if record_version >= 8 {
+            let routing_end = data
+                .len()
+                .checked_sub(4)
+                .ok_or_else(|| invalid("missing routing checksum"))?;
+            let expected = u32::from_le_bytes(data[routing_end..].try_into().unwrap());
+            super::checksums::verify_routing(&data[..routing_end], expected)?;
         }
         if u32_at(data, 12)? != BLOCK_RECORDS as u32 {
             return Err(invalid("unsupported path block size"));

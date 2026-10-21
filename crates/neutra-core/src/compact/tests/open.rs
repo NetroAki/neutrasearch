@@ -158,3 +158,32 @@ fn list_directory_merges_live_delta_exactly() {
     lock.push(".lock");
     let _ = std::fs::remove_file(lock);
 }
+
+#[test]
+fn fast_reader_verifies_header_dictionary_and_posting_routing() {
+    let path = std::env::temp_dir().join(format!("neutra-routing-{}.nsx", std::process::id()));
+    CompactIndex::build(&[rec("/alphabet.txt", 1)], &path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let dict = u64::from_le_bytes(original[48..56].try_into().unwrap()) as usize;
+    let postings = u64::from_le_bytes(original[40..48].try_into().unwrap()) as usize;
+    for offset in [28, dict, postings] {
+        let mut damaged = original.clone();
+        damaged[offset] ^= 1;
+        std::fs::write(&path, damaged).unwrap();
+        assert!(
+            CompactIndex::open_fast(&path).is_err(),
+            "routing byte {offset}"
+        );
+    }
+    std::fs::write(&path, original).unwrap();
+    assert!(
+        CompactIndex::open_fast(&path)
+            .unwrap()
+            .search(&Query::parse("alpha"))
+            .unwrap()
+            .0
+            .len()
+            == 1
+    );
+    std::fs::remove_file(path).unwrap();
+}

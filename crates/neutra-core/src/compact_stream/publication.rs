@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Read;
 
 pub(crate) fn stage_path(path: &Path) -> PathBuf {
     crate::compact::suffix_path(path, ".compact")
@@ -20,7 +21,6 @@ pub(super) fn recover_streamed_publication(path: &Path) -> io::Result<()> {
     }
     let mut bytes = [0u8; 8];
     let marker_file = File::open(&marker)?;
-    use std::io::Read as _;
     let mut marker_file = marker_file;
     if marker_file.read_exact(&mut bytes).is_err() {
         return Err(invalid("invalid compact rebuild publication marker"));

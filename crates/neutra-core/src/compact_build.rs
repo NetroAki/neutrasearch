@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 #[cfg(test)]
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::time::Instant;
@@ -129,19 +129,7 @@ impl CompactIndex {
         write_u64(&mut file, generation)?;
         file.flush()?;
         let mut file = file.into_inner().map_err(|error| error.into_error())?;
-        file.sync_all()?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut checksum = crc32fast::Hasher::new();
-        let mut buffer = [0u8; 1024 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            checksum.update(&buffer[..read]);
-        }
-        file.write_all(&checksum.finalize().to_le_bytes())?;
-        file.sync_all()?;
+        crate::compact::checksums::finish(&mut file)?;
         drop(file);
         replace_file(&temp, path)?;
         clear_stale_marker(path)?;

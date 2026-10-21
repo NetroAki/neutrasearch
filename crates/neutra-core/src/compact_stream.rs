@@ -17,7 +17,7 @@ use crate::compact_summary::{begin_sidecar, SummaryFeed};
 use crate::CompactIndex;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -123,19 +123,7 @@ fn build_streamed(
     write_u64(&mut file, generation)?;
     file.flush()?;
     let mut file = file.into_inner().map_err(|error| error.into_error())?;
-    file.sync_all()?;
-    file.seek(SeekFrom::Start(0))?;
-    let mut checksum = crc32fast::Hasher::new();
-    let mut buffer = [0u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        checksum.update(&buffer[..read]);
-    }
-    file.write_all(&checksum.finalize().to_le_bytes())?;
-    file.sync_all()?;
+    crate::compact::checksums::finish(&mut file)?;
     drop(file);
     replace_file(&temp, &staged)?;
     clear_stale_marker(&staged)?;

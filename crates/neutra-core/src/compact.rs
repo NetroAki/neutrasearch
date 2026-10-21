@@ -63,3 +63,5 @@ pub(crate) use format::{
     BlockDesc, DictEntry, BLOCK_RECORDS, CHECKSUM_BYTES, DESC_SIZE, DICT_SIZE, HEADER, MAGIC,
     MIN_READABLE_VERSION, VERSION,
 };
+
+pub(crate) mod checksums;
