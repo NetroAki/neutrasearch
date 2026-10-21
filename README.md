@@ -8,7 +8,7 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 - Details, List, Grid, and hierarchical Treemap views
 - Persisted logical folder totals for responsive hierarchy views
 - GUI, CLI, MCP server, and Pi integration
-- Checksummed compact index with durable updates
+- Checksummed compact index; on Linux it follows file changes live
 - No telemetry and no hidden directory-walking fallback
 
 ## Native indexing
@@ -18,8 +18,18 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 | Btrfs | Tree-search ioctl |
 | EXT2/3/4 | libext2fs |
 | Windows NTFS | MFT metadata |
-| macOS | Spotlight index; unavailable metadata fails explicitly |
+| macOS | Spotlight index; a failed metadata lookup fails the scan |
 | Linux ZFS | Pinned OpenZFS 2.2.2 reader; snapshot ZAP entries and SA attributes |
+
+### Platform support
+
+| | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| Native metadata index | yes | NTFS | Spotlight-indexed files only |
+| Live updates after the first index | yes (fanotify) | not yet; re-index to refresh | not yet; re-index to refresh |
+| Trash and restore | yes | not yet | not yet |
+
+Rename, copy and move never replace an existing destination on any platform. Undo history is kept in memory and is lost when the app closes.
 
 A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings. Compact indexes also write a generation-bound `.dirs` sidecar containing logical folder totals and direct children, so hierarchy views do not need to decode every search record.
 
@@ -48,7 +58,7 @@ The Linux ZFS reader also needs matching OpenZFS 2.2.2 development files
 (`libzfslinux-dev` on Ubuntu 24.04). Build its bundled runtime before packaging:
 
 ```sh
-python3 scripts/build-zfs-reader.py --project-root . --target-dir target/release
+python3 packaging/tools/build-zfs-reader.py --project-root . --target-dir target/release
 ```
 
 Encrypted ZFS datasets and non-UTF-8 filenames currently fail explicitly.
@@ -88,6 +98,8 @@ Run the MCP server with the last index automatically:
 NEUTRASEARCH_MCP_ALLOWED_ROOTS=/home/user/projects neutrasearch mcp
 ```
 
+Without `NEUTRASEARCH_MCP_ALLOWED_ROOTS` the server can return filenames, sizes and modification times for every indexed path, so set it whenever an agent should see only some folders. The server is read-only and sends no file contents.
+
 `--index INDEX.nsx` and `NEUTRASEARCH_INDEX` remain optional overrides.
 
 Install the Pi extension:
@@ -106,3 +118,8 @@ Neutrasearch indexes filenames, paths, and metadata—not file contents. Index f
 ## License
 
 [MIT](LICENSE)
+
+
+## Privacy on shared machines
+
+Neutrasearch indexes every drive from filesystem tables, so the index lists names, sizes and dates of files that individual accounts may not be able to open. On Windows the background service answers any local user. On Linux the index lives in the account that runs the watch service. Use it on machines where all local users may see each other's file names.

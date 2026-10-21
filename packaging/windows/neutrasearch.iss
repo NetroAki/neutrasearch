@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #error Pass the release version with /DAppVersion=x.y.z
 #endif
 #ifndef BinDir
   #define BinDir "..\..\target\x86_64-pc-windows-msvc\release"
@@ -49,6 +49,7 @@ Source: "{#BinDir}\neutrasearch-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-service.ps1"; DestDir: "{app}\service"; Flags: ignoreversion
 Source: "remove-service.ps1"; DestDir: "{app}\service"; Flags: ignoreversion
 

@@ -83,16 +83,8 @@ pub(crate) fn execute(action: Action) -> Result<Option<PathBuf>, String> {
 mod transfer;
 pub(crate) use transfer::transfer as transfer_files;
 
-#[cfg(target_os = "linux")]
 pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
     transfer::rename_noreplace(from, to)
-}
-#[cfg(not(target_os = "linux"))]
-pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
-    if to.exists() {
-        return Err(format!("destination exists: {}", to.display()));
-    }
-    std::fs::rename(from, to).map_err(|e| e.to_string())
 }
 
 fn launch(path: &Path, desktop: Option<&str>) -> Result<Option<PathBuf>, String> {

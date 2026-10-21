@@ -19,6 +19,11 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_ADMIN
+NoNewPrivileges=yes
+LockPersonality=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictRealtime=yes
 
 [Install]
 WantedBy=multi-user.target

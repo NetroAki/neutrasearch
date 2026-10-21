@@ -11,6 +11,7 @@ pub(crate) fn initialize() -> Result<()> {
             parent > 1 && libc::getppid() == parent,
             "scanner parent exited during startup"
         );
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
         libc::mallopt(libc::M_ARENA_MAX, 2);
     }
     std::env::set_var("RAYON_NUM_THREADS", "2");

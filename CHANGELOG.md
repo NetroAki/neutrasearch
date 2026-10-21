@@ -4,6 +4,53 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+## [0.1.30] - 2026-10-21
+
+### Known limits
+- The Windows scanner service accepts connections from any local user and returns metadata only. Per-caller access checks are planned.
+- The Linux watch service holds CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH for fanotify; it is now non-dumpable and runs with no-new-privileges.
+
+### Fixes
+
+- Copy and move on Linux work with coreutils 9.4 (Ubuntu 24.04). 0.1.29 required
+  coreutils 9.5 and could fail to copy or move files there. Files are copied under
+  a private name and renamed into place without replacing, so a destination that
+  appears mid-copy is reported instead of skipped.
+- Rename on Windows and macOS uses the atomic no-replace primitives, so it can no
+  longer overwrite a file that appears during the operation.
+- Large indexes built from several spill chunks merge in the same path order the
+  chunks were sorted in. Mixed-case names on Windows and macOS, and names with a
+  backslash on Linux, could previously interleave out of order.
+- A macOS scan stops with an error when a listed path cannot be read; only paths
+  that vanished after the Spotlight query are skipped.
+- Resolve the macOS /var alias in the seed snapshot, flush staged files on Windows
+  by opening them writable, and compare folded paths consistently in the search
+  cache. The test suite now passes on Linux, Windows and macOS.
+
+### Packaging and release
+
+- Every package now ships THIRD-PARTY-NOTICES.txt with the licences of bundled
+  fonts and Rust dependencies.
+- Releases run the full CI workflow (tests, lints, audit, dependency review)
+  before building artifacts. Dependency review also runs on pushes.
+- Release tooling moved from scripts/ to packaging/tools/.
+- The polkit example that allows passwordless indexing is now an opt-in example
+  file, not part of any package.
+- The Pi package pins its platform binaries to the matching release.
+
+### Dependencies
+
+- Make image tracing, text shaping and Illustrator import optional in
+  egui_expressive and turn them off here. This removes 74 crates, including the
+  unmaintained adler, ansi_term, atty, rustybuzz and ttf-parser, and updates
+  event-listener to 5.4.2.
+
+### Documentation
+
+- The README lists what each platform supports: live updates and trash are
+  Linux-only for now. State that MCP search covers every indexed path unless
+  NEUTRASEARCH_MCP_ALLOWED_ROOTS is set, and that undo history is kept in memory.
+
 ## [0.1.29] - 2026-10-20
 
 ### Smaller disk catalog

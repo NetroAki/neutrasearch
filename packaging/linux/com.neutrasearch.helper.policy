@@ -19,7 +19,7 @@
 
   <action id="com.neutrasearch.helper">
     <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
-    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <message gettext-domain="neutrasearch">Neutrasearch needs administrator access to read the raw file tables of every drive and to run a live change watch for your account. It reads names, sizes and dates, not file contents.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -31,7 +31,7 @@
 
   <action id="com.neutrasearch.helper.usr-lib">
     <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
-    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <message gettext-domain="neutrasearch">Neutrasearch needs administrator access to read the raw file tables of every drive and to run a live change watch for your account. It reads names, sizes and dates, not file contents.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -43,7 +43,7 @@
 
   <action id="com.neutrasearch.helper.usr-local-bin">
     <description gettext-domain="neutrasearch">Run the Neutrasearch indexing helper</description>
-    <message gettext-domain="neutrasearch">Neutrasearch wants to read filesystem metadata to build its search index</message>
+    <message gettext-domain="neutrasearch">Neutrasearch needs administrator access to read the raw file tables of every drive and to run a live change watch for your account. It reads names, sizes and dates, not file contents.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

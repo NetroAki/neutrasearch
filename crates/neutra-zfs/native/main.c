@@ -4,7 +4,7 @@
 #include <sys/spa.h>
 
 #ifndef NEUTRA_ZFS_ABI_VERSION
-#error Build through scripts/build-zfs-reader.py with version-checked headers
+#error Build through packaging/tools/build-zfs-reader.py with version-checked headers
 #endif
 
 extern uint64_t zfs_arc_max;

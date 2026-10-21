@@ -39,6 +39,10 @@ fn fail(message: String) -> ! {
 
 fn main() {
     #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
+    #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some("--resume-after") {
         resume::after_parent_exit();
         return;

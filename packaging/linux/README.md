@@ -33,7 +33,7 @@ does not enable a launch-time scan or a daily scan timer.
 Build with the release binaries already present in `target/<triple>/release`:
 
 ```sh
-python3 scripts/package_installers.py linux-deb \
+python3 packaging/tools/package_installers.py linux-deb \
   --project-root "$PWD" \
   --target-dir target/x86_64-unknown-linux-gnu/release \
   --output-dir dist \
@@ -52,12 +52,12 @@ the package enables the live-watch service when systemd is running.
 `com.neutrasearch.helper.policy` registers polkit actions for the supported
 root-owned helper paths. Debian installs the helper at
 `/usr/lib/neutrasearch/neutrasearch-helper` and includes the matching action.
-The standalone `49-neutrasearch.rules` grants the active local session
+The opt-in example `49-neutrasearch.rules.example` (not installed by any package) grants the active local session
 passwordless access to the indexing helper; install it only on a machine where
 that access is intended:
 
 ```sh
-install -Dm644 49-neutrasearch.rules \
+install -Dm644 49-neutrasearch.rules.example \
   /etc/polkit-1/rules.d/49-neutrasearch.rules
 ```
 
