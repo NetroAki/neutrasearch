@@ -1,7 +1,9 @@
 name: ci
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -51,7 +53,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libext2fs-dev libzfslinux-dev
       - if: runner.os == 'Linux'
         name: Build pinned OpenZFS reader
-        run: python scripts/build-zfs-reader.py --project-root . --target-dir target/release
+        run: python packaging/tools/build-zfs-reader.py --project-root . --target-dir target/release
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -64,4 +66,4 @@ jobs:
       - name: Reject directory-walking APIs in native lanes
         if: runner.os == 'Linux'
         shell: bash
-        run: bash scripts/check-no-walk.sh
+        run: bash packaging/tools/check-no-walk.sh
