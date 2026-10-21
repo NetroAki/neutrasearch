@@ -98,8 +98,8 @@ pub(super) fn validate(map: &Mmap, generation: u64, records: u64) -> io::Result<
         if count > INITIAL_DEPTH || offset != cursor {
             return Err(invalid("invalid initial list bounds"));
         }
-        for id in bytes[list.clone()].chunks_exact(4) {
-            if u32::from_le_bytes(id.try_into().unwrap()) as usize >= len {
+        for id in bytes[list.clone()].as_chunks::<4>().0 {
+            if u32::from_le_bytes(*id) as usize >= len {
                 return Err(invalid("invalid initial list record id"));
             }
         }
@@ -131,8 +131,8 @@ pub(super) fn validate(map: &Mmap, generation: u64, records: u64) -> io::Result<
         return Err(invalid("too many browse records"));
     }
     let mut seen = vec![0u8; len.div_ceil(8)];
-    for raw in bytes[perm_range].chunks_exact(4) {
-        let id = u32::from_le_bytes(raw.try_into().unwrap()) as usize;
+    for raw in bytes[perm_range].as_chunks::<4>().0 {
+        let id = u32::from_le_bytes(*raw) as usize;
         if id >= len || seen[id / 8] & (1 << (id % 8)) != 0 {
             return Err(invalid("invalid name-order record ids"));
         }

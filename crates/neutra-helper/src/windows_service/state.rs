@@ -14,14 +14,37 @@ pub(super) static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub(super) static STATUS_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 pub(super) static SERVICE_THREAD: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
-pub(super) fn init_service_logging() -> Result<()> {
-    let directory = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("Neutrasearch");
+/// Log inside the installation directory, whose ACL the installer restricts to
+/// SYSTEM and administrators. A world-creatable location such as ProgramData
+/// would let an ordinary user pre-create or redirect what this account writes.
+fn service_log_directory() -> Result<PathBuf> {
+    let executable = std::env::current_exe().context("locate the service executable")?;
+    let directory = executable
+        .parent()
+        .context("service executable has no directory")?
+        .join("logs");
     std::fs::create_dir_all(&directory).context("create service log directory")?;
+    refuse_reparse_point(&directory)?;
+    Ok(directory)
+}
+
+fn refuse_reparse_point(path: &std::path::Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            anyhow::bail!("refusing reparse point {}", path.display())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
+    }
+}
+
+pub(super) fn init_service_logging() -> Result<()> {
+    let directory = service_log_directory()?;
     let path = directory.join("helper.log");
+    refuse_reparse_point(&path)?;
     if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 2 * 1024 * 1024) {
         let _ = std::fs::rename(&path, directory.join("helper.previous.log"));
     }

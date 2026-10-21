@@ -11,6 +11,8 @@ pub(crate) struct Geometry {
     pub cluster: u64,
     pub record: u64,
     pub mft_offset: u64,
+    /// Volume size declared by the boot sector; 0 when absent or overflowing.
+    pub declared_bytes: u64,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Run {
@@ -70,7 +72,11 @@ pub(crate) fn read_geometry<R: Read + Seek>(r: &mut R) -> Result<Geometry> {
     if record < sector || record > 64 * 1024 {
         bail!("invalid MFT record size {record}");
     }
+    let declared_bytes = u64::from_le_bytes(b[40..48].try_into().unwrap())
+        .checked_mul(sector)
+        .unwrap_or(0);
     Ok(Geometry {
+        declared_bytes,
         sector,
         cluster,
         record,
@@ -78,6 +84,32 @@ pub(crate) fn read_geometry<R: Read + Seek>(r: &mut R) -> Result<Geometry> {
             .checked_mul(cluster)
             .context("MFT offset overflow")?,
     })
+}
+/// Real size of the device behind `r`. The end of the stream is authoritative;
+/// the caller hint and the boot sector are fallbacks for handles that cannot
+/// seek to the end (raw Windows volumes). Zero means the size is unknown, which
+/// is an error because every run must be checked against it.
+pub(crate) fn device_extent<R: Seek>(r: &mut R, hint: u64, declared: u64) -> Result<u64> {
+    r.seek(SeekFrom::End(0))
+        .ok()
+        .filter(|&n| n > 0)
+        .or((hint > 0).then_some(hint))
+        .or((declared > 0).then_some(declared))
+        .context("cannot determine the NTFS device size")
+}
+/// Reject any run that ends past the device, so a forged runlist cannot make
+/// the scanner size buffers or loops from bytes that do not exist.
+pub(crate) fn check_runs_within(runs: &[Run], device: u64) -> Result<()> {
+    for run in runs {
+        let end = run
+            .physical
+            .checked_add(run.len)
+            .context("run end overflow")?;
+        if end > device {
+            bail!("$MFT run ends at byte {end}, past the {device}-byte device");
+        }
+    }
+    Ok(())
 }
 pub(crate) fn mft_runs(rec: &[u8], cluster: u64) -> Result<(Vec<Run>, u64)> {
     let mut p = u16le(rec, 20).context("attribute offset")? as usize;

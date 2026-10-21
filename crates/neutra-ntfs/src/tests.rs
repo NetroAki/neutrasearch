@@ -74,3 +74,36 @@ fn scan_hard_fails_when_the_volume_will_not_open() {
     assert!(error.contains("privileges"), "unexpected: {error}");
     assert!(records.is_empty());
 }
+
+fn scan_image(image: Vec<u8>) -> anyhow::Result<Vec<FileRecord>> {
+    let size = image.len() as u64;
+    let mut records = Vec::new();
+    scan_reader(std::io::Cursor::new(image), size, "/vol", &mut |r| {
+        records.push(r)
+    })?;
+    Ok(records)
+}
+
+#[test]
+fn attribute_list_image_scans_when_the_size_is_honest() {
+    let records = scan_image(test_images::attr_list_image(32)).unwrap();
+    assert!(records.iter().any(|r| r.path.ends_with("docs/a.txt")));
+}
+
+#[test]
+fn forged_attribute_list_size_is_an_error_not_an_allocation_abort() {
+    let error = scan_image(test_images::attr_list_image(36_000_000_000_000_000)).unwrap_err();
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("implausible attribute list"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
+fn forged_mft_run_longer_than_the_device_is_rejected() {
+    let image = test_images::declared_huge_mft_image();
+    assert!(image.len() < 16 * 1024);
+    let error = format!("{:#}", scan_image(image).unwrap_err());
+    assert!(error.contains("past the"), "unexpected: {error}");
+}

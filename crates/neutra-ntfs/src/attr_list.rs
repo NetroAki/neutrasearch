@@ -10,6 +10,9 @@ use std::io::{Read, Seek};
 use crate::geometry::{apply_fixup, parse_runlist, u16le, u32le, u64le, Run};
 use crate::RunCursor;
 
+mod entries;
+use entries::{parse_attribute_list_entries, AttributeListEntry};
+
 /// Locate the non-resident `$ATTRIBUTE_LIST` in record 0 and return
 /// `(runs covering its value, value size in bytes)`.
 fn attribute_list_extent(rec0: &[u8], cluster_size: u64) -> Result<Option<(Vec<Run>, u64)>> {
@@ -64,44 +67,20 @@ fn mft_data_size(rec0: &[u8]) -> Option<u64> {
     }
 }
 
-struct AttributeListEntry {
-    attribute_kind: u32,
-    lowest_vcn: u64,
-    record: u64,
-    sequence: u16,
-    attribute_id: u16,
-}
-
-/// Decode the attribute-list value using each entry own record length.
-/// Nameless entries are 32 bytes: kind@0, length@4, name len@6, name off@7,
-/// lowest VCN@8, file reference@16 (low 48 bits segment, high 16 sequence),
-/// attribute id@24. There is no instance field.
-fn parse_attribute_list_entries(value: &[u8]) -> Vec<AttributeListEntry> {
-    let mut entries = Vec::new();
-    let mut p = 0usize;
-    while p + 26 <= value.len() {
-        let length = u16le(value, p + 4).unwrap_or(0) as usize;
-        if length < 26 || p + length > value.len() {
-            break;
-        }
-        let attribute_kind = u32le(value, p).unwrap_or(0);
-        let lowest_vcn = u64le(value, p + 8).unwrap_or(0);
-        let reference = u64le(value, p + 16).unwrap_or(0);
-        entries.push(AttributeListEntry {
-            attribute_kind,
-            lowest_vcn,
-            record: reference & 0x0000_FFFF_FFFF_FFFF,
-            sequence: (reference >> 48) as u16,
-            attribute_id: u16le(value, p + 24).unwrap_or(0),
-        });
-        p += length;
-    }
-    entries
-}
+/// Largest attribute list accepted; real lists stay far below this.
+const MAX_ATTRIBUTE_LIST_BYTES: u64 = 64 << 20;
 
 /// Materialize a non-resident attribute value whose runs are byte-granular
-/// (cluster size 1).
+/// (cluster size 1). The size is checked against the runs and a hard cap
+/// before allocating, because it comes straight from the volume.
 fn read_value_bytes<R: Read + Seek>(r: &mut R, runs: &[Run], size: u64) -> Result<Vec<u8>> {
+    let covered = runs
+        .iter()
+        .try_fold(0u64, |total, run| total.checked_add(run.len))
+        .context("attribute list run coverage overflow")?;
+    if size > covered || size > MAX_ATTRIBUTE_LIST_BYTES {
+        bail!("implausible attribute list size {size} (runs cover {covered})");
+    }
     let mut value = vec![0u8; size as usize];
     let mut done = 0u64;
     for run in runs {

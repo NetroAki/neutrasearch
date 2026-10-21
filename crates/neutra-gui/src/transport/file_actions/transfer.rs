@@ -4,7 +4,7 @@ use std::{
     process::Command,
 };
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), test))]
 #[path = "transfer/copy.rs"]
 mod copy;
 #[cfg(not(target_os = "linux"))]
@@ -45,7 +45,7 @@ pub(crate) fn transfer(paths: &[PathBuf], dest: &Path, cut: bool) -> Result<(), 
         if cut {
             match rename_noreplace_io(source, &target) {
                 Ok(()) => continue,
-                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                Err(e) if is_cross_device(&e) => {
                     move_path_noreplace(source, &target)?;
                 }
                 Err(e) => return Err(format!("cannot move {}: {e}", source.display())),
@@ -57,7 +57,19 @@ pub(crate) fn transfer(paths: &[PathBuf], dest: &Path, cut: bool) -> Result<(), 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+/// True when a rename failed only because source and target are on different
+/// volumes, so a staged copy followed by removing the source can finish it.
+fn is_cross_device(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(17)
+    }
+    #[cfg(not(windows))]
+    {
+        error.raw_os_error() == Some(libc::EXDEV)
+    }
+}
+
 fn staging_name(target: &Path) -> PathBuf {
     let leaf = target
         .file_name()
@@ -159,7 +171,6 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn cleanup_staging(path: &Path) {
     let _ = std::fs::remove_dir_all(path);
 }
@@ -169,7 +180,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     {
         match rename_noreplace_io(source, target) {
             Ok(()) => return Ok(()),
-            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {}
+            Err(e) if is_cross_device(&e) => {}
             Err(e) => return Err(format!("cannot move {}: {e}", source.display())),
         }
         if std::fs::symlink_metadata(target).is_ok() {
@@ -205,9 +216,32 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
     {
         match rename_noreplace_io(source, target) {
             Ok(()) => Ok(()),
+            Err(e) if is_cross_device(&e) => {
+                // Publish a complete copy first; the source goes only after that.
+                copy::copy(source, target)?;
+                remove_source(source).map_err(|error| {
+                    format!(
+                        "copied to {} but could not remove {}: {error}",
+                        target.display(),
+                        source.display()
+                    )
+                })
+            }
             Err(e) => Err(format!("cannot move {}: {e}", source.display())),
         }
     }
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn remove_source(source: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if metadata.is_dir() {
+        return std::fs::remove_dir_all(source);
+    }
+    std::fs::remove_file(source).or_else(|error| {
+        // A Windows directory symlink is removed as a directory.
+        std::fs::remove_dir(source).map_err(|_| error)
+    })
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]

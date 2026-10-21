@@ -7,33 +7,26 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [0.1.31] - 2026-10-21
 
-- Restrict the Windows scanner pipe to the account approved during installation,
-  SYSTEM and administrators. Preserve the approved account during upgrades and
-  reject service startup when that approval is missing.
-- Prevent the GUI from creating competing scanner pipe instances or granting
-  a pipe server impersonation rights.
-- Stop the Linux helper and watcher if process memory protection cannot be set.
-- Link the Windows C runtime into the binaries so the GUI and scanner start on
-  clean Windows installations without a separate Visual C++ redistributable.
-- Verify the scanner pipe belongs to the running installed service before
-  exchanging any protocol messages.
-- Keep the last complete index when any native scan lane fails. Stage rebuilds
-  with matching sidecars and a new WAL, and recover interrupted publication
-  without discarding live edits.
-- Capture Btrfs recovery cursors before indexing and replay subsequent metadata
-  changes before announcing live updates as ready.
-- Create private, owned spill storage; reject lossy filename conversions and
-  enforce configured roots for MCP directory queries.
-- Verify routing metadata at startup and blocks on decode. Include licence
-  notices in npm platform packages.
-- Preserve Unix backslashes and case-sensitive macOS paths in folder listings
-  and MCP scopes. Earlier Unix folder summaries require an index rebuild;
-  their filename search remains available.
-- Index every Btrfs hardlink alias. Reject invalid live filename encodings
-  instead of replacing them with another file's name.
-- Reject corrupt allocated NTFS records; retain names from earlier extensions.
-- Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots;
-  continue watching new events without claiming missed changes were recovered.
+- Restrict the Windows scanner pipe to the installer-approved account, SYSTEM
+  and administrators; keep that approval across upgrades. The GUI cannot create
+  competing pipe instances and verifies the installed service before talking.
+- Stop the Linux helper and watcher if memory protection cannot be set.
+- Link the Windows C runtime so clean installations start without a
+  redistributable.
+- Keep the last complete index when a scan lane fails; stage rebuilds and
+  recover interrupted publication without discarding live edits.
+- Capture Btrfs recovery cursors first and replay later changes before
+  announcing live updates. Index every Btrfs hardlink alias.
+- Use private spill storage, reject lossy filenames, enforce MCP roots, and
+  include licence notices in npm packages.
+- Preserve Unix backslashes and macOS case in folder listings; earlier Unix
+  folder summaries need an index rebuild.
+- Reject corrupt allocated NTFS records and bound attribute-list sizes and
+  \$MFT runs by the device size, so forged volumes fail with an error.
+- Write Windows service and installer logs in the restricted installation
+  folder. Publish Windows and macOS folder copies atomically and complete
+  cross-volume moves by copying before removing the source.
+- Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots.
 
 ## [0.1.30] - 2026-10-21
 

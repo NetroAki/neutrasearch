@@ -57,6 +57,9 @@ Source: "remove-service.ps1"; DestDir: "{app}\service"; Flags: ignoreversion
 Name: "{group}\Neutrasearch"; Filename: "{app}\neutrasearch.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\Neutrasearch"; Filename: "{app}\neutrasearch.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\logs"
+
 [Run]
 Filename: "{app}\neutrasearch.exe"; Description: "Launch Neutrasearch"; Flags: nowait postinstall skipifsilent
 
@@ -159,7 +162,7 @@ begin
     end;
     if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-      RaiseException(Format('The Neutrasearch scanner service could not be installed (exit code %d). See C:\ProgramData\Neutrasearch\install-service.log for details.', [ResultCode]));
+      RaiseException(Format('The Neutrasearch scanner service could not be installed (exit code %d). See the logs folder in the installation directory (install-service.log) for details.', [ResultCode]));
   end;
 end;
 

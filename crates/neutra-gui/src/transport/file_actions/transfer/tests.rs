@@ -120,3 +120,46 @@ fn transfer_copies_files_folders_and_batch_without_overwrite() {
     assert_eq!(std::fs::read(dst.join("solo.txt")).unwrap(), b"solo");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn failed_staged_copy_leaves_no_partial_destination() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = sandbox();
+    let source = root.join("source");
+    let target = root.join("target");
+    std::fs::create_dir_all(source.join("locked")).unwrap();
+    std::fs::write(source.join("first"), "bytes").unwrap();
+    std::fs::set_permissions(source.join("locked"), std::fs::Permissions::from_mode(0)).unwrap();
+    let unreadable = std::fs::read_dir(source.join("locked")).is_err();
+    let outcome = copy::copy(&source, &target);
+    std::fs::set_permissions(
+        source.join("locked"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    if unreadable {
+        assert!(outcome.is_err());
+        assert!(!target.exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&root).unwrap().collect();
+        assert_eq!(leftovers.len(), 1, "staging was not cleaned: {leftovers:?}");
+    } else {
+        assert!(outcome.is_ok());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_copy_publishes_the_whole_tree_without_replacing() {
+    let root = sandbox();
+    let source = root.join("source");
+    std::fs::create_dir_all(source.join("inner")).unwrap();
+    std::fs::write(source.join("inner/file"), "bytes").unwrap();
+    let target = root.join("target");
+    copy::copy(&source, &target).unwrap();
+    assert_eq!(std::fs::read(target.join("inner/file")).unwrap(), b"bytes");
+    assert!(copy::copy(&source, &target).is_err());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    std::fs::remove_dir_all(root).unwrap();
+}

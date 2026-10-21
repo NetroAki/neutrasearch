@@ -6,17 +6,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$logDirectory = Join-Path $env:ProgramData 'Neutrasearch'
-$logPath = Join-Path $logDirectory 'install-service.log'
-New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
-Start-Transcript -Path $logPath -Force | Out-Null
-trap {
-    $failure = $_ | Out-String
-    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
-    $failure | Add-Content -LiteralPath $logPath
-    exit 1
-}
-
 $serviceName = 'NeutrasearchHelper'
 $executable = Join-Path $InstallDir 'neutrasearch-helper.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
@@ -56,6 +45,23 @@ if ($LASTEXITCODE -ne 0) {
 # The preceding recursive reset leaves children inheriting ordinary effective
 # ACEs from this protected directory. OI/CI grants must not be applied directly
 # to files: those become inherit-only and make the executable unreadable.
+
+# Log inside the hardened install directory: only SYSTEM and administrators can
+# write there, so the elevated transcript never follows a path an ordinary user
+# could pre-create or redirect.
+$logDirectory = Join-Path $resolvedInstallDir 'logs'
+$logPath = Join-Path $logDirectory 'install-service.log'
+New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+if ((Get-Item -LiteralPath $logDirectory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Refusing a reparse point as the service log directory: $logDirectory"
+}
+Start-Transcript -Path $logPath -Force | Out-Null
+trap {
+    $failure = $_ | Out-String
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+    $failure | Add-Content -LiteralPath $logPath
+    exit 1
+}
 
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if (-not [string]::IsNullOrWhiteSpace($AuthorizedUserAccount)) {

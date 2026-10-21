@@ -15,13 +15,31 @@ pub(super) fn copy(source: &Path, target: &Path) -> Result<(), String> {
             return Err("cannot copy a folder into itself".into());
         }
     }
-    copy_entry(source, target).map_err(|e| {
+    publish_staged(source, target).map_err(|e| {
         format!(
             "cannot copy {} to {}: {e}",
             source.display(),
             target.display()
         )
     })
+}
+
+/// Build the copy inside a private sibling directory and publish it with a
+/// rename that refuses to replace anything, so the final name never holds a
+/// partial tree and a failed copy leaves nothing behind.
+fn publish_staged(source: &Path, target: &Path) -> io::Result<()> {
+    let staging = super::staging_name(target);
+    fs::create_dir(&staging)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
+    }
+    let staged = staging.join("payload");
+    let result =
+        copy_entry(source, &staged).and_then(|()| super::rename_noreplace_io(&staged, target));
+    super::cleanup_staging(&staging);
+    result
 }
 
 fn copy_entry(source: &Path, target: &Path) -> io::Result<()> {

@@ -146,3 +146,15 @@ fn malformed_extension_run_offsets_fail_without_panicking() {
         assert!(complete_mft_runs(&mut disk, &rec0, 4096, 1024, 512, base).is_err());
     }
 }
+
+#[test]
+fn oversized_attribute_list_is_refused_before_allocation() {
+    let runs = [Run {
+        logical: 0,
+        len: 128 << 20,
+        physical: 0,
+    }];
+    let mut disk = Cursor::new(Vec::new());
+    assert!(read_value_bytes(&mut disk, &runs, 65 << 20).is_err());
+    assert!(read_value_bytes(&mut disk, &runs[..0], 1).is_err());
+}

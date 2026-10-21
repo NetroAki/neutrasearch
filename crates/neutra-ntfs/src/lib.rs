@@ -14,7 +14,10 @@ mod geometry;
 mod records;
 
 use anyhow::{bail, Context, Result};
-use geometry::{apply_fixup, mft_runs, read_exact_at, read_geometry, u64le, Run};
+use geometry::{
+    apply_fixup, check_runs_within, device_extent, mft_runs, read_exact_at, read_geometry, u64le,
+    Run,
+};
 use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
 use records::{append_component, ensure_dir_path, parse_record, Alias, Entry};
 use std::collections::HashMap;
@@ -48,13 +51,14 @@ pub(crate) fn volume_path(mount: &MountInfo) -> String {
 }
 pub fn scan_reader<R: Read + Seek>(
     r: R,
-    _volume_size: u64,
+    volume_size: u64,
     prefix: &str,
     sink: &mut dyn FnMut(FileRecord),
 ) -> Result<ScanStats> {
     let started = Instant::now();
     let mut r = std::io::BufReader::with_capacity(8 * 1024 * 1024, r);
     let g = read_geometry(&mut r)?;
+    let device = device_extent(&mut r, volume_size, g.declared_bytes)?;
     let mut rec0 = vec![0u8; g.record as usize];
     read_exact_at(&mut r, g.mft_offset, &mut rec0)?;
     apply_fixup(&mut rec0, g.sector as usize)?;
@@ -63,16 +67,18 @@ pub fn scan_reader<R: Read + Seek>(
         bail!("$MFT has no non-resident unnamed $DATA runs");
     }
     let runs = attr_list::complete_mft_runs(&mut r, &rec0, g.cluster, g.record, g.sector, runs)?;
+    check_runs_within(&runs, device)?;
     let covered: u64 = runs.iter().map(|run| run.len).sum();
     if covered < mft_size {
         bail!("$MFT runs cover {} of {} declared bytes", covered, mft_size);
     }
     let record_count = mft_size / g.record;
-    if record_count > 100_000_000 {
-        bail!("implausible MFT record count {record_count}");
+    if record_count > 100_000_000 || mft_size > device {
+        bail!("implausible MFT record count {record_count} on a {device}-byte device");
     }
 
-    let mut entries = HashMap::<u64, Entry>::with_capacity(record_count.min(4_000_000) as usize);
+    let reserve = record_count.min(device / g.record).min(4_000_000);
+    let mut entries = HashMap::<u64, Entry>::with_capacity(reserve as usize);
     let mut aliases = HashMap::<u64, Vec<Alias>>::new();
     let mut skipped_attr_list = 0u64;
     let mut extensions = Vec::new();
@@ -220,5 +226,7 @@ pub fn scan_reader<R: Read + Seek>(
 
 mod cursor;
 pub(crate) use cursor::RunCursor;
+#[cfg(test)]
+mod test_images;
 #[cfg(test)]
 mod tests;
