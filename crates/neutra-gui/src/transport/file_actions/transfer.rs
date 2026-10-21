@@ -126,10 +126,8 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         } else {
             source.to_path_buf()
         };
-        let status = Command::new("timeout")
+        let status = Command::new("cp")
             .args([
-                "1800",
-                "cp",
                 "-a",
                 "--no-target-directory",
                 "--reflink=auto",
@@ -139,7 +137,7 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
             ])
             .arg(&from)
             .arg(&staged)
-            .status();
+            .output();
         let status = match status {
             Ok(status) => status,
             Err(error) => {
@@ -150,9 +148,15 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 ));
             }
         };
-        if !status.success() {
+        if !status.status.success() {
             cleanup_staging(&staged_dir);
-            return Err(refused());
+            let detail = String::from_utf8_lossy(&status.stderr);
+            let detail = detail.trim();
+            return Err(if detail.is_empty() || target.exists() {
+                refused()
+            } else {
+                format!("cannot copy {}: {detail}", source.display())
+            });
         }
         match rename_noreplace_io(&staged, target) {
             Ok(()) => {

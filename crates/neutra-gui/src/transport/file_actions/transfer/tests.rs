@@ -211,3 +211,29 @@ fn macos_copy_keeps_extended_attributes() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "kept");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cross_volume_move_copies_removes_the_source_and_keeps_late_changes() {
+    use std::os::unix::fs::MetadataExt;
+    let shm = PathBuf::from("/dev/shm");
+    let disk = sandbox();
+    if !shm.is_dir()
+        || std::fs::metadata(&shm).unwrap().dev() == std::fs::metadata(&disk).unwrap().dev()
+    {
+        std::fs::remove_dir_all(disk).unwrap();
+        return;
+    }
+    let source = shm.join(format!("ns-move-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&source);
+    std::fs::create_dir_all(source.join("inner")).unwrap();
+    std::fs::write(source.join("inner/data"), "payload").unwrap();
+    let target = disk.join("moved");
+    move_path_noreplace(&source, &target).unwrap();
+    assert_eq!(
+        std::fs::read(target.join("inner/data")).unwrap(),
+        b"payload"
+    );
+    assert!(!source.exists());
+    std::fs::remove_dir_all(disk).unwrap();
+}
