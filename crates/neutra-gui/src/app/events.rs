@@ -226,6 +226,15 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             end_scan(app);
             note(app, "protocol", "PROTOCOL", error, true);
         }
+        HelperMsg::WatchLimited { mounts, reason } => {
+            note(
+                app,
+                "watch",
+                "UPDATE COVERAGE",
+                format!("{}: {reason}", mounts.join(", ")),
+                true,
+            );
+        }
         HelperMsg::SearchResult { .. } | HelperMsg::WatchReady => {}
         // Directory summaries are served to serve-mode clients; the GUI's
         // one-shot scan sessions never issue them.

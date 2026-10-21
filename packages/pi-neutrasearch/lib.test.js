@@ -82,6 +82,11 @@ test("component boundaries prevent sibling-prefix scope escape", () => {
   assert(!pathIsInside(path.join("/work", "application"), path.join("/work", "app")));
 });
 
+test("macOS scope authorization preserves case-sensitive volume paths", () => {
+  assert(pathIsInside("/Volumes/Data/project/file", "/Volumes/Data/project", "darwin"));
+  assert(!pathIsInside("/Volumes/Data/Project/file", "/Volumes/Data/project", "darwin"));
+});
+
 test("compact output is relative, metadata-free, and scope filtered by default", () => {
   const scope = path.resolve("/workspace/project");
   const inside = path.join(scope, "src", "main.rs");

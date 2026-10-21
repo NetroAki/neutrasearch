@@ -14,10 +14,15 @@ pub(crate) struct WatchSession {
     readers: Vec<Box<dyn Watch>>,
     mounts: Vec<MountInfo>,
     limitations: Vec<String>,
+    coverage_unavailable: Vec<std::path::PathBuf>,
     source: u32,
 }
 
 impl WatchSession {
+    pub(crate) fn coverage_unavailable(&self) -> &[std::path::PathBuf] {
+        &self.coverage_unavailable
+    }
+
     // Attach before opening/recovering the store so startup writes queue safely.
     pub(crate) fn prepare(base: &Path, mountpoint: &Path, source: u32) -> Result<Self> {
         let mounts = neutra_core::mounts::system_mounts()?;
@@ -40,7 +45,12 @@ impl WatchSession {
 
         let mut readers: Vec<Box<dyn Watch>> = Vec::new();
         let mut limitations = Vec::new();
+        let mut coverage_unavailable = Vec::new();
         for mount in mounts.iter().cloned() {
+            if mount.fs != FsKind::Btrfs {
+                coverage_unavailable.push(mount.mountpoint.clone());
+                limitations.push(format!("{}: offline event history is unavailable; rebuild required to prove current coverage; last indexed files remain searchable", mount.mountpoint.display()));
+            }
             tracing::info!(mount = %mount.mountpoint.display(), fs = %mount.fs.label(), "attaching native watch");
             match FanotifyWatcher::open(mount.clone(), source, excluded.clone()) {
                 Ok(reader) => readers.push(Box::new(reader)),
@@ -73,6 +83,7 @@ impl WatchSession {
             readers,
             mounts,
             limitations,
+            coverage_unavailable,
             source,
         })
     }

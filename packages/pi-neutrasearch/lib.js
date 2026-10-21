@@ -23,7 +23,7 @@ function canonicalDirectory(input) {
 
 function comparable(value, platform = process.platform) {
   const normalized = path.resolve(value).replace(/[\\/]+$/, "");
-  return platform === "win32" || platform === "darwin" ? normalized.toLowerCase() : normalized;
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 export function pathIsInside(candidate, root, platform = process.platform) {

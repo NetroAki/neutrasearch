@@ -109,27 +109,39 @@ impl MountWatcher {
         })
     }
 
-    fn record(&self, file: &File, changes: &mut BTreeMap<String, DeltaChange>) {
+    fn record(&self, file: &File, changes: &mut BTreeMap<String, DeltaChange>) -> Result<()> {
         let Ok(path) = fd_path(file.as_raw_fd()) else {
-            return;
+            return Ok(());
         };
-        let gone = path.to_string_lossy().ends_with(" (deleted)");
+        let Some(path_text) = path.to_str() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fanotify event path is not valid UTF-8",
+            )
+            .into());
+        };
+        let gone = path_text.ends_with(" (deleted)");
         if gone
             || !path.starts_with(&self.mount.mountpoint)
             || crate::scan::is_watch_excluded(&path, &self.excluded)
         {
-            return;
+            return Ok(());
         }
         let mut stat = zeroed_stat();
         // SAFETY: stat points to writable storage for fstat.
         if unsafe { libc::fstat(file.as_raw_fd(), &mut stat) } != 0 {
-            return;
+            return Ok(());
         }
         let parent = parent_inode(&path);
-        insert_upsert(
-            changes,
-            make_record(&path, &stat, parent, &self.mount, self.source),
-        );
+        let record =
+            make_record(&path, &stat, parent, &self.mount, self.source).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fanotify event path is not valid UTF-8",
+                )
+            })?;
+        insert_upsert(changes, record);
+        Ok(())
     }
 }
 
@@ -175,7 +187,7 @@ impl Watch for MountWatcher {
             }
             if let Some(file) = event.file {
                 if event.pid != own {
-                    self.record(&file, &mut changes);
+                    self.record(&file, &mut changes)?;
                 }
             } else if let Some(error) = event.error {
                 if !is_vanished(&io::Error::from_raw_os_error(error)) {

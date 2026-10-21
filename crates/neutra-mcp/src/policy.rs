@@ -33,7 +33,7 @@ pub fn path_is_allowed(path: &Path, allowed_roots: &[PathBuf]) -> bool {
                 portable_path_is_under(
                     &portable_path(path),
                     &portable_path(root),
-                    cfg!(not(any(target_os = "windows", target_os = "macos"))),
+                    cfg!(not(target_os = "windows")),
                 )
             }))
 }

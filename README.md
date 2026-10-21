@@ -26,10 +26,12 @@ Neutrasearch is a cross-platform filename and folder search app written in Rust.
 | | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | Native metadata index | yes | NTFS | Spotlight-indexed files only |
-| Live updates after the first index | yes (fanotify) | not yet; re-index to refresh | not yet; re-index to refresh |
+| Live updates after the first index | Btrfs with recovery; other filesystems have coverage limits | not yet; re-index to refresh | not yet; re-index to refresh |
 | Trash and restore | yes | not yet | not yet |
 
 Rename, copy and move never replace an existing destination on any platform. Undo history is kept in memory and is lost when the app closes.
+
+Linux ext4, ZFS and NTFS snapshots cannot recover changes made while the watcher was stopped. Index details report limited coverage; rebuild the snapshot to refresh it. Native events continue updating files after attachment.
 
 A fresh GUI install automatically indexes all local system drives. Indexed locations can be changed later in Settings. Compact indexes also write a generation-bound `.dirs` sidecar containing logical folder totals and direct children, so hierarchy views do not need to decode every search record.
 

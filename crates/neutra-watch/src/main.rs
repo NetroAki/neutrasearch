@@ -96,15 +96,29 @@ fn main() {
         Some(HelperMsg::Hello { proto, .. }) if proto == PROTO_VERSION => {}
         other => fail(format!("helper handshake mismatch: {other:?}")),
     }
-    match read_frame(&mut stdout)
+    let current = match read_frame(&mut stdout)
         .unwrap_or_else(|error| fail(format!("cannot wait for native watches: {error}")))
     {
-        Some(HelperMsg::WatchReady) => {}
+        Some(HelperMsg::WatchReady) => true,
+        Some(HelperMsg::WatchLimited { mounts, reason }) => {
+            eprintln!(
+                "neutrasearch-watch: snapshot coverage limited at {}: {reason}",
+                mounts.join(", ")
+            );
+            false
+        }
         other => fail(format!("native watches failed to initialize: {other:?}")),
-    }
-    notify_service();
+    };
+    notify_service(current);
     health::monitor(&index);
-    println!("ready");
+    println!(
+        "{}",
+        if current {
+            "ready"
+        } else {
+            "watching; snapshot coverage limited"
+        }
+    );
     std::io::stdout()
         .flush()
         .unwrap_or_else(|error| fail(format!("cannot signal readiness: {error}")));
@@ -133,7 +147,7 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn notify_service() {
+fn notify_service(current: bool) {
     if std::env::var_os("NOTIFY_SOCKET").is_none() {
         return;
     }
@@ -142,7 +156,7 @@ fn notify_service() {
             "5",
             "/usr/bin/systemd-notify",
             "--ready",
-            "--status=Native filesystem watchers attached",
+            if current { "--status=Native filesystem watchers attached; coverage current" } else { "--status=Watchers attached; snapshot rebuild required for volumes without offline history" },
         ])
         .status();
     if !status.is_ok_and(|status| status.success()) {
@@ -151,4 +165,4 @@ fn notify_service() {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn notify_service() {}
+fn notify_service(_current: bool) {}

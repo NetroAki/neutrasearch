@@ -38,12 +38,13 @@ where
 /// Byte fold shared by index ordering and prefix scans so both agree on
 /// every platform.
 pub(crate) fn fold_byte(byte: u8) -> u8 {
+    #[cfg(target_os = "windows")]
     let byte = if byte == b'\\' { b'/' } else { byte };
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         byte.to_ascii_lowercase()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     {
         byte
     }
@@ -70,14 +71,17 @@ pub(crate) fn compare_index_paths(left: &str, right: &str) -> std::cmp::Ordering
 }
 
 pub(super) fn equivalent_index_path(left: &str, right: &str) -> bool {
+    #[cfg(target_os = "windows")]
     let normalize = |path: &str| path.replace('\\', "/");
+    #[cfg(not(target_os = "windows"))]
+    let normalize = |path: &str| path.to_owned();
     let left = normalize(left);
     let right = normalize(right);
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         left.to_lowercase() == right.to_lowercase()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     {
         left == right
     }

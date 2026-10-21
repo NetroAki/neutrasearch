@@ -86,6 +86,22 @@ pub(super) fn rescan_reason(events: &[ParsedEvent], atomic_rename: bool) -> Opti
     None
 }
 
+pub(super) fn validate_utf8_paths(events: &[ParsedEvent]) -> io::Result<()> {
+    if events
+        .iter()
+        .flat_map(|event| &event.locations)
+        .any(|location| {
+            location
+                .name
+                .as_ref()
+                .is_some_and(|name| name.to_str().is_none())
+        })
+    {
+        return Err(invalid("fanotify event name is not valid UTF-8"));
+    }
+    Ok(())
+}
+
 fn role_for(info_type: u8) -> Option<Role> {
     match info_type {
         libc::FAN_EVENT_INFO_TYPE_FID => Some(Role::Object),
@@ -178,6 +194,38 @@ mod tests {
             Some(std::ffi::OsStr::new("report.txt"))
         );
         assert_eq!(parsed[0].locations[0].handle.len(), 10);
+    }
+
+    #[test]
+    fn invalid_byte_event_name_is_rejected_but_replacement_character_is_valid() {
+        fn event_for(name: &[u8]) -> Vec<u8> {
+            let mut info = Vec::new();
+            info.extend_from_slice(&[libc::FAN_EVENT_INFO_TYPE_DFID_NAME, 0, 0, 0]);
+            info.extend_from_slice(&[0; 8]);
+            info.extend_from_slice(&0u32.to_ne_bytes());
+            info.extend_from_slice(&0i32.to_ne_bytes());
+            info.extend_from_slice(name);
+            info.push(0);
+            let len = info.len() as u16;
+            info[2..4].copy_from_slice(&len.to_ne_bytes());
+            let mut event = vec![0; META_LEN];
+            event[0..4].copy_from_slice(&((META_LEN + info.len()) as u32).to_ne_bytes());
+            event[4] = libc::FANOTIFY_METADATA_VERSION;
+            event[6..8].copy_from_slice(&(META_LEN as u16).to_ne_bytes());
+            event.extend(info);
+            event
+        }
+        let invalid = parse_events(&event_for(b"bad\xffname")).unwrap();
+        assert_eq!(
+            validate_utf8_paths(&invalid).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let valid = parse_events(&event_for("valid�name".as_bytes())).unwrap();
+        validate_utf8_paths(&valid).unwrap();
+        assert_eq!(
+            valid[0].locations[0].name.as_ref().unwrap().to_str(),
+            Some("valid�name")
+        );
     }
 
     #[test]

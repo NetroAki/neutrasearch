@@ -39,6 +39,13 @@ impl FanotifyWatcher {
                 Some(path) => path,
                 None => continue,
             };
+            if path.to_str().is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fanotify event path is not valid UTF-8",
+                )
+                .into());
+            }
             if self.is_excluded(&path) {
                 continue;
             }
@@ -57,10 +64,14 @@ impl FanotifyWatcher {
                     != 0
             {
                 if let Some(stat) = stat {
-                    insert_upsert(
-                        changes,
-                        make_record(&path, &stat, parent, &self.mount, self.source),
-                    );
+                    let record = make_record(&path, &stat, parent, &self.mount, self.source)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "fanotify event path is not valid UTF-8",
+                            )
+                        })?;
+                    insert_upsert(changes, record);
                 } else {
                     insert_remove(changes, &path);
                 }
@@ -98,13 +109,25 @@ impl FanotifyWatcher {
                         .visible_path(path)
                         .filter(|path| !self.is_excluded(path))
                     {
+                        if path.to_str().is_none() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "fanotify event path is not valid UTF-8",
+                            )
+                            .into());
+                        }
                         if stat.st_nlink == 0 {
                             insert_remove(changes, &path);
                         } else {
-                            insert_upsert(
-                                changes,
-                                make_record(&path, &stat, parent, &self.mount, self.source),
-                            );
+                            let record =
+                                make_record(&path, &stat, parent, &self.mount, self.source)
+                                    .ok_or_else(|| {
+                                        io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "fanotify event path is not valid UTF-8",
+                                        )
+                                    })?;
+                            insert_upsert(changes, record);
                         }
                     }
                 }

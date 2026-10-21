@@ -5,7 +5,7 @@ mod events;
 mod records;
 mod resolve;
 mod root;
-use events::{parse_events, rescan_reason, Location, ParsedEvent, Role};
+use events::{parse_events, rescan_reason, validate_utf8_paths, Location, ParsedEvent, Role};
 use neutra_core::{DeltaChange, FileKind, FileRecord, MountInfo};
 pub(crate) use records::make_record;
 use root::NativeRoot;
@@ -151,6 +151,7 @@ impl FanotifyWatcher {
             );
         }
         let events = parse_events(&self.buffer[..bytes])?;
+        validate_utf8_paths(&events)?;
         if let Some(reason) = rescan_reason(&events, self.atomic_rename) {
             return Ok(if self.mount.fs == neutra_core::FsKind::Btrfs {
                 WatchBatch::ReconcileRequired(reason)
@@ -263,7 +264,10 @@ fn stale(error: &io::Error) -> bool {
 }
 
 fn insert_remove(changes: &mut BTreeMap<String, DeltaChange>, path: &Path) {
-    let path = path.to_string_lossy().into_owned();
+    let Some(path) = path.to_str() else {
+        return;
+    };
+    let path = path.to_owned();
     changes.insert(path.clone(), DeltaChange::Remove(path.into_boxed_str()));
 }
 

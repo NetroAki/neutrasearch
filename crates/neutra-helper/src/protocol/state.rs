@@ -41,12 +41,22 @@ impl Session {
         #[cfg(target_os = "linux")]
         if let Some(watches) = watches {
             let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
+            let unavailable = watches
+                .coverage_unavailable()
+                .iter()
+                .map(|mount| mount.display().to_string())
+                .collect::<Vec<_>>();
             watches.start(store, Arc::clone(&stale))?;
             anyhow::ensure!(
                 !stale.load(Ordering::Acquire),
                 "native watcher failed during startup"
             );
-            send(&out, &HelperMsg::WatchReady)?;
+            if unavailable.is_empty() {
+                send(&out, &HelperMsg::WatchReady)?;
+            } else {
+                send(&out, &HelperMsg::WatchLimited { mounts: unavailable,
+                    reason: "Offline changes cannot be recovered for these filesystems. Rebuild their index to refresh the searchable snapshot.".into() })?;
+            }
         }
         #[cfg(target_os = "linux")]
         if let Some(store) = durable.as_ref() {

@@ -80,6 +80,30 @@ impl Store {
         path: &str,
     ) -> Result<Option<DirectorySummaryEntry>> {
         use neutra_core::{join_child_path, DirectoryChild, FileKind};
+        let reopen = match self {
+            Self::Compact {
+                path,
+                base,
+                delta: Some(delta),
+            } => {
+                CompactIndex::generation_on_disk(path)? != base.generation()
+                    || delta.refresh().is_err()
+            }
+            Self::Compact {
+                path,
+                base,
+                delta: None,
+            } => {
+                CompactIndex::generation_on_disk(path)? != base.generation()
+                    || delta_path(path).is_file()
+            }
+            Self::Legacy { .. } => false,
+        };
+        if reopen {
+            let index_path = self.path().to_path_buf();
+            *self =
+                Self::open(index_path).context("reopen compact index before directory summary")?;
+        }
         let (base, delta) = match self {
             Self::Compact { base, delta, .. } => (base, delta),
             Self::Legacy { .. } => bail!("directory summaries require a compact index"),

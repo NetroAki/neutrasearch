@@ -12,7 +12,7 @@ pub(super) fn run(index: &mut Store, allowed_roots: &[PathBuf], args: Value) -> 
         .iter()
         .map(|root| root.to_string_lossy().into_owned())
         .collect();
-    q.scope_case_sensitive = cfg!(not(any(target_os = "windows", target_os = "macos")));
+    q.scope_case_sensitive = cfg!(not(target_os = "windows"));
     let metadata = args
         .get("metadata")
         .and_then(Value::as_bool)
