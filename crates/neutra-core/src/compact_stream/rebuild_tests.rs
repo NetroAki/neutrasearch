@@ -129,6 +129,7 @@ fn recovery_retries_after_wal_install_and_publishes_matching_generation() {
     )
     .unwrap();
 
+    crate::TreeSummary::ensure(&staged, stats.generation).unwrap();
     let staged_wal = crate::compact::suffix_path(&path, ".delta.compact");
     drop(crate::DeltaIndex::replace_empty(&staged_wal, stats.generation).unwrap());
     replace_file(&staged_wal, &delta_path(&path)).unwrap();
