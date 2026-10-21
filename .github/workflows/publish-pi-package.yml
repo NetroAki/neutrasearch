@@ -32,6 +32,19 @@ jobs:
       - name: Verify package contents
         run: npm pack --dry-run
         working-directory: packages/pi-neutrasearch
+      - name: Require the platform packages to be published first
+        working-directory: packages/pi-neutrasearch
+        run: |
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const deps = require("./package.json").optionalDependencies || {};
+            let missing = 0;
+            for (const [name, version] of Object.entries(deps)) {
+              try { execFileSync("npm", ["view", name + "@" + version, "version"], { stdio: "pipe" }); }
+              catch { console.error("not published: " + name + "@" + version); missing++; }
+            }
+            process.exit(missing ? 1 : 0);
+          '
       - name: Publish public Pi package
         run: npm publish --access public --provenance
         working-directory: packages/pi-neutrasearch

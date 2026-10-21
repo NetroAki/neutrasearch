@@ -190,7 +190,7 @@ export default function register(pi) {
         });
         child.unref();
         ctx.ui.notify(
-          `Neutrasearch opened and ${shortcuts.length} shortcuts were installed. Approve local indexing in the app, then return to Pi.`,
+          `Neutrasearch opened and ${shortcuts.length} shortcuts were installed${shortcuts.skipped?.length ? ` (left ${shortcuts.skipped.length} existing items untouched)` : ""}. Approve local indexing in the app, then return to Pi.`,
           "info",
         );
       } catch (error) {

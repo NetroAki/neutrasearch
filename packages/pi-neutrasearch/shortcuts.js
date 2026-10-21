@@ -12,13 +12,48 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function writeExecutable(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content, { mode: 0o755 });
-  fs.chmodSync(file, 0o755);
+function lstatOrNull(file) {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
-function installLinux(application, home, packageRoot) {
+// Replace a target only when it is something this setup made earlier; anything
+// else a user put there is left alone and reported.
+function writeExecutable(file, content, isOurs, skipped) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const existing = lstatOrNull(file);
+  if (existing && !(existing.isFile() && isOurs(fs.readFileSync(file, "utf8")))) {
+    skipped.push(file);
+    return false;
+  }
+  const temporary = `${file}.neutrasearch-${process.pid}.tmp`;
+  fs.writeFileSync(temporary, content, { mode: 0o755, flag: "wx" });
+  fs.renameSync(temporary, file);
+  return true;
+}
+
+function isNeutrasearchEntry(text) {
+  return text.startsWith("[Desktop Entry]") && /^Name=Neutrasearch$/m.test(text);
+}
+
+// Only a symlink that already points at a file of the same name (a link this
+// setup made earlier) is replaced; anything else is left alone.
+function linkReplacingSymlink(target, link, skipped) {
+  const existing = lstatOrNull(link);
+  if (existing && !(existing.isSymbolicLink() && path.basename(fs.readlinkSync(link)) === path.basename(link))) {
+    skipped.push(link);
+    return false;
+  }
+  if (existing) fs.unlinkSync(link);
+  fs.symlinkSync(target, link);
+  return true;
+}
+
+function installLinux(application, home, packageRoot, skipped) {
   const binRoot = path.dirname(application);
   const icon = path.join(packageRoot, "assets", "neutrasearch.svg");
   const applications = path.join(home, ".local", "share", "applications");
@@ -40,14 +75,12 @@ function installLinux(application, home, packageRoot) {
     "StartupWMClass=neutrasearch",
     "",
   ].join("\n");
-  writeExecutable(desktopEntry, content);
-
-  const created = [desktopEntry];
+  const created = [];
+  if (writeExecutable(desktopEntry, content, isNeutrasearchEntry, skipped)) created.push(desktopEntry);
   const desktop = path.join(home, "Desktop");
   if (fs.existsSync(desktop)) {
     const desktopShortcut = path.join(desktop, "Neutrasearch.desktop");
-    writeExecutable(desktopShortcut, content);
-    created.push(desktopShortcut);
+    if (writeExecutable(desktopShortcut, content, isNeutrasearchEntry, skipped)) created.push(desktopShortcut);
   }
 
   const localBin = path.join(home, ".local", "bin");
@@ -56,9 +89,7 @@ function installLinux(application, home, packageRoot) {
     const source = path.join(binRoot, name);
     if (!fs.existsSync(source)) continue;
     const destination = path.join(localBin, name);
-    try { fs.rmSync(destination, { force: true }); } catch {}
-    fs.symlinkSync(source, destination);
-    created.push(destination);
+    if (linkReplacingSymlink(source, destination, skipped)) created.push(destination);
   }
   return created;
 }
@@ -72,6 +103,10 @@ function installWindows(application, home, runPowerShell) {
     "  [Environment]::GetFolderPath('Desktop') + '\\Neutrasearch.lnk'",
     ")",
     "foreach ($target in $targets) {",
+    "  if (Test-Path -LiteralPath $target) {",
+    "    $existing = $shell.CreateShortcut($target)",
+    "    if ((Split-Path $existing.TargetPath -Leaf) -ne (Split-Path $env:NEUTRASEARCH_APP -Leaf)) { continue }",
+    "  }",
     "  $shortcut = $shell.CreateShortcut($target)",
     "  $shortcut.TargetPath = $env:NEUTRASEARCH_APP",
     "  $shortcut.WorkingDirectory = Split-Path $env:NEUTRASEARCH_APP",
@@ -87,11 +122,18 @@ function installWindows(application, home, runPowerShell) {
   return ["Windows Start Menu/Neutrasearch.lnk", "Windows Desktop/Neutrasearch.lnk"];
 }
 
-function installMac(application, home, packageRoot) {
+function installMac(application, home, packageRoot, skipped) {
   const app = path.join(home, "Applications", "Neutrasearch.app");
+  const existingInfo = path.join(app, "Contents", "Info.plist");
+  if (lstatOrNull(app) && !(fs.existsSync(existingInfo) && fs.readFileSync(existingInfo, "utf8").includes("dev.pi.neutrasearch"))) {
+    skipped.push(app);
+    return [];
+  }
   const contents = path.join(app, "Contents");
   const launcher = path.join(contents, "MacOS", "Neutrasearch");
-  writeExecutable(launcher, `#!/bin/sh\nexec ${shellQuote(application)} "$@"\n`);
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(application)} "$@"\n`, { mode: 0o755 });
+  fs.chmodSync(launcher, 0o755);
   const resources = path.join(contents, "Resources");
   fs.mkdirSync(resources, { recursive: true });
   fs.copyFileSync(
@@ -106,9 +148,7 @@ function installMac(application, home, packageRoot) {
   const desktop = path.join(home, "Desktop");
   if (fs.existsSync(desktop)) {
     const link = path.join(desktop, "Neutrasearch.app");
-    try { fs.rmSync(link, { recursive: true, force: true }); } catch {}
-    fs.symlinkSync(app, link);
-    created.push(link);
+    if (linkReplacingSymlink(app, link, skipped)) created.push(link);
   }
   return created;
 }
@@ -120,10 +160,12 @@ export function installShortcuts(application, options = {}) {
   const platform = options.platform || process.platform;
   const home = options.home || os.homedir();
   const packageRoot = options.packageRoot || path.dirname(fileURLToPath(import.meta.url));
-  if (platform === "linux") return installLinux(application, home, packageRoot);
-  if (platform === "win32") {
-    return installWindows(application, home, options.runPowerShell || execFileSync);
-  }
-  if (platform === "darwin") return installMac(application, home, packageRoot);
-  throw new Error(`shortcut installation is unsupported on ${platform}`);
+  const skipped = [];
+  let created;
+  if (platform === "linux") created = installLinux(application, home, packageRoot, skipped);
+  else if (platform === "darwin") created = installMac(application, home, packageRoot, skipped);
+  else if (platform === "win32") created = installWindows(application, home, options.runPowerShell || execFileSync);
+  else throw new Error(`shortcut installation is unsupported on ${platform}`);
+  created.skipped = skipped;
+  return created;
 }

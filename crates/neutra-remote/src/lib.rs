@@ -177,10 +177,13 @@ impl Provisioner {
         c.args(self.ssh_options()).arg(host);
         c
     }
-    fn ssh_options(&self) -> [String; 4] {
+    fn ssh_options(&self) -> [String; 6] {
         [
             "-o".into(),
             "BatchMode=yes".into(),
+            // Never accept an unknown host key silently while provisioning.
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
             "-o".into(),
             format!("ConnectTimeout={}", self.connect_timeout_secs),
         ]

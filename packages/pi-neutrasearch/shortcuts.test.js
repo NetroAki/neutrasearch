@@ -73,3 +73,46 @@ test("Windows setup requests Start Menu and desktop links without interpolating 
   assert(!invocation.args.at(-1).includes(value.application));
   fs.rmSync(value.root, { recursive: true, force: true });
 });
+
+test("Linux setup leaves user-owned files and foreign links in place", () => {
+  const value = fixture();
+  const bin = path.join(value.home, ".local", "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "neutrasearch"), "my own script");
+  fs.symlinkSync("/usr/bin/true", path.join(bin, "neutrasearch-query"));
+  fs.writeFileSync(path.join(value.home, "Desktop", "Neutrasearch.desktop"), "notes");
+  const created = installShortcuts(value.application, {
+    platform: "linux",
+    home: value.home,
+    packageRoot: value.packageRoot,
+  });
+  assert.equal(fs.readFileSync(path.join(bin, "neutrasearch"), "utf8"), "my own script");
+  assert.equal(fs.readlinkSync(path.join(bin, "neutrasearch-query")), "/usr/bin/true");
+  assert.equal(fs.readFileSync(path.join(value.home, "Desktop", "Neutrasearch.desktop"), "utf8"), "notes");
+  assert.equal(created.skipped.length, 3);
+  const again = installShortcuts(value.application, {
+    platform: "linux",
+    home: value.home,
+    packageRoot: value.packageRoot,
+  });
+  assert.equal(again.skipped.length, 3);
+  fs.rmSync(value.root, { recursive: true, force: true });
+});
+
+test("macOS setup keeps a user's own app bundle and desktop folder", () => {
+  const value = fixture();
+  const app = path.join(value.home, "Applications", "Neutrasearch.app");
+  fs.mkdirSync(path.join(app, "Contents"), { recursive: true });
+  fs.writeFileSync(path.join(app, "Contents", "Info.plist"), "someone else");
+  fs.mkdirSync(path.join(value.home, "Desktop", "Neutrasearch.app"));
+  fs.writeFileSync(path.join(value.home, "Desktop", "Neutrasearch.app", "keep"), "data");
+  const created = installShortcuts(value.application, {
+    platform: "darwin",
+    home: value.home,
+    packageRoot: value.packageRoot,
+  });
+  assert.equal(created.length, 0);
+  assert.equal(fs.readFileSync(path.join(app, "Contents", "Info.plist"), "utf8"), "someone else");
+  assert.equal(created.skipped.length, 1);
+  fs.rmSync(value.root, { recursive: true, force: true });
+});

@@ -24,8 +24,9 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Reject corrupt allocated NTFS records and bound attribute-list sizes and
   \$MFT runs by the device size, so forged volumes fail with an error.
 - Write Windows service and installer logs in the restricted installation
-  folder. Publish Windows and macOS folder copies atomically and complete
-  cross-volume moves by copying before removing the source.
+  folder. Publish Windows and macOS folder copies atomically; moving to another
+  volume there refuses rather than risk losing metadata. Pi setup no longer
+  replaces files or app bundles it did not create.
 - Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots.
 
 ## [0.1.30] - 2026-10-21
