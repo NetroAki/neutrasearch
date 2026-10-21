@@ -113,7 +113,7 @@ def build_deb(project_root: Path, target_dir: Path, output_dir: Path, target: st
                     "Depends: libc6 (>= 2.39), libext2fs2t64 | libext2fs2, "
                     "libuuid1, libblkid1, libudev1, zlib1g, libssl3t64 | libssl3, "
                     "libtirpc3t64 | libtirpc3, libglib2.0-bin, coreutils, util-linux, "
-                    "dbus, policykit-1, acl, libcap2-bin, python3",
+                    "dbus, pkexec | policykit-1, polkitd | policykit-1, acl, libcap2-bin, python3",
                     "Homepage: https://github.com/NetroAki/neutrasearch",
                     "Description: Fast native-metadata filename and folder search",
                     " Neutrasearch builds a compact searchable index from filesystem metadata.",

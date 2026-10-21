@@ -28,6 +28,9 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   volume there refuses rather than risk losing metadata. Pi setup no longer
   replaces files or app bundles it did not create.
 - Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots.
+- Debian package: install on Debian 13 and current Ubuntu, never stall an
+  upgrade on a watcher, and remove permission files on purge. Pi setup asks
+  Linux users to install the system package first.
 
 ## [0.1.30] - 2026-10-21
 

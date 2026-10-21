@@ -73,6 +73,15 @@ jobs:
           sudo apt-get install --reinstall -y ./dist-deb/*.deb
           sudo apt-get purge -y neutrasearch
           test ! -e /var/lib/neutrasearch/authorized-users
+      - name: Install the Debian package on Debian 13
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD/dist-deb:/deb:ro" debian:trixie bash -ec '
+            apt-get update -qq
+            apt-get install -y -qq /deb/*.deb
+            test -x /usr/lib/neutrasearch/neutrasearch-helper
+            apt-get purge -y -qq neutrasearch
+          '
       - name: Build isolated Windows GUI fixture
         if: runner.os == 'Windows'
         run: cargo build --release --locked -p neutra-core --example gui_fixture
