@@ -4,9 +4,17 @@ use super::*;
 fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
     let path = std::env::temp_dir().join(format!("neutra-mcp-dirsum-{}.nsx", std::process::id()));
     let _ = std::fs::remove_file(&path);
+    let root = if cfg!(windows) { "C:/docs" } else { "/docs" };
+    let file = format!("{root}/a.txt");
+    let sibling = if cfg!(windows) {
+        "C:/docs-sibling"
+    } else {
+        "/docs-sibling"
+    };
+    let allowed_root = PathBuf::from(root);
     let records = vec![
         FileRecord {
-            path: "/docs".into(),
+            path: root.into(),
             size: 0,
             mtime: 0,
             mode: 0,
@@ -18,7 +26,7 @@ fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
             disk: 0,
         },
         FileRecord {
-            path: "/docs/a.txt".into(),
+            path: file.into(),
             size: 10,
             mtime: 0,
             mode: 0,
@@ -34,26 +42,26 @@ fn directory_tool_serves_live_totals_and_rejects_legacy_stores() {
     let mut store = Store::open(path.clone()).unwrap();
     let result = call_tool(
         &mut store,
-        &[PathBuf::from("/docs")],
+        std::slice::from_ref(&allowed_root),
         "neutra_directory",
-        json!({"path":"/docs"}),
+        json!({"path":root}),
     );
     assert_eq!(result["structuredContent"]["logical_bytes"], 10);
     assert_eq!(result["structuredContent"]["file_count"], 1);
     let denied = call_tool(
         &mut store,
-        &[PathBuf::from("/docs")],
+        std::slice::from_ref(&allowed_root),
         "neutra_directory",
-        json!({"path":"/docs-sibling"}),
+        json!({"path":sibling}),
     );
     assert_eq!(denied["isError"], true);
     std::fs::remove_file(path).unwrap();
     assert_eq!(
         call_tool(
             &mut empty_store(),
-            &[PathBuf::from("/docs")],
+            &[allowed_root],
             "neutra_directory",
-            json!({"path":"/"})
+            json!({"path":root})
         )["isError"],
         true
     );

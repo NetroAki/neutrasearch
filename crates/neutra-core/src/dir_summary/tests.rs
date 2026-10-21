@@ -1,3 +1,4 @@
+use crate::dir_summary::compare_paths;
 use crate::CompactIndex;
 use crate::FsKind;
 
@@ -102,6 +103,44 @@ fn normalizes_windows_and_unc_paths() {
     let summary = DirectorySummary::from_records(&records, 3).unwrap();
     assert!(summary.get(0, "C:/Users/Alex").is_some());
     assert!(summary.get(0, "//server/share/team").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_backslash_names_and_case_variants_stay_distinct_sidecar_paths() {
+    assert_ne!(
+        compare_paths("/srv/allowed", "/srv/allowed\\secret"),
+        std::cmp::Ordering::Equal
+    );
+    assert_ne!(
+        compare_paths("/srv/allowed", "/srv/ALLOWED"),
+        std::cmp::Ordering::Equal
+    );
+    let lower =
+        DirectorySummary::from_records(&[record("/srv/allowed/a.txt", 1, FileKind::File)], 1)
+            .unwrap()
+            .get(0, "/srv/allowed")
+            .unwrap()
+            .logical_bytes;
+    let mixed =
+        DirectorySummary::from_records(&[record("/srv/ALLOWED/a.txt", 1, FileKind::File)], 1)
+            .unwrap()
+            .get(0, "/srv/allowed");
+    assert_eq!(lower, 1);
+    assert!(mixed.is_none());
+    let hidden = DirectorySummary::from_records(
+        &[record("/srv/allowed\\secret/file.txt", 5, FileKind::File)],
+        1,
+    )
+    .unwrap();
+    assert!(hidden
+        .get(0, "/srv/allowed")
+        .map_or(true, |entry| entry.logical_bytes == 0
+            && entry.children.is_empty()));
+    assert_eq!(
+        hidden.get(0, "/srv/allowed\\secret").unwrap().logical_bytes,
+        5
+    );
 }
 
 #[test]

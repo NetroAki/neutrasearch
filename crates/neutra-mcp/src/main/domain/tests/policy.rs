@@ -68,6 +68,23 @@ fn windows_extended_roots_match_portable_ntfs_index_paths() {
 }
 
 #[test]
+fn portable_windows_paths_normalize_on_unix_without_rewriting_unix_names() {
+    assert_eq!(
+        portable_path_text(r"C:\Users\Alice\file.txt"),
+        "C:/Users/Alice/file.txt"
+    );
+    assert_eq!(
+        portable_path_text(r"\\server\share\file.txt"),
+        "//server/share/file.txt"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        portable_path_text(r"/srv/allowed\secret/file.txt"),
+        r"/srv/allowed\secret/file.txt"
+    );
+}
+
+#[test]
 fn allowed_roots_use_path_component_boundaries() {
     let (root, file, sibling, unsafe_path) = if cfg!(target_os = "windows") {
         (

@@ -43,7 +43,13 @@ fn portable_path(path: &Path) -> String {
 }
 
 pub(crate) fn portable_path_text(path: &str) -> String {
-    let replaced = if cfg!(target_os = "windows") {
+    let windows_syntax = cfg!(target_os = "windows")
+        || path.starts_with(r"\\")
+        || (path.len() >= 3
+            && path.as_bytes()[0].is_ascii_alphabetic()
+            && path.as_bytes()[1] == b':'
+            && matches!(path.as_bytes()[2], b'/' | b'\\'));
+    let replaced = if windows_syntax {
         path.replace('\\', "/")
     } else {
         path.to_owned()

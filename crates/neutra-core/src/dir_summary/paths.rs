@@ -1,5 +1,14 @@
 use super::*;
 
+fn is_windows_path(path: &str) -> bool {
+    cfg!(target_os = "windows")
+        || path.starts_with(r"\\")
+        || (path.len() >= 3
+            && path.as_bytes()[0].is_ascii_alphabetic()
+            && path.as_bytes()[1] == b':'
+            && matches!(path.as_bytes()[2], b'/' | b'\\'))
+}
+
 pub(crate) fn entry_key(source: u32, path: &str) -> Key {
     PathKey {
         source,
@@ -22,12 +31,13 @@ pub(crate) fn compare_paths(left: &str, right: &str) -> Ordering {
     let left = left.as_bytes();
     let right = right.as_bytes();
     let fold = |byte: u8| {
+        #[cfg(target_os = "windows")]
         let byte = if byte == b'\\' { b'/' } else { byte };
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
             byte.to_ascii_lowercase()
         }
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        #[cfg(not(target_os = "windows"))]
         {
             byte
         }
@@ -42,19 +52,27 @@ pub(crate) fn compare_paths(left: &str, right: &str) -> Ordering {
 }
 
 pub(crate) fn canonical_path(path: &str) -> String {
-    let path = path.replace('\\', "/");
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let path = if is_windows_path(path) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
+    #[cfg(target_os = "windows")]
     {
         path.to_lowercase()
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     {
         path
     }
 }
 
 pub(crate) fn normalize_path(path: &str) -> io::Result<String> {
-    let replaced = path.replace('\\', "/");
+    let replaced = if is_windows_path(path) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
     let absolute = replaced.starts_with('/')
         || (replaced.len() >= 3
             && replaced.as_bytes()[0].is_ascii_alphabetic()
