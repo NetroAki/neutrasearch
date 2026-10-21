@@ -8,6 +8,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
+#[path = "windows_service/identity.rs"]
+mod identity;
+
+#[cfg(target_os = "windows")]
 pub(crate) fn scan_via_windows_service(
     tx: EventSender,
     mounts: Vec<MountInfo>,
@@ -54,18 +58,16 @@ pub(crate) fn scan_via_windows_service(
             }
         }
     };
+    identity::validate_server(&pipe)
+        .map_err(|error| format!("cannot verify the installed scanner service: {error}"))?;
     let writer = pipe
         .try_clone()
         .map_err(|error| format!("cannot clone the scanner service pipe: {error}"))?;
     let mut input = BufWriter::new(writer);
     let mut output = BufReader::new(pipe);
 
-    // The service is the authority for this pipe: startup validates both installed
-    // binaries under Program Files, the named-pipe ACL excludes remote clients,
-    // and the service authenticates this GUI executable after Hello and before
-    // accepting Scan/Search. Do not inspect the server image here: doing so would
-    // synchronously inspect the service while it synchronously inspects this
-    // process, recreating the cross-authentication deadlock.
+    // Compare the SCM and pipe PIDs without querying the server image: simultaneous
+    // process-image queries from client and service can deadlock in the loader.
     eprintln!("neutrasearch: service Hello write");
     write_frame(
         &mut input,
