@@ -17,6 +17,15 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   clean Windows installations without a separate Visual C++ redistributable.
 - Verify the scanner pipe belongs to the running installed service before
   exchanging any protocol messages.
+- Keep the last complete index when any native scan lane fails. Stage rebuilds
+  with matching sidecars and a new WAL, and recover interrupted publication
+  without discarding live edits.
+- Capture Btrfs recovery cursors before indexing and replay subsequent metadata
+  changes before announcing live updates as ready.
+- Create private, owned spill storage; reject lossy filename conversions and
+  enforce configured roots for MCP directory queries.
+- Verify each new compact block on decode without hashing the whole index at
+  startup. Include licence notices in npm platform packages.
 
 ## [0.1.30] - 2026-10-21
 
