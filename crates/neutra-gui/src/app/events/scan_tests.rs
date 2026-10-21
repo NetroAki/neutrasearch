@@ -65,7 +65,7 @@ fn errored_records_are_dropped_before_later_lane_success_and_completion() {
             &roots,
             HelperMsg::Records(vec![record("/mnt/failed/partial.txt")]),
         ),
-        ScanIngest::Records(records) if records.len() == 1
+        ScanIngest::Records(1)
     ));
     assert!(matches!(
         ingest_scan_message(

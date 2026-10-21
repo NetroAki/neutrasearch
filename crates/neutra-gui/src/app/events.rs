@@ -156,13 +156,20 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
             }
         }
         HelperMsg::Records(records) => {
+            let batch = records
+                .into_iter()
+                .filter(|record| crate::record_in_roots(record.path.as_ref(), &app.scan_roots))
+                .collect::<Vec<_>>();
+            count_staged(app, &batch);
             match ingest_scan_message(
                 &mut app.scan_index,
                 &mut app.scan_failed,
                 &app.scan_roots,
-                HelperMsg::Records(records),
+                HelperMsg::Records(batch),
             ) {
-                ScanIngest::Records(batch) => count_staged(app, &batch),
+                ScanIngest::Records(count) => {
+                    let _ = count;
+                }
                 ScanIngest::Failed(error) => {
                     end_scan(app);
                     note(app, "scan", "NATIVE SCAN", error, true);
@@ -240,7 +247,7 @@ fn handle_helper_message(app: &mut NeutraApp, msg: HelperMsg) {
 }
 
 enum ScanIngest {
-    Records(Vec<neutra_core::FileRecord>),
+    Records(usize),
     Failed(String),
     LaneEvent,
     Complete,
@@ -258,14 +265,15 @@ fn ingest_scan_message(
                 .into_iter()
                 .filter(|record| crate::record_in_roots(record.path.as_ref(), roots))
                 .collect::<Vec<_>>();
+            let count = batch.len();
             if let Some(spill) = staging {
-                if let Err(error) = spill.push_batch(batch.clone()) {
+                if let Err(error) = spill.push_batch(batch) {
                     *failed = true;
                     *staging = None;
                     return ScanIngest::Failed(error.to_string());
                 }
             }
-            ScanIngest::Records(batch)
+            ScanIngest::Records(count)
         }
         HelperMsg::ScanError { .. } => {
             *failed = true;
