@@ -72,14 +72,8 @@ pub(crate) fn compare_index_paths(left: &str, right: &str) -> std::cmp::Ordering
 
 pub(super) fn equivalent_index_path(left: &str, right: &str) -> bool {
     #[cfg(target_os = "windows")]
-    let normalize = |path: &str| path.replace('\\', "/");
-    #[cfg(not(target_os = "windows"))]
-    let normalize = |path: &str| path.to_owned();
-    let left = normalize(left);
-    let right = normalize(right);
-    #[cfg(target_os = "windows")]
     {
-        left.to_lowercase() == right.to_lowercase()
+        left.replace('\\', "/").to_lowercase() == right.replace('\\', "/").to_lowercase()
     }
     #[cfg(not(target_os = "windows"))]
     {

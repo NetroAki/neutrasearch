@@ -144,6 +144,23 @@ fn validate_cursors(generation: u64, cursors: &[NativeCursor]) -> io::Result<()>
     Ok(())
 }
 
+pub fn seed_identity(cursors: &[NativeCursor]) -> io::Result<u32> {
+    let mut ordered = cursors.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| (&a.mount, a.tree).cmp(&(&b.mount, b.tree)));
+    let bytes =
+        bincode::serialize(&ordered).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(crc32fast::hash(&bytes))
+}
+
+/// Restore the cursor sidecar after a base was published but its seed was not.
+pub fn publish_seed(staged: &Path, destination: &Path, generation: u64) -> io::Result<()> {
+    match load_seed(staged, generation) {
+        Ok(cursors) => save_seed(destination, generation, &cursors),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +220,9 @@ mod tests {
             since: 42,
         };
         assert_eq!(
-            save_seed(&base, 0, &[cursor.clone()]).unwrap_err().kind(),
+            save_seed(&base, 0, std::slice::from_ref(&cursor))
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         assert_eq!(
@@ -212,22 +231,5 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidData
         );
-    }
-}
-
-pub fn seed_identity(cursors: &[NativeCursor]) -> io::Result<u32> {
-    let mut ordered = cursors.iter().collect::<Vec<_>>();
-    ordered.sort_by(|a, b| (&a.mount, a.tree).cmp(&(&b.mount, b.tree)));
-    let bytes =
-        bincode::serialize(&ordered).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(crc32fast::hash(&bytes))
-}
-
-/// Restore the cursor sidecar after a base was published but its seed was not.
-pub fn publish_seed(staged: &Path, destination: &Path, generation: u64) -> io::Result<()> {
-    match load_seed(staged, generation) {
-        Ok(cursors) => save_seed(destination, generation, &cursors),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
     }
 }
