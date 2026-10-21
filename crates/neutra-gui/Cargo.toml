@@ -27,7 +27,7 @@ raw-window-handle = "0.6"
 x11rb = "0.13"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
-egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", rev = "e72f0dcfe5b6279128576b8ecc3e4c121e810115", default-features = false }
+egui_expressive = { git = "https://github.com/NetroAki/egui_expressive.git", rev = "53de00ecaad9825c0ea4fbd89c95f2621d92a104", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
