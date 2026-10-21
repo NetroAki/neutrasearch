@@ -38,6 +38,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  dependency-sources:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check sources bans
+
   test:
     strategy:
       fail-fast: false

@@ -193,21 +193,19 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 target,
             ));
         }
-        // Stage the copy so an interrupted move never leaves a partial tree under
-        // the final name, then remove the source only after the copy is published.
+        // Record the source first, stage the copy so an interrupted move never
+        // leaves a partial tree under the final name, then remove only the
+        // source entries that still match the record.
+        let snapshot = cross_move::Snapshot::take(source)
+            .map_err(|e| format!("cannot move {}: {e}", source.display()))?;
         copy_path_noreplace(source, target).map_err(|e| e.replace("copy", "move"))?;
-        let removed = match std::fs::symlink_metadata(source) {
-            Ok(m) if m.is_dir() => std::fs::remove_dir_all(source),
-            Ok(_) => std::fs::remove_file(source),
-            Err(e) => Err(e),
-        };
-        removed.map_err(|e| {
-            format!(
-                "moved {} to {} but could not remove the original: {e}",
-                source.display(),
-                target.display()
-            )
-        })
+        match snapshot.remove_unchanged() {
+            0 => Ok(()),
+            left => Err(format!(
+                "moved {} but {left} items that changed during the move were left at the original location",
+                source.display()
+            )),
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -264,6 +262,10 @@ fn rename_noreplace_io(from: &Path, to: &Path) -> std::io::Result<()> {
 pub(super) fn rename_noreplace(from: &Path, to: &Path) -> Result<(), String> {
     rename_noreplace_io(from, to).map_err(|e| format!("cannot rename {}: {e}", from.display()))
 }
+
+#[cfg(target_os = "linux")]
+#[path = "transfer/cross_move.rs"]
+mod cross_move;
 
 #[cfg(test)]
 #[path = "transfer/tests.rs"]
