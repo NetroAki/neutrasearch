@@ -193,24 +193,21 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 target,
             ));
         }
-        let status = Command::new("timeout")
-            .args(["1800", "mv", "--no-target-directory", "--update=none", "--"])
-            .arg(source)
-            .arg(target)
-            .status()
-            .map_err(|e| format!("cannot start mv to move {}: {e}", source.display()))?;
-        // --update=none exits 0 when it skips, so confirm the source moved.
-        if status.success() && std::fs::symlink_metadata(source).is_err() {
-            return Ok(());
-        }
-        Err(conflict_or(
-            &format!(
-                "cannot move {} without overwriting {}",
+        // Stage the copy so an interrupted move never leaves a partial tree under
+        // the final name, then remove the source only after the copy is published.
+        copy_path_noreplace(source, target).map_err(|e| e.replace("copy", "move"))?;
+        let removed = match std::fs::symlink_metadata(source) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir_all(source),
+            Ok(_) => std::fs::remove_file(source),
+            Err(e) => Err(e),
+        };
+        removed.map_err(|e| {
+            format!(
+                "moved {} to {} but could not remove the original: {e}",
                 source.display(),
                 target.display()
-            ),
-            target,
-        ))
+            )
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {

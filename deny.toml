@@ -31,4 +31,5 @@ wildcards = "allow"
 
 [sources]
 unknown-registry = "deny"
-unknown-git = "warn"
+unknown-git = "deny"
+allow-git = ["https://github.com/NetroAki/egui_expressive.git"]

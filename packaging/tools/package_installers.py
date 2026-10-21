@@ -134,6 +134,9 @@ def build_deb(project_root: Path, target_dir: Path, output_dir: Path, target: st
         copy_executable(target_dir / "neutrasearch-watch", root / "usr/lib/neutrasearch/neutrasearch-watch")
         linux = project_root / "packaging/linux"
         install_indexing_access(root, control, linux)
+        (control / "conffiles").write_text(
+            "/etc/xdg/autostart/neutrasearch-shortcut.desktop\n", encoding="utf-8"
+        )
 
         applications = root / "usr/share/applications"
         applications.mkdir(parents=True)

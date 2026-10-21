@@ -10,7 +10,7 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Restrict the Windows scanner pipe to the installer-approved account, SYSTEM
   and administrators; keep that approval across upgrades. The GUI cannot create
   competing pipe instances and verifies the installed service before talking.
-- Stop the Linux helper and watcher if memory protection cannot be set.
+- Stop the Linux helper if memory protection fails.
 - Link the Windows C runtime so clean installs start.
 - Keep the last complete index when a scan lane fails; stage rebuilds and
   recover interrupted publication without discarding live edits.
@@ -24,12 +24,13 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   \$MFT runs by the device size, so forged volumes fail with an error.
 - Write Windows service and installer logs in the restricted installation
   folder. Windows and macOS copies publish atomically and keep
-  alternate streams, forks and attributes; moves across volumes there refuse. Pi setup no longer
+  file streams, forks and attributes; folders with streams and cross-volume
+  moves are refused. Linux cross-volume moves stage first. Live updates resume
+  after a crashed rebuild. Pi setup no longer
   replaces files or app bundles it did not create.
-- Report offline coverage limits for ext4, ZFS and Linux NTFS snapshots.
+- Report offline coverage limits for ext4, ZFS and NTFS snapshots.
 - Debian package: install on Debian 13 and current Ubuntu, never stall an
-  upgrade on a watcher, and remove permission files on purge. Pi setup asks
-  Linux users to install the system package first.
+  upgrade on a watcher, and remove permission files on purge.
 
 ## [0.1.30] - 2026-10-21
 
