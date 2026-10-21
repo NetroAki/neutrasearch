@@ -39,10 +39,6 @@ impl Session {
             .transpose()?;
         let stale = Arc::new(AtomicBool::new(false));
         #[cfg(target_os = "linux")]
-        if let Some(store) = durable.as_ref() {
-            DurableStore::start_maintenance(store, Arc::clone(&stale))?;
-        }
-        #[cfg(target_os = "linux")]
         if let Some(watches) = watches {
             let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
             watches.start(store, Arc::clone(&stale))?;
@@ -51,6 +47,10 @@ impl Session {
                 "native watcher failed during startup"
             );
             send(&out, &HelperMsg::WatchReady)?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(store) = durable.as_ref() {
+            DurableStore::start_maintenance(store, Arc::clone(&stale))?;
         }
         #[cfg(not(target_os = "linux"))]
         if watch_mount.is_some() {
