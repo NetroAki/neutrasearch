@@ -16,6 +16,9 @@ struct Key {
     ino: u64,
     size: u64,
     mtime: (i64, i64),
+    // ctime cannot be set from user space, so it exposes an edit that restored
+    // the old modification time.
+    ctime: (i64, i64),
 }
 
 fn key(path: &Path) -> io::Result<Key> {
