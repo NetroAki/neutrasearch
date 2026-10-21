@@ -26,7 +26,8 @@ if [ -d /run/systemd/system ]; then
  for marker in /var/lib/neutrasearch/authorized-users/*; do
   [ -f "$marker" ] || continue
   uid=${marker##*/}
-  systemctl restart "neutrasearch-watch@$uid.service"
+  # Watcher health must never fail or stall a package upgrade.
+  systemctl try-restart --no-block "neutrasearch-watch@$uid.service" || true
  done
 fi
 ''',
@@ -36,8 +37,17 @@ if [ -d /run/systemd/system ] && [ "$1" = remove ]; then
  for marker in /var/lib/neutrasearch/authorized-users/*; do
   [ -f "$marker" ] || continue
   uid=${marker##*/}
-  systemctl disable --now "neutrasearch-watch@$uid.service"
+  systemctl disable --now "neutrasearch-watch@$uid.service" || true
  done
+fi
+''',
+        'postrm': '''#!/bin/sh
+set -e
+if [ "$1" = purge ]; then
+ rm -f /etc/polkit-1/rules.d/49-neutrasearch-*.rules
+ rm -rf /var/lib/neutrasearch/authorized-users
+ rm -f /var/lib/neutrasearch/access.lock
+ rmdir /var/lib/neutrasearch 2>/dev/null || true
 fi
 ''',
     }

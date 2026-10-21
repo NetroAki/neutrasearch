@@ -67,7 +67,12 @@ jobs:
             --target x86_64-unknown-linux-gnu --version "$version"
           sudo apt-get install -y ./dist-deb/*.deb
           getcap /usr/lib/neutrasearch/neutrasearch-helper | grep -q cap_dac_read_search
-          sudo apt-get remove -y neutrasearch
+          # An authorised account whose watcher cannot start must not fail a reinstall.
+          sudo mkdir -p /var/lib/neutrasearch/authorized-users
+          echo ghost | sudo tee /var/lib/neutrasearch/authorized-users/54321 >/dev/null
+          sudo apt-get install --reinstall -y ./dist-deb/*.deb
+          sudo apt-get purge -y neutrasearch
+          test ! -e /var/lib/neutrasearch/authorized-users
       - name: Build isolated Windows GUI fixture
         if: runner.os == 'Windows'
         run: cargo build --release --locked -p neutra-core --example gui_fixture

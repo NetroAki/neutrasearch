@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { installShortcuts } from "./shortcuts.js";
 import {
@@ -10,6 +11,15 @@ import {
 } from "./lib.js";
 
 const TOOL_NAME = "neutrasearch";
+
+// Linux indexes through a root-owned helper from the system package; the npm
+// copy cannot be authorised for raw metadata access.
+function linuxSystemHelperMissing() {
+  if (process.platform !== "linux") return false;
+  return !["/usr/lib/neutrasearch", "/usr/local/lib/neutrasearch"].some((directory) =>
+    fs.existsSync(`${directory}/neutrasearch-helper`),
+  );
+}
 
 function shortError(value, max = 1600) {
   const text = String(value || "unknown error").replace(/\s+/g, " ").trim();
@@ -46,7 +56,7 @@ function status(binary) {
       relative_paths: true,
       metadata: false,
     },
-    safety: "queries the last index; if missing, the launcher performs one full native-metadata machine index without directory walking",
+    safety: "queries the last index; if missing, the launcher performs one full native-metadata machine index without directory walking (on Linux this needs the system .deb package)",
   };
 }
 
@@ -182,6 +192,13 @@ export default function register(pi) {
         return;
       }
       try {
+        if (linuxSystemHelperMissing()) {
+          ctx.ui.notify(
+            "On Linux, Neutrasearch needs its system package to build an index. Install the .deb from https://github.com/NetroAki/neutrasearch/releases, then run /neutrasearch-setup again.",
+            "error",
+          );
+          return;
+        }
         const shortcuts = installShortcuts(application);
         const child = spawn(application, [], {
           detached: true,

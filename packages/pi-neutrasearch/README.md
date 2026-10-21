@@ -12,7 +12,7 @@ Install the Pi package:
 pi install npm:pi-neutrasearch
 ```
 
-npm automatically installs the matching Neutrasearch application for Linux x64/ARM64, Windows x64, or macOS x64/ARM64. No separate application download or compiler is required.
+npm automatically installs the matching Neutrasearch application for Linux x64/ARM64, Windows x64, or macOS x64/ARM64. No compiler is required. On Linux, building an index needs the system package: install the `.deb` from the [GitHub releases](https://github.com/NetroAki/neutrasearch/releases) once.
 
 Inside Pi, run:
 
