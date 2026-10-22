@@ -30,7 +30,13 @@ impl CompactIndex {
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
-        Self::open_impl(path, true)
+        Self::open_impl(path, true, false)
+    }
+
+    /// Validate a blocked snapshot for offline metadata recovery. This retains
+    /// the stale marker; callers must not serve this snapshot as current.
+    pub fn open_for_recovery(path: &Path) -> io::Result<Self> {
+        Self::open_impl(path, true, true)
     }
 
     /// Open without verifying the whole-payload checksum.
@@ -40,12 +46,12 @@ impl CompactIndex {
     /// Version 8 validates routing metadata at open and block checksums on decode.
     /// Older bases require whole-file validation.
     pub fn open_fast(path: &Path) -> io::Result<Self> {
-        Self::open_impl(path, false)
+        Self::open_impl(path, false, false)
     }
 
-    fn open_impl(path: &Path, verify_payload: bool) -> io::Result<Self> {
+    fn open_impl(path: &Path, verify_payload: bool, recovering: bool) -> io::Result<Self> {
         let stale = suffix_path(path, ".stale");
-        if stale.is_file() {
+        if !recovering && stale.is_file() {
             return Err(invalid(format!(
                 "compact index is marked stale by {} and requires a full rebuild",
                 stale.display()
@@ -168,7 +174,7 @@ impl CompactIndex {
         path: &Path,
         verify_payload: bool,
     ) -> io::Result<(Self, Option<DeltaIndex>)> {
-        let base = Self::open_impl(path, verify_payload)?;
+        let base = Self::open_impl(path, verify_payload, false)?;
         let mut delta_path = path.to_path_buf();
         delta_path.set_extension("delta");
         if !delta_path.is_file() {
@@ -182,7 +188,7 @@ impl CompactIndex {
                 if !marker.is_file() || !staged_path.is_file() {
                     return Err(current_error);
                 }
-                let staged = Self::open_impl(&staged_path, verify_payload)?;
+                let staged = Self::open_impl(&staged_path, verify_payload, false)?;
                 match DeltaIndex::open_snapshot(&delta_path, staged.generation()) {
                     Ok(delta) => Ok((staged, Some(delta))),
                     Err(staged_error) => Err(invalid(format!(

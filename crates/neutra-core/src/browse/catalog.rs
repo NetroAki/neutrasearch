@@ -191,7 +191,11 @@ impl BrowserIndex {
     /// Resolve a watcher lookup: the live row if one exists, else the base row.
     pub fn record_by_path(&self, path: &str) -> io::Result<Option<FileRecord>> {
         let _snapshot = self.read_snapshot()?;
-        find_record(&self.db, &mut BlockReader::new(&self.base), path)
+        find_record(
+            &self.db,
+            &mut BlockReader::with_cache(&self.base, &self.decoded_blocks),
+            path,
+        )
     }
 
     pub(super) fn tombstone_insert(db: &Connection, id: u32) -> io::Result<bool> {

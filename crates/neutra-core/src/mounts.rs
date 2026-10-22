@@ -224,3 +224,16 @@ pub fn mount_root(raw: &str, mountpoint: &std::path::Path) -> Option<String> {
         (source_unescape(point) == mountpoint.to_string_lossy()).then(|| source_unescape(root))
     })
 }
+
+/// All mounted paths, including filesystems that cannot be indexed.
+#[cfg(target_os = "linux")]
+pub fn mountpoints(raw: &str) -> Vec<PathBuf> {
+    raw.lines()
+        .filter_map(|line| {
+            let (pre, _) = line.split_once(" - ")?;
+            pre.split_whitespace()
+                .nth(4)
+                .map(|point| PathBuf::from(source_unescape(point)))
+        })
+        .collect()
+}

@@ -2,14 +2,72 @@
 use super::Columns;
 use crate::compact::compare_index_paths;
 use crate::{CompactIndex, FileRecord};
-use std::{cmp::Ordering, io};
+use std::{
+    cmp::Ordering,
+    collections::VecDeque,
+    io,
+    sync::{Arc, Mutex},
+};
+
+#[cfg(test)]
+mod cache_tests;
 
 const HELD: usize = 16;
+pub(super) const DECODED_BLOCK_LIMIT: usize = 128;
+pub(super) const DECODED_BYTE_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Bounded LRU of decoded blocks from one immutable compact base.
+#[derive(Default)]
+pub(in crate::browse) struct DecodedBlocks {
+    entries: VecDeque<(u32, Arc<Vec<FileRecord>>, usize)>,
+    bytes: usize,
+}
+
+impl DecodedBlocks {
+    pub(in crate::browse) fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl DecodedBlocks {
+    fn get_or_load(
+        &mut self,
+        block: u32,
+        load: impl FnOnce() -> io::Result<Vec<FileRecord>>,
+    ) -> io::Result<Arc<Vec<FileRecord>>> {
+        if let Some(at) = self.entries.iter().position(|(held, _, _)| *held == block) {
+            let entry = self.entries.remove(at).expect("located cache entry");
+            let records = Arc::clone(&entry.1);
+            self.entries.push_back(entry);
+            return Ok(records);
+        }
+        let records = Arc::new(load()?);
+        let bytes = records
+            .iter()
+            .map(|r| std::mem::size_of::<FileRecord>() + r.path.len())
+            .sum();
+        if bytes > DECODED_BYTE_LIMIT {
+            return Ok(records);
+        }
+        while self.entries.len() >= DECODED_BLOCK_LIMIT
+            || self.bytes.saturating_add(bytes) > DECODED_BYTE_LIMIT
+        {
+            let Some((_, _, removed)) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes -= removed;
+        }
+        self.bytes += bytes;
+        self.entries.push_back((block, Arc::clone(&records), bytes));
+        Ok(records)
+    }
+}
 
 /// Small cache of decoded 32-record blocks; neighbouring ids share a block.
 pub(in crate::browse) struct BlockReader<'a> {
     base: &'a CompactIndex,
-    held: Vec<(u32, Vec<FileRecord>)>,
+    held: Vec<(u32, Arc<Vec<FileRecord>>)>,
+    cache: Option<&'a Mutex<DecodedBlocks>>,
 }
 
 impl<'a> BlockReader<'a> {
@@ -17,6 +75,18 @@ impl<'a> BlockReader<'a> {
         Self {
             base,
             held: Vec::with_capacity(HELD),
+            cache: None,
+        }
+    }
+
+    pub(in crate::browse) fn with_cache(
+        base: &'a CompactIndex,
+        cache: &'a Mutex<DecodedBlocks>,
+    ) -> Self {
+        Self {
+            base,
+            held: Vec::with_capacity(HELD),
+            cache: Some(cache),
         }
     }
 
@@ -28,8 +98,22 @@ impl<'a> BlockReader<'a> {
         if let Some(at) = self.held.iter().position(|(held, _)| *held == block) {
             return Ok(at);
         }
-        let records = self.base.read_block(block)?;
-        self.base.release_block(block);
+        let records = if let Some(cache) = self.cache {
+            cache
+                .lock()
+                .map_err(|_| io::Error::other("decoded block cache poisoned"))?
+                .get_or_load(block, || {
+                    count_decode();
+                    let records = self.base.read_block(block)?;
+                    self.base.release_block(block);
+                    Ok(records)
+                })?
+        } else {
+            count_decode();
+            let records = self.base.read_block(block)?;
+            self.base.release_block(block);
+            Arc::new(records)
+        };
         if self.held.len() == HELD {
             self.held.remove(0);
         }
@@ -84,6 +168,20 @@ impl<'a> BlockReader<'a> {
             .partition_point(|r| compare_index_paths(&r.path, path) == Ordering::Less);
         Ok(self.base.block_starts()[low] + inside as u32)
     }
+}
+
+#[cfg(test)]
+thread_local! { static DECODE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[inline]
+fn count_decode() {
+    #[cfg(test)]
+    DECODE_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+pub(super) fn decode_count() -> usize {
+    DECODE_COUNT.with(std::cell::Cell::get)
 }
 
 impl Columns {

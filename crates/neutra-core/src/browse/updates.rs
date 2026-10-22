@@ -1,6 +1,6 @@
 use super::columns::BlockReader;
 use super::{catalog, sql_error, BrowserIndex, SCHEMA_VERSION};
-use crate::{CompactIndex, DeltaChange, DeltaIndex};
+use crate::{DeltaChange, DeltaIndex};
 use rusqlite::{params, OpenFlags};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,8 @@ fn writer(index: &Path) -> io::Result<rusqlite::Connection> {
     Ok(db)
 }
 
+pub(in crate::browse) mod writer_cache;
+
 impl BrowserIndex {
     /// Commit metadata changes into the catalog. Replaced or removed base rows
     /// become tombstones; new and changed rows go into the small live table.
@@ -50,16 +52,18 @@ impl BrowserIndex {
         let transaction = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(sql_error)?;
-        let found: (String, i64) = transaction
-            .query_row("SELECT generation,version FROM metadata", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+        let found: (String, i64, String) = transaction
+            .query_row(
+                "SELECT generation,version,base_generation FROM metadata",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
             .map_err(sql_error)?;
-        if found != (generation.to_string(), SCHEMA_VERSION) {
+        if found.0 != generation.to_string() || found.1 != SCHEMA_VERSION {
             return Ok(());
         }
-        let base = CompactIndex::open_fast(&base_path(index))?;
-        let mut reader = BlockReader::new(&base);
+        let held = writer_cache::open(index, &found.2)?;
+        let mut reader = BlockReader::with_cache(&held.base, &held.decoded);
         let mut pages = super::search_cache::Maintenance::open(&transaction)?;
         let mut tombstoned = false;
         for change in changes {

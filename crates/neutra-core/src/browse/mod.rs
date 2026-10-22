@@ -17,8 +17,8 @@ mod updates;
 
 use crate::{CompactIndex, DeltaIndex, FileRecord, Query, SearchHit, SearchStats};
 use rusqlite::{Connection, OpenFlags};
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{io, sync::Mutex};
 
 // Reversing an order also reverses its path tie-break, so one B-tree covers
 // both directions without separate descending indexes.
@@ -30,6 +30,7 @@ pub struct BrowserIndex {
     base: CompactIndex,
     cols: columns::Columns,
     tombstone_cache: std::sync::Mutex<Option<(i64, std::sync::Arc<catalog::Tombstones>)>>,
+    decoded_blocks: Mutex<columns::DecodedBlocks>,
 }
 
 pub(crate) fn sql_error(error: rusqlite::Error) -> io::Error {
@@ -86,6 +87,7 @@ impl BrowserIndex {
             base,
             cols,
             tombstone_cache: std::sync::Mutex::new(None),
+            decoded_blocks: Mutex::new(columns::DecodedBlocks::default()),
         })
     }
 

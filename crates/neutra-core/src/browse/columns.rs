@@ -16,7 +16,7 @@ mod validation_tests;
 mod write;
 
 pub(super) use build::build;
-pub(super) use lookup::BlockReader;
+pub(super) use lookup::{BlockReader, DecodedBlocks};
 pub(super) use prefilter::Prefilter;
 pub(super) use scan::{Boundary, Order, Span};
 

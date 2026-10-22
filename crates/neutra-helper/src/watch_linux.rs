@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
+mod batch;
 mod collection;
 mod deletion_coverage;
 mod events;
+#[cfg(test)]
+mod native_tests;
 #[cfg(test)]
 mod path_tests;
 mod records;
@@ -39,6 +42,7 @@ pub struct FanotifyWatcher {
     atomic_rename: bool,
     buffer: Vec<u8>,
     native_root: Option<NativeRoot>,
+    deleted_handles: deletion_coverage::DeletedHandles,
 }
 
 impl FanotifyWatcher {
@@ -136,84 +140,8 @@ impl FanotifyWatcher {
             atomic_rename,
             buffer: vec![0; 256 * 1024],
             native_root,
+            deleted_handles: deletion_coverage::DeletedHandles::default(),
         })
-    }
-
-    pub fn read_batch(&mut self) -> Result<WatchBatch> {
-        let bytes = loop {
-            match self.events.read(&mut self.buffer) {
-                Ok(bytes) => break bytes,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.into()),
-            }
-        };
-        if bytes == 0 {
-            return Err(
-                io::Error::new(io::ErrorKind::UnexpectedEof, "fanotify descriptor closed").into(),
-            );
-        }
-        let events = parse_events(&self.buffer[..bytes])?;
-        validate_utf8_paths(&events)?;
-        if let Some(reason) = rescan_reason(&events, self.atomic_rename) {
-            return Ok(if self.mount.fs == neutra_core::FsKind::Btrfs {
-                WatchBatch::ReconcileRequired(reason)
-            } else {
-                WatchBatch::RescanRequired(reason)
-            });
-        }
-        let covered_deletions = deletion_coverage::confirmed_named_deletions(self, &events)?;
-        let mut changes = BTreeMap::<String, DeltaChange>::new();
-        for event in events {
-            if self.collect_event(event, &mut changes, &covered_deletions)? {
-                let reason = "an event path became unresolvable before delivery";
-                return Ok(if self.mount.fs == neutra_core::FsKind::Btrfs {
-                    WatchBatch::ReconcileRequired(reason)
-                } else {
-                    WatchBatch::RescanRequired(reason)
-                });
-            }
-        }
-        Ok(WatchBatch::Changes(changes.into_values().collect()))
-    }
-
-    /// Block until events are readable or the timeout elapses. Returns true
-    /// when a subsequent read_batch will not block. Used to coalesce event
-    /// bursts before committing them.
-    pub fn wait_readable(&self, timeout: std::time::Duration) -> io::Result<bool> {
-        let mut fds = [libc::pollfd {
-            fd: self.events.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        loop {
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout.as_millis() as i32) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            return Ok(ready > 0);
-        }
-    }
-
-    /// Returns true when a raced/deleted handle makes this batch ambiguous.
-    fn collect_event(
-        &self,
-        event: ParsedEvent,
-        changes: &mut BTreeMap<String, DeltaChange>,
-        covered_deletions: &std::collections::HashSet<Vec<u8>>,
-    ) -> Result<bool> {
-        if event
-            .locations
-            .iter()
-            .any(|location| location.name.is_some())
-        {
-            self.collect_named(&event, changes)
-        } else {
-            self.collect_object(event, changes, covered_deletions)
-        }
     }
 
     fn is_excluded(&self, path: &Path) -> bool {

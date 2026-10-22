@@ -6,6 +6,7 @@ impl FanotifyWatcher {
         &self,
         event: &ParsedEvent,
         changes: &mut BTreeMap<String, DeltaChange>,
+        covered_deletions: &HashSet<Vec<u8>>,
     ) -> Result<bool> {
         for mut location in event
             .locations
@@ -25,6 +26,9 @@ impl FanotifyWatcher {
             let resolved = self.resolve_named(&mut location);
             let (path, stat, parent) = match resolved {
                 Ok(resolved) => resolved,
+                Err(error) if stale(&error) && covered_deletions.contains(&location.handle) => {
+                    continue;
+                }
                 // A vanished parent is a directory removal covered by PreparedSweep.
                 Err(error) if stale(&error) && self.native_root.is_some() => {
                     tracing::debug!(
@@ -32,7 +36,10 @@ impl FanotifyWatcher {
                     );
                     continue;
                 }
-                Err(error) if stale(&error) => return Ok(true),
+                Err(error) if stale(&error) => {
+                    tracing::error!(mount = %self.mount.mountpoint.display(), mask = event.mask, role = ?location.role, name = ?location.name, handle = ?location.handle, "unresolved named event");
+                    return Ok(true);
+                }
                 Err(error) => return Err(error.into()),
             };
             let path = match self.visible_path(path) {
@@ -52,7 +59,7 @@ impl FanotifyWatcher {
                 || (location.role == Role::Current
                     && event.mask & (libc::FAN_DELETE | libc::FAN_MOVED_FROM) != 0);
             if remove {
-                insert_remove(changes, &path)?;
+                deletion_coverage::insert_removal(changes, &path, event.mask)?;
             } else if location.role == Role::New
                 || event.mask
                     & (libc::FAN_CREATE
@@ -75,7 +82,7 @@ impl FanotifyWatcher {
 
     pub(super) fn collect_object(
         &self,
-        event: ParsedEvent,
+        event: &ParsedEvent,
         changes: &mut BTreeMap<String, DeltaChange>,
         covered_deletions: &HashSet<Vec<u8>>,
     ) -> Result<bool> {
@@ -84,8 +91,9 @@ impl FanotifyWatcher {
         }
         if let Some(mut location) = event
             .locations
-            .into_iter()
+            .iter()
             .find(|location| location.role == Role::Object)
+            .cloned()
         {
             if self
                 .native_root
@@ -122,7 +130,10 @@ impl FanotifyWatcher {
                 }
                 // Btrfs reconciliation covers vanished objects.
                 Err(error) if stale(&error) && self.native_root.is_some() => return Ok(false),
-                Err(error) if stale(&error) => return Ok(true),
+                Err(error) if stale(&error) => {
+                    tracing::error!(mount = %self.mount.mountpoint.display(), mask = event.mask, handle = ?location.handle, "unresolved object event");
+                    return Ok(true);
+                }
                 Err(error) => return Err(error.into()),
             }
         }

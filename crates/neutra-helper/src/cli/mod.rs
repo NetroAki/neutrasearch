@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use neutra_core::proto::HELPER_BUILD;
 use neutra_core::CompactIndex;
 mod build_index;
+#[cfg(target_os = "linux")]
+mod repair_mount;
 
 pub(crate) struct Options {
     pub(crate) serve_index: Option<std::path::PathBuf>,
@@ -88,6 +90,11 @@ pub(crate) fn parse() -> Result<Option<Options>> {
         }
         Some("--build-index") => {
             build_index::run()?;
+            return Ok(None);
+        }
+        #[cfg(target_os = "linux")]
+        Some("--repair-mount") => {
+            repair_mount::run()?;
             return Ok(None);
         }
 

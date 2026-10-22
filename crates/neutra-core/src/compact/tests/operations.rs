@@ -45,6 +45,10 @@ fn stale_marker_blocks_readers_until_full_rebuild() {
     std::fs::write(&stale, b"watch overflow").unwrap();
     assert!(CompactIndex::open(&path).is_err());
     assert!(CompactIndex::generation_on_disk(&path).is_err());
+    let recovery = CompactIndex::open_for_recovery(&path).unwrap();
+    assert_eq!(recovery.generation(), old.generation);
+    assert!(stale.is_file());
+    drop(recovery);
 
     let replacement = CompactIndex::build(&[rec("/new.txt", 2)], &path).unwrap();
     assert!(!stale.exists());
@@ -66,6 +70,7 @@ fn checksum_rejects_corrupted_compact_data() {
     bytes[HEADER as usize] ^= 0x40;
     std::fs::write(&path, bytes).unwrap();
     assert!(CompactIndex::open(&path).is_err());
+    assert!(CompactIndex::open_for_recovery(&path).is_err());
     std::fs::remove_file(path).unwrap();
 }
 
