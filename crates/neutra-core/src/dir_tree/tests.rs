@@ -3,6 +3,26 @@ use crate::dir_summary::DirectorySummary;
 use crate::{CompactIndex, FileRecord, FsKind};
 
 #[test]
+fn publication_ignores_an_abandoned_tree_copy() {
+    let dir = std::env::temp_dir().join(format!("neutra-tree-publish-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let staged = dir.join("staged.nsx");
+    let destination = dir.join("base.nsx");
+    let records = [rec("/home/music.wav", 10, 8, FileKind::File, 0)];
+    let built = CompactIndex::build_with_summary(&records, &staged).unwrap();
+    let abandoned = crate::compact_build::temp_path(&TreeSummary::path_for(&destination));
+    std::fs::write(&abandoned, b"interrupted copy").unwrap();
+
+    CompactIndex::publish(&staged, &destination).unwrap();
+    let tree = TreeSummary::open_for_compact(&destination, built.generation).unwrap();
+    assert_eq!(tree.listing("/home").unwrap().total_count, 1);
+    assert_eq!(std::fs::read(&abandoned).unwrap(), b"interrupted copy");
+    // Retrying publication must also work after the destination exists.
+    CompactIndex::publish(&staged, &destination).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn tree_preserves_drive_and_share_roots_without_self_children() {
     let records = vec![
         rec("C:/Docs/a.txt", 10, 0, FileKind::File, 0),

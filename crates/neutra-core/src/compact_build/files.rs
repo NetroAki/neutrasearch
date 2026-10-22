@@ -4,7 +4,7 @@ pub(crate) fn temp_path(path: &Path) -> PathBuf {
     suffix_path(path, ".new")
 }
 
-pub(super) fn publish_copy(staged: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_copy(staged: &Path, destination: &Path) -> io::Result<()> {
     // A failed copy must not poison every later recovery attempt. Each
     // publication owns its private temporary file; old attempts stay intact.
     let temporary = suffix_path(destination, &format!(".publish-{}.new", new_generation()));

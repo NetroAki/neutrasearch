@@ -236,6 +236,7 @@ pub(crate) fn new_generation() -> u64 {
 }
 
 mod files;
+pub(crate) use files::publish_copy;
 #[cfg(not(windows))]
 pub(crate) use files::replace_file;
 #[cfg(unix)]

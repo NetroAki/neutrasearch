@@ -72,15 +72,7 @@ impl TreeSummary {
             Err(error) => return Err(error),
         }
         let target = Self::path_for(destination);
-        let temporary = crate::compact_build::temp_path(&target);
-        let mut source = std::fs::File::open(Self::path_for(staged))?;
-        let mut output = crate::compact_build::open_private(&temporary)?;
-        std::io::copy(&mut source, &mut output)?;
-        output.flush()?;
-        output.get_ref().sync_all()?;
-        drop(output);
-        crate::compact_build::replace_file(&temporary, &target)?;
-        crate::compact_build::sync_parent(&target)
+        crate::compact_build::publish_copy(&Self::path_for(staged), &target)
     }
 
     pub fn path_for(index_path: &Path) -> PathBuf {
