@@ -41,6 +41,10 @@ impl Session {
         #[cfg(target_os = "linux")]
         if let Some(watches) = watches {
             let store = Arc::clone(durable.as_ref().expect("watch mode has a durable store"));
+            store
+                .write()
+                .map_err(|_| anyhow::anyhow!("durable store lock poisoned"))?
+                .startup_compaction_deferred = true;
             let unavailable = watches
                 .coverage_unavailable()
                 .iter()

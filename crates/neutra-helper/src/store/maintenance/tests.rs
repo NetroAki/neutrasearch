@@ -95,6 +95,57 @@ fn failed_background_build_leaves_the_live_pair_usable() {
 }
 
 #[test]
+fn startup_replay_writes_do_not_compact_or_change_the_pinned_base() {
+    let (path, delta) = store_paths("startup-compaction-deferred");
+    build_test_base(&[record("/old.txt", 1)], &path).unwrap();
+    let generation = CompactIndex::generation_on_disk(&path).unwrap();
+    neutra_core::BrowserIndex::ensure(&path, generation).unwrap();
+    let mut store = DurableStore::open_with_threshold(&path, 1).unwrap();
+    store.startup_compaction_deferred = true;
+
+    let result = store
+        .apply_bounded(vec![DeltaChange::Upsert(record("/replayed.txt", 2))])
+        .unwrap();
+
+    assert!(result.compacted.is_none());
+    assert_eq!(CompactIndex::generation_on_disk(&path).unwrap(), generation);
+    assert_eq!(store.base.as_ref().unwrap().generation(), generation);
+    assert!(store.delta.upsert_for("/replayed.txt").unwrap().is_some());
+
+    // Exercise the same locked handoff used by worker startup, then fold the
+    // replay write through the newly enabled background-compaction path.
+    let store = Arc::new(RwLock::new(store));
+    assert!(worker::enable_background_compaction(&store).unwrap());
+    {
+        let guard = store.read().unwrap();
+        assert!(!guard.startup_compaction_deferred);
+        assert!(guard.background_compaction);
+    }
+    let prepared = store
+        .read()
+        .unwrap()
+        .freeze_compaction()
+        .unwrap()
+        .unwrap()
+        .build()
+        .unwrap();
+    store.write().unwrap().publish_compaction(prepared).unwrap();
+    assert!(CompactIndex::generation_on_disk(&path).unwrap() != generation);
+    assert!(store
+        .read()
+        .unwrap()
+        .base
+        .as_ref()
+        .unwrap()
+        .record_by_path_any_source("/replayed.txt")
+        .unwrap()
+        .is_some());
+
+    drop(store);
+    remove_store(&path, &delta);
+}
+
+#[test]
 fn native_event_failure_during_a_fold_prevents_publication() {
     let (store, path, delta) = fixture("background-stale");
     let generation = store.delta.generation();

@@ -2,7 +2,7 @@
 
 use super::columns::{initial_slot, BlockReader};
 use super::ordered::newest::{Newest, CAP};
-use super::{sql_error, BrowserIndex};
+use super::BrowserIndex;
 use crate::{CompactIndex, DeltaIndex, MatchFields, Query, SearchHit, SortKey};
 use std::{io, path::Path};
 

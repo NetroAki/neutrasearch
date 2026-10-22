@@ -9,6 +9,7 @@ pub(crate) struct DurableStore {
     pub(crate) delta: DeltaIndex,
     settle_retry_at: Option<std::time::Instant>,
     pub(crate) background_compaction: bool,
+    pub(crate) startup_compaction_deferred: bool,
 }
 
 pub(crate) struct CompactionResult {
@@ -62,6 +63,7 @@ impl DurableStore {
             delta,
             settle_retry_at: None,
             background_compaction: false,
+            startup_compaction_deferred: false,
         })
     }
 
@@ -76,7 +78,7 @@ impl DurableStore {
     }
 
     pub(crate) fn apply_bounded(&mut self, changes: Vec<DeltaChange>) -> Result<ApplyResult> {
-        if self.background_compaction {
+        if self.background_compaction || self.startup_compaction_deferred {
             anyhow::ensure!(self.base.is_some(), "base publication requires recovery");
             let (changes, wal_bytes, _) = self.apply(changes)?;
             return Ok(ApplyResult {

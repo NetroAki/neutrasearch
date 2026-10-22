@@ -17,6 +17,8 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   publication cannot block later index updates.
 - Publish rebuilt browse catalogs through SQLite so an existing reader's
   write-ahead log cannot corrupt the replacement catalog.
+- Defer compaction until startup metadata replay has saved its checkpoint,
+  keeping live updates writable and the replay's base generation stable.
 - Release workflows pin every action to a commit and Rust to 1.99.1.
 
 ## [0.1.31] - 2026-10-21

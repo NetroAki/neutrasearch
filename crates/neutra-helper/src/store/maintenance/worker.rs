@@ -10,14 +10,8 @@ impl DurableStore {
         store: &Arc<RwLock<Self>>,
         stale: Arc<AtomicBool>,
     ) -> Result<()> {
-        {
-            let mut guard = store
-                .write()
-                .map_err(|_| anyhow::anyhow!("store lock poisoned"))?;
-            if guard.background_compaction {
-                return Ok(());
-            }
-            guard.background_compaction = true;
+        if !enable_background_compaction(store)? {
+            return Ok(());
         }
         let weak = Arc::downgrade(store);
         std::thread::Builder::new()
@@ -34,6 +28,18 @@ impl DurableStore {
             .context("start index maintenance")?;
         Ok(())
     }
+}
+
+pub(super) fn enable_background_compaction(store: &Arc<RwLock<DurableStore>>) -> Result<bool> {
+    let mut guard = store
+        .write()
+        .map_err(|_| anyhow::anyhow!("store lock poisoned"))?;
+    if guard.background_compaction {
+        return Ok(false);
+    }
+    guard.startup_compaction_deferred = false;
+    guard.background_compaction = true;
+    Ok(true)
 }
 
 fn maintain(weak: Weak<RwLock<DurableStore>>, stale: Arc<AtomicBool>) {
