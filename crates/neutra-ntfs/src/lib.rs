@@ -7,19 +7,24 @@
 //! fixups, resident `$STANDARD_INFORMATION` and `$FILE_NAME`. Alternate data
 //! streams are intentionally ignored. Records whose only usable name is in an
 //! unresolved `$ATTRIBUTE_LIST` are counted as skipped rather than invented.
+//! Named records whose parent chain cannot reach the volume root fail the
+//! scan before publication; the staged caller then keeps the old index
+//! instead of publishing a silently gapped one.
 
 mod attr_list;
 mod extensions;
 mod geometry;
+mod namespace;
 mod records;
 
 use anyhow::{bail, Context, Result};
 use geometry::{
-    apply_fixup, check_runs_within, device_extent, mft_runs, read_exact_at, read_geometry, u64le,
-    Run,
+    apply_fixup, check_runs_within, device_extent, mft_runs, read_exact_at, read_geometry, u16le,
+    u64le, Run,
 };
+use namespace::{ensure_dir_path, validate};
 use neutra_core::{FileKind, FileRecord, FsKind, MountInfo, ScanStats};
-use records::{append_component, ensure_dir_path, parse_record, Alias, Entry};
+use records::{append_component, parse_record, Alias, Entry};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
@@ -81,6 +86,9 @@ pub fn scan_reader<R: Read + Seek>(
     let mut entries = HashMap::<u64, Entry>::with_capacity(reserve as usize);
     let mut aliases = HashMap::<u64, Vec<Alias>>::new();
     let mut skipped_attr_list = 0u64;
+    let mut root_allocated = false;
+    let mut root_dir = false;
+    let mut root_sequence = 0u16;
     let mut extensions = Vec::new();
     let mut buf = vec![0u8; g.record as usize];
     let mut run_cursor = RunCursor::default();
@@ -93,6 +101,11 @@ pub fn scan_reader<R: Read + Seek>(
         else {
             continue;
         };
+        if n == 5 {
+            root_allocated = true;
+            root_dir = flags & 2 != 0;
+            root_sequence = u16le(&buf, 16).unwrap_or(0);
+        }
         let base_ref = u64le(&buf, 32).unwrap_or(0);
         match parse_record(&buf, flags & 2 != 0) {
             Ok(Some((entry, extra_names, has_attr_list))) => {
@@ -114,24 +127,45 @@ pub fn scan_reader<R: Read + Seek>(
     }
 
     extensions::merge(extensions, &mut entries, &mut aliases);
+    // Fail torn branches before publication so the staged caller keeps the
+    // old index instead of a silently gapped one. Intentional omissions
+    // are narrow: "."/"..", alternate data streams, DOS-namespace
+    // aliases, and names visible only through an unresolved
+    // `$ATTRIBUTE_LIST` (counted in `skipped_attr_list`). Everything else
+    // named must resolve to the volume root.
+    let mut dir_paths = HashMap::<u64, String>::new();
+    validate(
+        &entries,
+        &aliases,
+        root_allocated,
+        root_dir,
+        root_sequence,
+        &mut dir_paths,
+    )
+    .context("unresolved named NTFS branches")?;
+    let mut validation_seen = std::collections::HashSet::new();
     let mut stats = ScanStats::default();
     // Store one portable path spelling in the index. Windows volume roots arrive
     // as `C:\\`; trimming both separators avoids producing `C:\\/name`.
     let prefix = prefix.trim_end_matches(['/', '\\']);
-    let mut dir_paths = HashMap::<u64, String>::new();
-    dir_paths.insert(5, String::new());
     for (&id, entry) in &entries {
         if id == 5 {
             continue;
         }
-        if !ensure_dir_path(
+        ensure_dir_path(
             entry.parent,
             entry.parent_sequence,
+            root_sequence,
             &entries,
             &mut dir_paths,
-        ) {
-            continue;
-        }
+            &mut validation_seen,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "MFT record {id} (\"{}\") parent path failed after validation: {error}",
+                entry.name
+            )
+        })?;
         let parent = dir_paths.get(&entry.parent).unwrap();
         let full = if entry.dir {
             let rel = append_component(parent, &entry.name);
@@ -182,14 +216,20 @@ pub fn scan_reader<R: Read + Seek>(
             continue;
         }
         for alias in names {
-            if !ensure_dir_path(
+            ensure_dir_path(
                 alias.parent,
                 alias.parent_sequence,
+                root_sequence,
                 &entries,
                 &mut dir_paths,
-            ) {
-                continue;
-            }
+                &mut validation_seen,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "MFT record {id} alias (\"{}\") parent path failed after validation: {error}",
+                    alias.name
+                )
+            })?;
             let parent = dir_paths.get(&alias.parent).unwrap();
             let mut full =
                 String::with_capacity(prefix.len() + parent.len() + alias.name.len() + 2);

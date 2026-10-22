@@ -12,6 +12,7 @@ pub(super) struct Snapshot(Vec<(PathBuf, Key)>);
 
 struct Key {
     dir: bool,
+    dev: u64,
     ino: u64,
     size: u64,
     mtime: (i64, i64),
@@ -19,6 +20,7 @@ struct Key {
     // the old modification time.
     ctime: (i64, i64),
     linked: bool,
+    digest: Option<[u8; 32]>,
 }
 
 /// Flush the whole filesystem that holds `path` to disk.
@@ -34,11 +36,12 @@ pub(super) fn sync_volume(path: &Path) -> io::Result<()> {
     }
 }
 
-fn key(path: &Path) -> io::Result<Key> {
+fn key(path: &Path, force_digest: bool) -> io::Result<Key> {
     let m = fs::symlink_metadata(path)?;
     let dir = m.is_dir();
     Ok(Key {
         dir,
+        dev: m.dev(),
         ino: m.ino(),
         // Folder size and time change as children go, so only identity counts.
         size: if dir { 0 } else { m.size() },
@@ -52,9 +55,14 @@ fn key(path: &Path) -> io::Result<Key> {
         } else {
             (m.ctime(), m.ctime_nsec())
         },
-        // Removing one link changes the ctime of the others, so those files rely
-        // on identity, size and mtime.
+        // Removing one link changes the ctime of the others, so regular files
+        // rely on identity, size, mtime and a digest of their contents.
         linked: m.nlink() > 1,
+        digest: if !dir && (force_digest || m.nlink() > 1) && m.file_type().is_file() {
+            Some(hardlink_digest::read(path, &m)?)
+        } else {
+            None
+        },
     })
 }
 
@@ -73,9 +81,21 @@ impl Key {
     /// What must still hold once a file was renamed aside, which updates its ctime.
     fn same_content(&self, other: &Key) -> bool {
         self.dir == other.dir
+            && self.dev == other.dev
             && self.ino == other.ino
             && self.size == other.size
             && self.mtime == other.mtime
+            && self.digest == other.digest
+    }
+
+    fn still_at(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|m| {
+            m.dev() == self.dev
+                && m.ino() == self.ino
+                && m.size() == self.size
+                && (m.mtime(), m.mtime_nsec()) == self.mtime
+                && (m.ctime(), m.ctime_nsec()) == self.ctime
+        })
     }
 }
 
@@ -91,14 +111,30 @@ impl Snapshot {
     /// moved entry is the one that was copied; a file saved over the path at that
     /// moment is renamed back instead of being lost. Folders go last, children
     /// first, with remove_dir so any folder that holds something stays.
-    pub(super) fn remove_unchanged(self, root: &Path) -> Outcome {
+    pub(super) fn remove_unchanged(self, root: &Path, destination: &Path) -> Outcome {
+        self.remove_checked(root, destination, hardlink_digest::matches)
+    }
+
+    fn remove_checked(
+        self,
+        root: &Path,
+        destination: &Path,
+        mut copied_matches: impl FnMut(&Path, &[u8; 32]) -> bool,
+    ) -> Outcome {
         let mut left = 0;
         let mut kept_at = None;
         let hold = hold_folder(root);
         let mut made = false;
         let (folders, files): (Vec<_>, Vec<_>) = self.0.into_iter().partition(|(_, k)| k.dir);
         for (n, (path, before)) in files.into_iter().enumerate() {
-            match key(&path) {
+            let copied = path.strip_prefix(root).ok().map(|relative| {
+                if relative.as_os_str().is_empty() {
+                    destination.to_path_buf()
+                } else {
+                    destination.join(relative)
+                }
+            });
+            match key(&path, before.digest.is_some()) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Ok(now) if before.matches(&now) => {}
                 _ => {
@@ -114,8 +150,17 @@ impl Snapshot {
                 left += 1;
                 continue;
             }
-            match key(&held) {
-                Ok(now) if now.same_content(&before) => {
+            match key(&held, before.digest.is_some()) {
+                // The hold rename changes ctime, so digest hardlinked bytes again.
+                Ok(now)
+                    if now.same_content(&before)
+                        && before.digest.as_ref().is_none_or(|digest| {
+                            copied
+                                .as_ref()
+                                .is_some_and(|path| copied_matches(path, digest))
+                        })
+                        && now.still_at(&held) =>
+                {
                     if fs::remove_file(&held).is_err() {
                         left += 1;
                         kept_at = Some(hold.clone());
@@ -133,7 +178,7 @@ impl Snapshot {
             let _ = fs::remove_dir(&hold);
         }
         for (path, before) in folders.into_iter().rev() {
-            match key(&path) {
+            match key(&path, false) {
                 Ok(now) if before.matches(&now) => {
                     if fs::remove_dir(&path).is_err() {
                         left += 1;
@@ -157,7 +202,7 @@ fn hold_folder(root: &Path) -> PathBuf {
 }
 
 fn collect(path: &Path, out: &mut Vec<(PathBuf, Key)>) -> io::Result<()> {
-    let current = key(path)?;
+    let current = key(path, false)?;
     let dir = current.dir;
     out.push((path.to_path_buf(), current));
     if dir {
@@ -169,74 +214,8 @@ fn collect(path: &Path, out: &mut Vec<(PathBuf, Key)>) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "cross_move/tests.rs"]
+mod tests;
 
-    #[test]
-    fn keeps_a_same_size_edit_that_restored_its_modification_time() {
-        let root = std::env::temp_dir().join(format!("ns-cross-ctime-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let file = root.join("f");
-        fs::write(&file, "aaaa").unwrap();
-        let modified = fs::metadata(&file).unwrap().modified().unwrap();
-        let snapshot = Snapshot::take(&root).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        fs::write(&file, "bbbb").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&file)
-            .unwrap()
-            .set_modified(modified)
-            .unwrap();
-        assert_eq!(snapshot.remove_unchanged(&root).left, 2);
-        assert_eq!(fs::read(&file).unwrap(), b"bbbb");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn keeps_files_that_appear_or_change_after_the_snapshot() {
-        let root = std::env::temp_dir().join(format!("ns-cross-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("a/b")).unwrap();
-        fs::write(root.join("a/same"), "x").unwrap();
-        fs::write(root.join("a/b/edited"), "one").unwrap();
-        let snapshot = Snapshot::take(&root.join("a")).unwrap();
-        fs::write(root.join("a/new"), "late").unwrap();
-        fs::write(root.join("a/b/edited"), "two, longer").unwrap();
-        assert_eq!(snapshot.remove_unchanged(&root.join("a")).left, 3);
-        assert!(!root.join("a/same").exists());
-        assert_eq!(fs::read(root.join("a/new")).unwrap(), b"late");
-        assert_eq!(fs::read(root.join("a/b/edited")).unwrap(), b"two, longer");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn removes_a_tree_with_internal_hard_links() {
-        let root = std::env::temp_dir().join(format!("ns-cross-links-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("tree")).unwrap();
-        fs::write(root.join("tree/one"), "shared").unwrap();
-        fs::hard_link(root.join("tree/one"), root.join("tree/two")).unwrap();
-        let snapshot = Snapshot::take(&root.join("tree")).unwrap();
-        let outcome = snapshot.remove_unchanged(&root.join("tree"));
-        assert_eq!(outcome.left, 0);
-        assert!(!root.join("tree").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn keeps_a_file_replaced_by_a_new_inode_after_the_snapshot() {
-        let root = std::env::temp_dir().join(format!("ns-cross-swap-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("f"), "old").unwrap();
-        let snapshot = Snapshot::take(&root).unwrap();
-        fs::write(root.join("tmp"), "new!").unwrap();
-        fs::rename(root.join("tmp"), root.join("f")).unwrap();
-        let outcome = snapshot.remove_unchanged(&root);
-        assert_eq!(outcome.left, 2);
-        assert_eq!(fs::read(root.join("f")).unwrap(), b"new!");
-        fs::remove_dir_all(root).unwrap();
-    }
-}
+#[path = "cross_move/hardlink_digest.rs"]
+mod hardlink_digest;

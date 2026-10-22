@@ -16,6 +16,7 @@ libc.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 regex = "1"
 global-hotkey = "0.8"
 zstd.workspace = true

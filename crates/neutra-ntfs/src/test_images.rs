@@ -59,10 +59,10 @@ fn nonres(typ: u32, id: u16, vcn: u64, sizes: (u64, u64), runs: &[u8]) -> Vec<u8
     a[64..64 + runs.len()].copy_from_slice(runs);
     a
 }
-fn file_name(parent: u64, name: &str, dir: bool, ns: u8) -> Vec<u8> {
+fn file_name_ref(parent: u64, parent_sequence: u16, name: &str, dir: bool, ns: u8) -> Vec<u8> {
     let w: Vec<u16> = name.encode_utf16().collect();
     let mut v = vec![0u8; 66 + w.len() * 2];
-    p64(&mut v, 0, parent | (1u64 << 48));
+    p64(&mut v, 0, parent | ((parent_sequence as u64) << 48));
     p64(&mut v, 48, 5);
     p32(&mut v, 56, if dir { 0x1000_0000 } else { 0 });
     v[64] = w.len() as u8;
@@ -71,6 +71,9 @@ fn file_name(parent: u64, name: &str, dir: bool, ns: u8) -> Vec<u8> {
         p16(&mut v, 66 + i * 2, *c);
     }
     resident(0x30, &v)
+}
+fn file_name(parent: u64, name: &str, dir: bool, ns: u8) -> Vec<u8> {
+    file_name_ref(parent, 1, name, dir, ns)
 }
 fn user_records(recs: &mut [Vec<u8>]) {
     let mut si = vec![0u8; 48];
@@ -139,5 +142,55 @@ pub fn declared_huge_mft_image() -> Vec<u8> {
     let bytes = clusters * 512;
     recs[0] = record(1, 1, &[nonres(0x80, 0, 0, (bytes, bytes), &runs)]);
     user_records(&mut recs);
+    assemble(recs)
+}
+
+/// Valid volume with one ordinary named record whose parent relationship is
+/// deliberately malformed. Parent ids are MFT record numbers; fixture sizes
+/// are kept minimal so these reach namespace resolution.
+pub fn unresolved_parent_image(kind: &str) -> Vec<u8> {
+    let mut recs = vec![vec![0u8; REC]; 9];
+    recs[0] = record(1, 1, &[nonres(0x80, 0, 0, (9216, 9216), &[0x11, 18, 4, 0])]);
+    recs[5] = record(3, 1, &[file_name(5, ".", true, 1)]);
+    match kind {
+        "missing" => {
+            recs[8] = record(1, 1, &[file_name(99, "lost", false, 1)]);
+        }
+        "sequence" => {
+            recs[6] = record(3, 2, &[file_name(5, "docs", true, 1)]);
+            recs[8] = record(1, 1, &[file_name_ref(6, 1, "lost", false, 1)]);
+        }
+        "cycle" => {
+            recs[6] = record(3, 1, &[file_name(7, "a", true, 1)]);
+            recs[7] = record(3, 1, &[file_name(6, "b", true, 1)]);
+            recs[8] = record(1, 1, &[file_name(6, "lost", false, 1)]);
+        }
+        "root-sequence" => {
+            recs[6] = record(3, 1, &[file_name_ref(5, 99, "docs", true, 1)]);
+        }
+        "alias-missing" => {
+            recs[6] = record(3, 1, &[file_name(5, "docs", true, 1)]);
+            recs[8] = record(
+                1,
+                1,
+                &[
+                    file_name(6, "ok.txt", false, 1),
+                    file_name_ref(99, 1, "ghost.txt", false, 1),
+                ],
+            );
+        }
+        "alias-sequence" => {
+            recs[6] = record(3, 2, &[file_name(5, "docs", true, 1)]);
+            recs[8] = record(
+                1,
+                1,
+                &[
+                    file_name_ref(6, 2, "ok.txt", false, 1),
+                    file_name_ref(6, 1, "ghost.txt", false, 1),
+                ],
+            );
+        }
+        _ => unreachable!("unknown fixture kind"),
+    }
     assemble(recs)
 }

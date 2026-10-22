@@ -16,7 +16,9 @@ fn root_parent_sequence_uses_the_preseeded_root_path() {
         },
     )]);
     let mut cache = HashMap::from([(5, String::new())]);
-    assert!(ensure_dir_path(5, 42, &entries, &mut cache));
+    let mut seen = std::collections::HashSet::new();
+    assert!(ensure_dir_path(5, 42, 42, &entries, &mut cache, &mut seen).is_ok());
+    assert!(ensure_dir_path(5, 7, 42, &entries, &mut cache, &mut seen).is_err());
     assert_eq!(cache.get(&5).map(String::as_str), Some(""));
 }
 
@@ -50,11 +52,12 @@ fn path_cycles_stop() {
         },
     );
     let mut c = HashMap::from([(5, String::new())]);
-    assert!(ensure_dir_path(6, 1, &e, &mut c));
+    let mut seen = std::collections::HashSet::new();
+    assert!(ensure_dir_path(6, 1, 1, &e, &mut c, &mut seen).is_ok());
     assert_eq!(append_component(c.get(&6).unwrap(), "b"), "a/b");
     e.get_mut(&6).unwrap().parent = 7;
     let mut c = HashMap::from([(5, String::new())]);
-    assert!(!ensure_dir_path(6, 1, &e, &mut c));
+    assert!(ensure_dir_path(6, 1, 1, &e, &mut c, &mut seen).is_err());
 }
 
 #[test]
@@ -88,6 +91,7 @@ fn scan_image(image: Vec<u8>) -> anyhow::Result<Vec<FileRecord>> {
 fn attribute_list_image_scans_when_the_size_is_honest() {
     let records = scan_image(test_images::attr_list_image(32)).unwrap();
     assert!(records.iter().any(|r| r.path.ends_with("docs/a.txt")));
+    assert!(records.iter().any(|r| r.path.ends_with("docs/b.txt")));
 }
 
 #[test]
@@ -106,4 +110,52 @@ fn forged_mft_run_longer_than_the_device_is_rejected() {
     assert!(image.len() < 16 * 1024);
     let error = format!("{:#}", scan_image(image).unwrap_err());
     assert!(error.contains("past the"), "unexpected: {error}");
+}
+
+fn scan_image_fails_without_records(kind: &str) -> String {
+    let image = test_images::unresolved_parent_image(kind);
+    let size = image.len() as u64;
+    let mut published = 0u32;
+    let error = scan_reader(std::io::Cursor::new(image), size, "/vol", &mut |_| {
+        published += 1;
+    })
+    .unwrap_err();
+    assert_eq!(published, 0, "torn branch published records before failing");
+    format!("{error:#}")
+}
+
+#[test]
+fn unresolved_missing_parent_fails_before_publication() {
+    let error = scan_image_fails_without_records("missing");
+    assert!(error.contains("missing"), "unexpected: {error}");
+}
+
+#[test]
+fn unresolved_parent_sequence_mismatch_fails_before_publication() {
+    let error = scan_image_fails_without_records("sequence");
+    assert!(error.contains("sequence mismatch"), "unexpected: {error}");
+}
+
+#[test]
+fn unresolved_parent_cycle_fails_before_publication() {
+    let error = scan_image_fails_without_records("cycle");
+    assert!(error.contains("cycle"), "unexpected: {error}");
+}
+
+#[test]
+fn unresolved_root_sequence_mismatch_fails_before_publication() {
+    let error = scan_image_fails_without_records("root-sequence");
+    assert!(error.contains("record 5"), "unexpected: {error}");
+}
+
+#[test]
+fn unresolved_alias_parent_fails_before_publication() {
+    let error = scan_image_fails_without_records("alias-missing");
+    assert!(error.contains("alias"), "unexpected: {error}");
+}
+
+#[test]
+fn unresolved_alias_sequence_mismatch_fails_before_publication() {
+    let error = scan_image_fails_without_records("alias-sequence");
+    assert!(error.contains("sequence mismatch"), "unexpected: {error}");
 }

@@ -4,7 +4,6 @@
 use crate::geometry::{u16le, u32le, u64le};
 use anyhow::Context as _;
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
 
 pub(crate) fn prepare_allocated(record: &mut [u8], sector: usize) -> Result<Option<u16>> {
     if record.get(..4) != Some(b"FILE".as_slice()) {
@@ -189,54 +188,6 @@ pub(crate) fn parse_record(
     }
 }
 
-pub(crate) fn ensure_dir_path(
-    id: u64,
-    expected_sequence: u16,
-    entries: &HashMap<u64, Entry>,
-    cache: &mut HashMap<u64, String>,
-) -> bool {
-    if id != 5
-        && expected_sequence != 0
-        && entries
-            .get(&id)
-            .is_none_or(|entry| entry.sequence != expected_sequence)
-    {
-        return false;
-    }
-    if cache.contains_key(&id) {
-        return true;
-    }
-    let mut current = id;
-    let mut chain = Vec::<u64>::new();
-    let mut seen = HashSet::new();
-    while !cache.contains_key(&current) {
-        if !seen.insert(current) {
-            return false;
-        }
-        let Some(e) = entries.get(&current) else {
-            return false;
-        };
-        if !e.dir {
-            return false;
-        }
-        chain.push(current);
-        if e.parent != 5
-            && e.parent_sequence != 0
-            && entries
-                .get(&e.parent)
-                .is_none_or(|parent| parent.sequence != e.parent_sequence)
-        {
-            return false;
-        }
-        current = e.parent;
-    }
-    let mut path = cache.get(&current).unwrap().clone();
-    for ino in chain.into_iter().rev() {
-        path = append_component(&path, &entries[&ino].name);
-        cache.insert(ino, path.clone());
-    }
-    true
-}
 pub(crate) fn append_component(parent: &str, name: &str) -> String {
     let mut p = String::with_capacity(parent.len() + name.len() + 1);
     p.push_str(parent);

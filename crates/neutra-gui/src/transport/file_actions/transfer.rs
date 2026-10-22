@@ -232,7 +232,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 source.display()
             )
         })?;
-        let outcome = snapshot.remove_unchanged(source);
+        let outcome = snapshot.remove_unchanged(source, target);
         match (outcome.left, outcome.kept_at) {
             (0, _) => Ok(()),
             (left, kept) => Err(format!(
