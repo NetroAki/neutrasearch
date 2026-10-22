@@ -13,9 +13,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+mod commit;
+mod gate;
+mod pending;
+mod reader;
 mod reconcile;
 mod seed;
 mod state;
+pub(crate) use gate::WriteGate;
 use reconcile::sweep_once;
 use seed::prepare_seed;
 use state::{open_subvolumes, save};
@@ -60,6 +65,7 @@ impl PreparedSweep {
         stale: Arc<AtomicBool>,
         source: u32,
         requested: Arc<AtomicBool>,
+        gate: Arc<WriteGate>,
     ) -> Result<()> {
         let mut prepared = self;
         // Watch readers are attached by WatchSession before this method. Replay
@@ -72,7 +78,7 @@ impl PreparedSweep {
             );
         }
         for item in prepared.watched.iter_mut().filter(|item| item.active) {
-            if let Err(error) = sweep_once(&store, item, source) {
+            if let Err(error) = sweep_once(&store, item, source, &gate) {
                 let reason = format!(
                     "Native metadata replay failed at {}: {error:#}",
                     item.mount.mountpoint.display()
@@ -116,7 +122,7 @@ impl PreparedSweep {
                 let mut moved = false;
                 for item in watched.iter_mut() {
                     item.active |= force;
-                    match sweep_once(&store, item, source) {
+                    match sweep_once(&store, item, source, &gate) {
                         Ok(changed) => moved |= changed,
                         Err(error) => {
                             let reason = format!(

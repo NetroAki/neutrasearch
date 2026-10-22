@@ -4,8 +4,10 @@ pub(super) fn commit_changes(
     store: &Arc<RwLock<DurableStore>>,
     stale: &AtomicBool,
     changes: &[DeltaChange],
+    gate: &crate::watch_sweep::WriteGate,
 ) -> Result<()> {
     for chunk in changes.chunks(DurableStore::LIVE_COMMIT_BATCH) {
+        let _ticket = gate.ticket()?;
         let mut guard = store
             .write()
             .map_err(|_| anyhow::anyhow!("durable store lock poisoned"))?;
@@ -22,7 +24,6 @@ pub(super) fn commit_changes(
             "native watch batch committed"
         );
         drop(guard);
-        std::thread::yield_now();
     }
     Ok(())
 }
@@ -47,7 +48,8 @@ mod tests {
         }
         changes.push(DeltaChange::Remove("/folder/003.txt".into()));
         changes.push(DeltaChange::Upsert(record("/folder/004.txt", 999)));
-        commit_changes(&store, &AtomicBool::new(false), &changes).unwrap();
+        let gate = crate::watch_sweep::WriteGate::default();
+        commit_changes(&store, &AtomicBool::new(false), &changes, &gate).unwrap();
         let guard = store.read().unwrap();
         assert!(guard.delta.is_removed("/folder/old.txt").unwrap());
         assert!(guard.delta.is_removed("/folder/003.txt").unwrap());

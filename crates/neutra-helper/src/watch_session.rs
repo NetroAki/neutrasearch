@@ -3,7 +3,7 @@ use crate::store::{write_watch_status, DurableStore};
 use crate::watch_linux::FanotifyWatcher;
 use crate::watch_mount::{needs_mount_mark, Watch};
 use crate::watch_process::ProcessWatcher;
-use crate::watch_sweep::PreparedSweep;
+use crate::watch_sweep::{PreparedSweep, WriteGate};
 use anyhow::{Context, Result};
 use neutra_core::{FsKind, MountInfo};
 use std::path::Path;
@@ -93,6 +93,7 @@ impl WatchSession {
         store: Arc<RwLock<DurableStore>>,
         stale: Arc<AtomicBool>,
     ) -> Result<()> {
+        let gate = Arc::new(WriteGate::default());
         let path = store.read().unwrap().path.clone();
         write_watch_status(&path, &self.limitations.join("\n"))?;
         let requested = Arc::new(AtomicBool::new(false));
@@ -102,8 +103,15 @@ impl WatchSession {
                 Arc::clone(&store),
                 Arc::clone(&stale),
                 Arc::clone(&requested),
+                Arc::clone(&gate),
             );
         }
-        PreparedSweep::prepare(&self.mounts, &path)?.start(store, stale, self.source, requested)
+        PreparedSweep::prepare(&self.mounts, &path)?.start(
+            store,
+            stale,
+            self.source,
+            requested,
+            gate,
+        )
     }
 }

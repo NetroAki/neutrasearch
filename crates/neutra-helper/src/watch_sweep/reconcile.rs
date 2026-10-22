@@ -4,18 +4,43 @@ pub(super) fn sweep_once(
     store: &Arc<RwLock<DurableStore>>,
     item: &mut Watched,
     source: u32,
+    gate: &WriteGate,
 ) -> Result<bool> {
+    // ponytail: prefix conflicts replan the native range; persist subtree progress to bound retries.
+    loop {
+        if let Some(moved) = attempt(store, item, source, gate)? {
+            return Ok(moved);
+        }
+    }
+}
+
+fn attempt(
+    store: &Arc<RwLock<DurableStore>>,
+    item: &mut Watched,
+    source: u32,
+    gate: &WriteGate,
+) -> Result<Option<bool>> {
     let committed = item.sub.current_generation()?;
     if !item.active && committed <= item.since {
-        return Ok(false);
+        return Ok(Some(false));
     }
+    let (path, generation, cursor) = {
+        let guard = store
+            .read()
+            .map_err(|_| anyhow!("durable store lock poisoned"))?;
+        (
+            guard.path.clone(),
+            guard.delta.generation(),
+            guard.delta.compaction_cursor(),
+        )
+    };
     let started = std::time::Instant::now();
     let changes = item.sub.changes_since(item.since)?;
     if changes.inodes.is_empty() && changes.dirs.is_empty() {
         let moved = committed > item.since;
         item.since = item.since.max(committed);
         item.active = false;
-        return Ok(moved);
+        return Ok(Some(moved));
     }
     let mounted = Mounted {
         prefix: &item.prefix,
@@ -23,36 +48,19 @@ pub(super) fn sweep_once(
         fs: &item.mount.fs,
         source,
     };
-    let (path, generation) = {
-        let guard = store
-            .read()
-            .map_err(|_| anyhow!("durable store lock poisoned"))?;
-        (
-            guard.path.clone(),
-            guard
-                .view()
-                .ok_or_else(|| anyhow!("compact base is unavailable"))?
-                .0
-                .generation(),
-        )
-    };
     let browser = neutra_core::BrowserIndex::open(&path, generation).ok();
     let excluded = crate::scan::watch_exclusions(&path);
+    let base = neutra_core::CompactIndex::open_fast(&path)?;
+    if base.generation() != generation {
+        return Ok(None);
+    }
     let planned = if let Some(browser) = browser.as_ref() {
-        // Catalog reads do not hold the event writer behind reconciliation.
-        let base = neutra_core::CompactIndex::open_fast(&path)?;
-        if base.generation() != generation {
-            return Err(anyhow!("compact base changed during native reconciliation"));
-        }
         reconcile(&item.sub, &changes, &base, None, &mounted, Some(browser))?
     } else {
-        let guard = store
-            .read()
-            .map_err(|_| anyhow!("durable store lock poisoned"))?;
-        let (base, delta) = guard
-            .view()
-            .ok_or_else(|| anyhow!("compact base is unavailable"))?;
-        reconcile(&item.sub, &changes, base, Some(delta), &mounted, None)?
+        let Some(delta) = reader::overlay(store, generation)? else {
+            return Ok(None);
+        };
+        reconcile(&item.sub, &changes, &base, Some(&delta), &mounted, None)?
     };
     let active = changes.generation > committed;
     let inode_count = changes.inodes.len();
@@ -70,17 +78,8 @@ pub(super) fn sweep_once(
             !crate::scan::is_watch_excluded(Path::new(&**path), &excluded)
         })
         .collect::<Vec<_>>();
-    for chunk in planned.chunks(DurableStore::LIVE_COMMIT_BATCH) {
-        {
-            let mut guard = store
-                .write()
-                .map_err(|_| anyhow!("durable store lock poisoned"))?;
-            guard.apply_bounded(chunk.to_vec())?;
-        }
-        std::thread::yield_now();
-    }
-    if !planned.is_empty() {
-        tracing::debug!(changes = planned.len(), mount = %item.mount.mountpoint.display(), "sweep committed");
+    if !commit::apply(store, gate, pending::Pending::new(planned), cursor)? {
+        return Ok(None);
     }
     // A live leaf can be newer than the committed root. Keep the range
     // inclusive until that transaction commits, including writes after this
@@ -90,5 +89,5 @@ pub(super) fn sweep_once(
     item.since = next;
     item.active = active;
     tracing::debug!(inodes = inode_count, dirs = directory_count, seconds = started.elapsed().as_secs_f64(), mount = %item.mount.mountpoint.display(), "sweep reconciled");
-    Ok(moved)
+    Ok(Some(moved))
 }

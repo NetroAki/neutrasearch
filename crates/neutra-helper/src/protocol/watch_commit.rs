@@ -11,6 +11,7 @@ pub(crate) fn start_native_watch(
     store: Arc<RwLock<DurableStore>>,
     stale: Arc<AtomicBool>,
     requested: Arc<AtomicBool>,
+    gate: Arc<crate::watch_sweep::WriteGate>,
 ) {
     let base_path = match store.read() {
         Ok(store) => store.path.clone(),
@@ -49,7 +50,7 @@ pub(crate) fn start_native_watch(
             let changes = std::mem::take(&mut pending)
                 .into_values()
                 .collect::<Vec<_>>();
-            if let Err(error) = commit_changes(&store, &stale, &changes) {
+            if let Err(error) = commit_changes(&store, &stale, &changes, &gate) {
                 fail_closed(&stale, &base_path, error);
                 break;
             }

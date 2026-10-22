@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct CompactionCursor {
     generation: u64,
     bytes: u64,
@@ -14,6 +14,83 @@ impl DeltaIndex {
             bytes: self.wal_bytes,
             identity: self.identity,
         }
+    }
+
+    /// Visit complete, CRC-verified WAL changes appended after `frozen`, in
+    /// commit order. The callback runs while the caller's writer lock should
+    /// remain held; this method does not modify the delta overlay.
+    pub fn visit_changes_after(
+        &self,
+        frozen: CompactionCursor,
+        mut visit: impl FnMut(DeltaChange) -> io::Result<()>,
+    ) -> io::Result<CompactionCursor> {
+        if self.writer.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "tail visit requires the live delta writer",
+            ));
+        }
+        if self.generation != frozen.generation {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "delta writer generation changed since the frozen cursor",
+            ));
+        }
+        if self.identity != frozen.identity {
+            return Err(invalid(
+                "delta writer identity changed without a generation change",
+            ));
+        }
+        if frozen.bytes < HEADER || frozen.bytes > self.wal_bytes {
+            return Err(invalid("frozen delta cursor is outside the live WAL"));
+        }
+
+        let file = File::open(&self.path)?;
+        let metadata = file.metadata()?;
+        if file_identity_from_metadata(&metadata)? != frozen.identity {
+            return Err(invalid("delta WAL was replaced outside its writer"));
+        }
+        if metadata.len() != self.wal_bytes {
+            return Err(invalid("delta WAL length changed outside its writer"));
+        }
+        let mut reader = BufReader::new(file);
+        let wal_v1 = read_header(&mut reader, frozen.generation)?;
+        if wal_v1 != self.wal_v1 {
+            return Err(invalid(
+                "delta WAL format changed without a generation change",
+            ));
+        }
+        reader.seek(SeekFrom::Start(frozen.bytes))?;
+        let mut offset = frozen.bytes;
+        while offset < self.wal_bytes {
+            let remaining = self.wal_bytes - offset;
+            if remaining < 8 {
+                return Err(invalid("delta tail ends inside a frame header"));
+            }
+            let mut header = [0u8; 8];
+            reader.read_exact(&mut header)?;
+            let len = u32::from_le_bytes(header[..4].try_into().expect("fixed slice")) as usize;
+            let expected = u32::from_le_bytes(header[4..].try_into().expect("fixed slice"));
+            if len > MAX_FRAME || len as u64 > remaining - 8 {
+                return Err(invalid("delta tail ends inside a frame"));
+            }
+            let mut payload = vec![0; len];
+            reader.read_exact(&mut payload)?;
+            if crc32fast::hash(&payload) != expected {
+                return Err(invalid("delta tail checksum mismatch"));
+            }
+            let change = decode_change(wal_v1, &payload).map_err(codec)?;
+            visit(change)?;
+            offset += 8 + len as u64;
+        }
+        if offset != self.wal_bytes {
+            return Err(invalid("delta tail does not end on a frame boundary"));
+        }
+        Ok(CompactionCursor {
+            generation: self.generation,
+            bytes: self.wal_bytes,
+            identity: self.identity,
+        })
     }
 
     /// Stage only events received after the frozen view, retaining their order.
@@ -139,3 +216,7 @@ fn copy_tail(reader: &mut impl Read, writer: &mut impl Write, bytes: u64) -> io:
     }
     Ok(copied)
 }
+
+#[cfg(test)]
+#[path = "compaction_tests.rs"]
+mod tests;

@@ -19,6 +19,8 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   write-ahead log cannot corrupt the replacement catalog.
 - Defer compaction until startup metadata replay has saved its checkpoint,
   keeping live updates writable and the replay's base generation stable.
+- Give queued live updates a turn between recovery batches, and prevent an
+  older recovery plan from overwriting newer saves or removals.
 - Release workflows pin every action to a commit and Rust to 1.99.1.
 
 ## [0.1.31] - 2026-10-21
