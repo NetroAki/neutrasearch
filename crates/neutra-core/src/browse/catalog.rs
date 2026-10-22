@@ -144,6 +144,28 @@ pub(super) fn find_record(
 }
 
 impl BrowserIndex {
+    pub(super) fn read_snapshot(&self) -> io::Result<rusqlite::Transaction<'_>> {
+        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        self.require_pinned_base()?;
+        Ok(snapshot)
+    }
+
+    // A replaced SQL catalog must not be joined to this reader's old columns.
+    pub(super) fn require_pinned_base(&self) -> io::Result<()> {
+        let found: (String, i64) = self
+            .db
+            .query_row("SELECT base_generation,version FROM metadata", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(sql_error)?;
+        if found != (self.base.generation().to_string(), super::SCHEMA_VERSION) {
+            return Err(io::Error::other(
+                "browse catalog was replaced; reopen the reader",
+            ));
+        }
+        Ok(())
+    }
+
     /// Cached tombstone set; reloaded when a writer bumps the revision.
     pub(super) fn tombstones(&self) -> io::Result<Arc<Tombstones>> {
         let revision: i64 = self
@@ -168,6 +190,7 @@ impl BrowserIndex {
 
     /// Resolve a watcher lookup: the live row if one exists, else the base row.
     pub fn record_by_path(&self, path: &str) -> io::Result<Option<FileRecord>> {
+        let _snapshot = self.read_snapshot()?;
         find_record(&self.db, &mut BlockReader::new(&self.base), path)
     }
 

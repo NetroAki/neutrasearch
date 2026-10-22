@@ -70,7 +70,7 @@ impl BrowserIndex {
     /// Read direct children through path keys, jumping past each child's subtree.
     pub fn directory_children(&self, directory: &str) -> io::Result<Vec<FileRecord>> {
         let (prefix, end) = bounds(directory);
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         let mut walk = Walk::new(self)?;
         let mut cursor = prefix.clone();
         let mut children: Vec<FileRecord> = Vec::new();
@@ -127,7 +127,7 @@ impl BrowserIndex {
             .checked_add(1)
             .and_then(|n| i64::try_from(n).ok())
             .ok_or_else(|| io::Error::other("subtree limit overflow"))?;
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         let mut walk = Walk::new(self)?;
         let mut id = walk.reader.path_lower_bound(start)?;
         let high = match end {

@@ -47,7 +47,7 @@ impl BrowserIndex {
         {
             return Ok(None);
         }
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         if CompactIndex::generation_on_disk(index)? != self.generation
             || super::short_counts::ready(&snapshot)? != Some(true)
         {

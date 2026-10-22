@@ -70,7 +70,7 @@ impl BrowserIndex {
             return Ok(None);
         }
         let started = Instant::now();
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         if !self.has_short_search(query)? || !self.covers_delta(index)? {
             return Ok(None);
         }

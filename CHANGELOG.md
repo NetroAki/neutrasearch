@@ -15,6 +15,8 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 - Partial index files left by a killed writer are removed on the next publish.
 - Publishing a folder tree ignores abandoned temporary copies so interrupted
   publication cannot block later index updates.
+- Publish rebuilt browse catalogs through SQLite so an existing reader's
+  write-ahead log cannot corrupt the replacement catalog.
 - Release workflows pin every action to a commit and Rust to 1.99.1.
 
 ## [0.1.31] - 2026-10-21

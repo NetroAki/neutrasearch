@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn held_reader_rejects_a_rebuilt_catalog_with_different_base_addresses() {
+    let root = std::env::temp_dir().join(format!("ns-reader-rebuild-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("index.nsx");
+    let old = CompactIndex::build(&[record("/old", 1, 1, 1)], &path).unwrap();
+    BrowserIndex::ensure(&path, old.generation).unwrap();
+    let base = CompactIndex::open_fast(&path).unwrap();
+    let held = BrowserIndex::open(&path, old.generation).unwrap();
+    assert!(held.record_by_path("/old").unwrap().is_some());
+
+    let new = CompactIndex::build(&[record("/new", 2, 2, 2)], &path).unwrap();
+    BrowserIndex::ensure(&path, new.generation).unwrap();
+    assert!(held.search(&base, &Query::default(), None).is_err());
+    assert!(held.record_by_path("/old").is_err());
+    assert!(held.directory_children("/").is_err());
+    let current = BrowserIndex::open(&path, new.generation).unwrap();
+    assert!(current.record_by_path("/new").unwrap().is_some());
+    drop(current);
+    drop(held);
+    drop(base);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cursor_publication_waits_for_a_competing_writer() {
     use std::sync::mpsc::{channel, RecvTimeoutError};
     use std::time::Duration;

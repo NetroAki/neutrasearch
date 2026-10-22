@@ -41,15 +41,11 @@ impl<'a> Stream<'a> {
         hint: usize,
     ) -> io::Result<Self> {
         let snapshot = if browser.db.is_autocommit() {
-            Some(
-                browser
-                    .db
-                    .unchecked_transaction()
-                    .map_err(super::sql_error)?,
-            )
+            Some(browser.read_snapshot()?)
         } else {
             None
         };
+        browser.require_pinned_base()?;
         let dead = browser.tombstones()?;
         let mut reader = BlockReader::new(&browser.base);
         let base = BaseSide::new(&browser.cols, &mut reader, query, after, hint)?;

@@ -32,7 +32,7 @@ impl BrowserIndex {
             return Ok(None);
         }
         let started = Instant::now();
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         if !self.covers_delta(index)? {
             return Ok(None);
         }

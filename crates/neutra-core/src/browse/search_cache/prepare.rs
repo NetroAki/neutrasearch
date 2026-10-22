@@ -88,7 +88,7 @@ impl BrowserIndex {
         delta: Option<&DeltaIndex>,
     ) -> io::Result<Option<i64>> {
         storage::ensure(index)?;
-        let snapshot = self.db.unchecked_transaction().map_err(sql_error)?;
+        let snapshot = self.read_snapshot()?;
         let token = storage::revision(&snapshot)?;
         if !self.covers_delta(index)? {
             return Ok(None);
