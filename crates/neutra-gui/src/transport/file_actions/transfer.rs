@@ -89,6 +89,30 @@ fn same_path_parent(source: &Path, dest: &Path) -> bool {
 }
 
 fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
+    copy_path_as(source, target, "copy")
+}
+
+/// Run a helper tool, keeping at most the first two kilobytes of its error text.
+#[cfg(target_os = "linux")]
+fn run_capped(mut command: Command) -> std::io::Result<(std::process::ExitStatus, String)> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut text = Vec::new();
+    if let Some(mut err) = child.stderr.take() {
+        (&mut err).take(2048).read_to_end(&mut text)?;
+        std::io::copy(&mut err, &mut std::io::sink())?;
+    }
+    let status = child.wait()?;
+    Ok((status, String::from_utf8_lossy(&text).trim().to_owned()))
+}
+
+fn copy_path_as(source: &Path, target: &Path, verb: &str) -> Result<(), String> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = verb;
     #[cfg(target_os = "linux")]
     {
         let directory = std::fs::symlink_metadata(source)
@@ -97,7 +121,7 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         let refused = || {
             conflict_or(
                 &format!(
-                    "cannot copy {} without overwriting {}",
+                    "cannot {verb} {} without overwriting {}",
                     source.display(),
                     target.display()
                 ),
@@ -126,36 +150,34 @@ fn copy_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         } else {
             source.to_path_buf()
         };
-        let status = Command::new("cp")
-            .args([
-                "-a",
-                "--no-target-directory",
-                "--reflink=auto",
-                "--sparse=auto",
-                "--preserve=all",
-                "--",
-            ])
-            .arg(&from)
-            .arg(&staged)
-            .output();
-        let status = match status {
-            Ok(status) => status,
+        let mut copy = Command::new("cp");
+        copy.args([
+            "-a",
+            "--no-target-directory",
+            "--reflink=auto",
+            "--sparse=auto",
+            "--preserve=all",
+            "--",
+        ])
+        .arg(&from)
+        .arg(&staged);
+        let status = match run_capped(copy) {
+            Ok(done) => done,
             Err(error) => {
                 cleanup_staging(&staged_dir);
                 return Err(format!(
-                    "cannot start cp to copy {}: {error}",
+                    "cannot start cp to {verb} {}: {error}",
                     source.display()
                 ));
             }
         };
-        if !status.status.success() {
+        if !status.0.success() {
             cleanup_staging(&staged_dir);
-            let detail = String::from_utf8_lossy(&status.stderr);
-            let detail = detail.trim();
+            let detail = status.1;
             return Err(if detail.is_empty() || target.exists() {
                 refused()
             } else {
-                format!("cannot copy {}: {detail}", source.display())
+                format!("cannot {verb} {}: {detail}", source.display())
             });
         }
         match rename_noreplace_io(&staged, target) {
@@ -202,7 +224,7 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
         // source entries that still match the record.
         let snapshot = cross_move::Snapshot::take(source)
             .map_err(|e| format!("cannot move {}: {e}", source.display()))?;
-        copy_path_noreplace(source, target).map_err(|e| e.replace("copy", "move"))?;
+        copy_path_as(source, target, "move")?;
         // Make the copy durable on the destination volume before the source goes.
         cross_move::sync_volume(target).map_err(|e| {
             format!(
@@ -210,11 +232,13 @@ fn move_path_noreplace(source: &Path, target: &Path) -> Result<(), String> {
                 source.display()
             )
         })?;
-        match snapshot.remove_unchanged() {
-            0 => Ok(()),
-            left => Err(format!(
-                "moved {} but {left} items that changed during the move were left at the original location",
-                source.display()
+        let outcome = snapshot.remove_unchanged(source);
+        match (outcome.left, outcome.kept_at) {
+            (0, _) => Ok(()),
+            (left, kept) => Err(format!(
+                "moved {} but {left} items that changed during the move were left at the original location{}",
+                source.display(),
+                kept.map_or(String::new(), |k| format!("; a replaced file is kept in {}", k.display()))
             )),
         }
     }

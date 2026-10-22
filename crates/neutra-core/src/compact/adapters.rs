@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(not(windows))]
 use memmap2::Mmap;
 use std::fs::File;
 use std::io::{self, Read};
@@ -52,12 +51,8 @@ impl CompactIndex {
                 stale.display()
             )));
         }
-        #[cfg(not(windows))]
         let mut file = File::open(path)?;
-        #[cfg(not(windows))]
         let map = unsafe { Mmap::map(&file)? };
-        #[cfg(windows)]
-        let map = std::fs::read(path)?;
         if map.len() < HEADER as usize + CHECKSUM_BYTES || &map[..8] != MAGIC {
             return Err(invalid("not a Neutrasearch compact index"));
         }
@@ -73,7 +68,6 @@ impl CompactIndex {
                     .try_into()
                     .map_err(|_| invalid("missing compact index checksum"))?,
             );
-            #[cfg(not(windows))]
             let checksum = {
                 use std::io::{Seek, SeekFrom};
                 file.seek(SeekFrom::Start(0))?;
@@ -88,8 +82,6 @@ impl CompactIndex {
                 }
                 hasher.finalize()
             };
-            #[cfg(windows)]
-            let checksum = crc32fast::hash(data);
             if checksum != expected_checksum {
                 return Err(invalid("compact index checksum mismatch"));
             }

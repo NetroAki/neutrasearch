@@ -1,4 +1,3 @@
-#[cfg(not(windows))]
 use memmap2::Mmap;
 
 pub(crate) const MAGIC: &[u8; 8] = b"NEUTIDX1";
@@ -24,7 +23,4 @@ pub(crate) struct DictEntry {
     pub(crate) offset: u64,
 }
 
-#[cfg(not(windows))]
 pub(in crate::compact) type IndexBytes = Mmap;
-#[cfg(windows)]
-pub(in crate::compact) type IndexBytes = Vec<u8>;

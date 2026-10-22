@@ -214,7 +214,7 @@ fn macos_copy_keeps_extended_attributes() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn cross_volume_move_copies_removes_the_source_and_keeps_late_changes() {
+fn cross_volume_move_copies_and_removes_the_source() {
     use std::os::unix::fs::MetadataExt;
     let shm = PathBuf::from("/dev/shm");
     let disk = sandbox();
