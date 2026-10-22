@@ -16,7 +16,7 @@ impl<'a> Walk<'a> {
     fn new(browser: &'a BrowserIndex) -> io::Result<Self> {
         Ok(Self {
             browser,
-            reader: BlockReader::new(&browser.base),
+            reader: BlockReader::with_cache(&browser.base, &browser.decoded_blocks),
             dead: browser.tombstones()?,
         })
     }

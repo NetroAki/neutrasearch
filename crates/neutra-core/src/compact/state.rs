@@ -38,7 +38,6 @@ impl CompactIndex {
                     batch.reserve(BATCH);
                 }
             }
-            base.release_block(id);
         }
         delta.for_each_upsert(|record| {
             batch.push(record);
@@ -97,7 +96,6 @@ impl CompactIndex {
                         .into_iter()
                         .filter(|record| equivalent_index_path(&record.path, path)),
                 );
-                self.release_block(block as u32);
             }
             return Ok(found);
         }
@@ -200,6 +198,7 @@ impl CompactIndex {
             let _ = id;
         }
     }
+    /// Decode a block and release its mapped pages after reading compressed data.
     pub(crate) fn read_block(&self, id: u32) -> io::Result<Vec<FileRecord>> {
         let d = self
             .block(id as usize)

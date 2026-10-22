@@ -76,6 +76,34 @@ fn nearby_watcher_lookups_reuse_blocks_but_observe_live_changes() {
 }
 
 #[test]
+fn repeated_directory_reconciliation_reuses_decoded_blocks() {
+    let temp = std::env::temp_dir().join(format!("neutra-hierarchy-cache-{}", std::process::id()));
+    std::fs::create_dir(&temp).unwrap();
+    let path = temp.join("cached.nsx");
+    let records: Vec<_> = (0..256)
+        .map(|id| record(format!("/root/{id:05}.txt")))
+        .collect();
+    let built = CompactIndex::build(&records, &path).unwrap();
+    BrowserIndex::ensure(&path, built.generation).unwrap();
+    let browser = BrowserIndex::open(&path, built.generation).unwrap();
+    assert_eq!(browser.directory_children("/root").unwrap().len(), 256);
+    let before = decode_count();
+    assert_eq!(browser.directory_children("/root").unwrap().len(), 256);
+    assert_eq!(decode_count(), before);
+    BrowserIndex::apply_changes(&path, built.generation, &[
+        DeltaChange::Remove(records[100].path.clone()),
+        DeltaChange::Upsert(record("/root/new.txt".into())),
+    ]).unwrap();
+    let current = browser.directory_children("/root").unwrap();
+    assert_eq!(current.len(), 256);
+    assert!(!current.iter().any(|r| r.path == records[100].path));
+    assert!(current.iter().any(|r| r.path.as_ref() == "/root/new.txt"));
+    drop(browser);
+    crate::browse::updates::writer_cache::clear_for_test();
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn decoded_block_cache_evicts_and_skips_oversized_blocks() {
     let mut cache = DecodedBlocks::new();
     for block in 0..=DECODED_BLOCK_LIMIT as u32 {

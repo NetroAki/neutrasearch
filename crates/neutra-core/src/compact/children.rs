@@ -34,7 +34,6 @@ impl<'a> Cursor<'a> {
         while low < high {
             let middle = low + (high - low) / 2;
             let records = self.index.read_block(middle as u32)?;
-            self.index.release_block(middle as u32);
             if records
                 .last()
                 .is_some_and(|last| compare_index_paths(last.path.as_ref(), key) == Ordering::Less)
@@ -61,7 +60,6 @@ impl<'a> Cursor<'a> {
     /// Move to the next block when the current one is used up.
     fn settle(&mut self) -> io::Result<()> {
         while self.at >= self.records.len() && self.block + 1 < self.index.blocks.count {
-            self.index.release_block(self.block as u32);
             self.block += 1;
             self.records = self.index.read_block(self.block as u32)?;
             self.at = 0;
@@ -94,7 +92,6 @@ impl CompactIndex {
                         out.push(record);
                     }
                 }
-                self.release_block(block_id as u32);
             }
             return Ok(out);
         }

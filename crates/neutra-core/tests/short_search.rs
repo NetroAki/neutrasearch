@@ -176,6 +176,36 @@ fn live_names_and_prefix_deletion_update_short_totals_transactionally() {
 }
 
 #[test]
+fn new_name_before_prefix_removal_and_recreation_keeps_counts_exact() {
+    let f = Fixture::new("prefix-recreate");
+    BrowserIndex::apply_changes(
+        &f.path,
+        f.base.generation(),
+        &[
+            DeltaChange::Upsert(record("/new/Beta", 80)),
+            DeltaChange::Upsert(record("/newer/Beta", 81)),
+            DeltaChange::RemovePrefix("/new".into()),
+            DeltaChange::Upsert(record("/new/Beta", 82)),
+        ],
+    )
+    .unwrap();
+    let q = query("be", SortKey::NameAsc);
+    let (hits, stats) = f
+        .browser
+        .search_short(&f.path, &q, None, &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(
+        hits.iter()
+            .map(|h| h.record.path.as_ref())
+            .collect::<Vec<_>>(),
+        ["/new/Beta", "/newer/Beta"]
+    );
+    f.finish();
+}
+
+#[test]
 fn unsupported_matching_options_and_unicode_casing_fall_back() {
     let f = Fixture::new("fallback");
     let q = query("a", SortKey::NameAsc);

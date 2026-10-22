@@ -13,6 +13,7 @@ struct Page {
 pub(in crate::browse) struct Maintenance {
     enabled: bool,
     short: bool,
+    short_changes: crate::browse::short_counts::Batch,
     pages: Vec<Page>,
 }
 
@@ -47,6 +48,7 @@ impl Maintenance {
         Ok(Self {
             enabled,
             short,
+            short_changes: crate::browse::short_counts::Batch::default(),
             pages,
         })
     }
@@ -61,8 +63,11 @@ impl Maintenance {
         if !self.enabled && !self.short {
             return Ok(());
         }
-        crate::browse::short_counts::remove_prefix(db, reader, path)?;
-        // A subtree tombstone must stay constant-size, including cache invalidation.
+        if self.short {
+            // Prefix tallying reads live rows, including preceding changes in this transaction.
+            std::mem::take(&mut self.short_changes).finish(db)?;
+            crate::browse::short_counts::remove_prefix(db, reader, path)?;
+        }
         if self.enabled {
             storage::clear(db)?;
             self.pages.clear();
@@ -86,7 +91,9 @@ impl Maintenance {
             DeltaChange::Remove(path) => (&**path, None),
             DeltaChange::RemovePrefix(_) => return Ok(()),
         };
-        crate::browse::short_counts::update(db, old, new)?;
+        if self.short {
+            self.short_changes.change(old, new);
+        }
         if self.enabled {
             journal::append(db, old, new, false)?;
         }
@@ -97,6 +104,9 @@ impl Maintenance {
     }
 
     pub(in crate::browse) fn finish(&self, db: &Connection) -> io::Result<()> {
+        if self.short {
+            self.short_changes.finish(db)?;
+        }
         if self.enabled {
             db.execute(
                 "UPDATE search_revision SET revision=revision+1 WHERE id=1",

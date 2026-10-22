@@ -46,7 +46,6 @@ pub(in crate::browse) fn rebuild(index: &Path, output: &Path) -> io::Result<()> 
                 delta.apply_batch(batch.drain(..))?;
             }
         }
-        base.release_block(block as u32);
     }
     if !batch.is_empty() {
         delta.apply_batch(batch.drain(..))?;

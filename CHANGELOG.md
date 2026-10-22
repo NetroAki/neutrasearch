@@ -23,8 +23,9 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
   older recovery plan from overwriting newer saves or removals.
 - Retain bounded native deletion evidence across event reads and reconcile
   queued child events after folder removal without stopping live updates.
-- Reuse validated pinned bases and decoded blocks during metadata recovery
-  and live catalog writes instead of reopening them for every batch.
+- Reuse validated bases and decoded blocks during recovery and catalog writes.
+- Batch short-query counts transactionally, cache hierarchy blocks and remove
+  duplicate mapped-page releases during recovery.
 - Repair an ext4 snapshot from native metadata without rebuilding other drives;
   failed repairs retain the marker that blocks incomplete index reads.
 - Release workflows pin every action to a commit and Rust to 1.99.1.

@@ -105,13 +105,11 @@ impl<'a> BlockReader<'a> {
                 .get_or_load(block, || {
                     count_decode();
                     let records = self.base.read_block(block)?;
-                    self.base.release_block(block);
                     Ok(records)
                 })?
         } else {
             count_decode();
             let records = self.base.read_block(block)?;
-            self.base.release_block(block);
             Arc::new(records)
         };
         if self.held.len() == HELD {

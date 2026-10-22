@@ -1,6 +1,7 @@
 use super::{tally::Counts, SLOTS, VERSION};
 use crate::browse::catalog;
 use crate::browse::columns::BlockReader;
+#[cfg(test)]
 use crate::FileRecord;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::io;
@@ -41,34 +42,14 @@ pub(in crate::browse) fn matched(db: &Connection, code: usize) -> io::Result<u64
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative short count"))
 }
 
-pub(in crate::browse) fn update(
-    db: &Connection,
-    old: Option<&FileRecord>,
-    new: Option<&FileRecord>,
-) -> io::Result<()> {
+#[cfg(test)]
+fn update(db: &Connection, old: Option<&FileRecord>, new: Option<&FileRecord>) -> io::Result<()> {
     if ready(db)?.is_none() {
         return Ok(());
     }
-    if old.map(FileRecord::name) == new.map(FileRecord::name) {
-        if new.is_some_and(|record| !record.path.starts_with('/')) {
-            db.execute("UPDATE short_ready SET unix_paths=0", [])
-                .map_err(super::super::sql_error)?;
-        }
-        return Ok(());
-    }
-    let mut delta = Counts::default();
-    if let Some(record) = old {
-        delta.add_name(record.name(), -1);
-    }
-    if let Some(record) = new {
-        delta.add_name(record.name(), 1);
-    }
-    apply(db, &delta.slots)?;
-    if new.is_some_and(|record| !record.path.starts_with('/')) {
-        db.execute("UPDATE short_ready SET unix_paths=0", [])
-            .map_err(super::super::sql_error)?;
-    }
-    Ok(())
+    let mut batch = super::Batch::default();
+    batch.change(old, new);
+    batch.finish(db)
 }
 
 /// Subtract the names of every live row under a path. Call before the
@@ -109,7 +90,7 @@ pub(in crate::browse) fn remove_prefix(
     apply(db, &delta.slots)
 }
 
-fn apply(db: &Connection, delta: &[i64; SLOTS]) -> io::Result<()> {
+pub(super) fn apply(db: &Connection, delta: &[i64; SLOTS]) -> io::Result<()> {
     let mut statement = db
         .prepare_cached("UPDATE short_counts SET matched=matched+?1 WHERE code=?2")
         .map_err(super::super::sql_error)?;

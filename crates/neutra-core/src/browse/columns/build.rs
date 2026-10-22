@@ -89,7 +89,6 @@ fn build_into(
                 run_ends.push(written);
             }
         }
-        base.release_block(block as u32);
         if block % 100_000 == 0 {
             eprintln!("Preparing browse columns: {} / {len} records", next_id);
         }

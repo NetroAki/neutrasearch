@@ -143,9 +143,6 @@ impl CompactIndex {
         } else {
             None
         };
-        if low > 0 {
-            self.release_block(low as u32 - 1);
-        }
         for block_id in low..self.blocks.count {
             let records = self.read_block(block_id as u32)?;
             let paths: Vec<_> = records.iter().map(|record| record.path.as_ref()).collect();
@@ -173,7 +170,6 @@ impl CompactIndex {
                 }
                 previous = Some(record);
             }
-            self.release_block(block_id as u32);
             if past {
                 break;
             }
@@ -196,7 +192,6 @@ impl CompactIndex {
         while low < high {
             let middle = low + (high - low) / 2;
             let records = self.read_block(middle as u32)?;
-            self.release_block(middle as u32);
             if records
                 .last()
                 .is_some_and(|record| compare_index_paths(&record.path, prefix) == Ordering::Less)
