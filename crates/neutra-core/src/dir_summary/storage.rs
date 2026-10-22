@@ -68,7 +68,48 @@ pub(super) fn link_or_write_atomic(staged: &Path, destination: &Path) -> io::Res
     write_atomic(destination, &read_sidecar_bytes(staged)?)
 }
 
+/// Delete temporaries that a killed process left beside `destination`. Their
+/// names carry the writer's process id, so only those whose process has gone
+/// are removed. This reads the index's own folder, never the indexed volumes.
+fn sweep_dead_temporaries(destination: &Path) {
+    let (Some(dir), Some(name)) = (
+        destination.parent(),
+        destination.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return;
+    };
+    let prefix = format!("{name}.new-");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Some(pid) = rest.split('-').next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid != std::process::id() && !process_alive(pid) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Other platforms keep every temporary, since liveness cannot be told cheaply.
+#[cfg(not(target_os = "linux"))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
+/// A unique temporary beside `path`; also clears ones a crashed writer left.
 pub(crate) fn temporary_path(path: &Path) -> PathBuf {
+    sweep_dead_temporaries(path);
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -143,4 +184,27 @@ pub(crate) fn codec(error: impl std::fmt::Display) -> io::Error {
 
 pub(crate) fn invalid(error: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.into())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod sweep_tests {
+    use super::*;
+
+    #[test]
+    fn removes_only_temporaries_of_dead_processes() {
+        let dir = std::env::temp_dir().join(format!("ns-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("home.nsx.dirs");
+        let dead = dir.join("home.nsx.dirs.new-4294967290-1");
+        let mine = dir.join(format!("home.nsx.dirs.new-{}-1", std::process::id()));
+        let other = dir.join("home.nsx.tree.new-4294967290-1");
+        for f in [&dead, &mine, &other] {
+            std::fs::write(f, "x").unwrap();
+        }
+        let _ = temporary_path(&dest);
+        assert!(!dead.exists());
+        assert!(mine.exists());
+        assert!(other.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

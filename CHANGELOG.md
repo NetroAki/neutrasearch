@@ -5,6 +5,16 @@ All notable changes are documented here. Neutrasearch follows semantic versionin
 
 ## [Unreleased]
 
+- Windows maps the index file instead of reading it into memory. Replacing an
+  index that a reader has mapped renames the old file aside.
+- Linux cross-volume moves hold each file aside before deleting it, so a file
+  saved over the original at that moment survives. Folders with hard links no
+  longer report a false failure.
+- Copy errors show the first 2 KB of the tool's message, and move errors no
+  longer rewrite file names.
+- Partial index files left by a killed writer are removed on the next publish.
+- Release workflows pin every action to a commit and Rust to 1.99.1.
+
 ## [0.1.31] - 2026-10-21
 
 - Restrict the Windows scanner pipe to the installer-approved account, SYSTEM
