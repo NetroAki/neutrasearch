@@ -36,7 +36,12 @@ mod windows_replace {
     pub(crate) fn replace_file(temp: &Path, path: &Path) -> io::Result<()> {
         let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
         let first = move_file(temp, path, flags);
-        if first.is_ok() || !path.exists() {
+        // Access denied, sharing violation and user-mapped section are the ways a
+        // reader's view blocks the replacement. A folder or any other failure is
+        // a real error and must surface unchanged.
+        let blocked_by_reader = matches!(&first, Err(e) if matches!(e.raw_os_error(), Some(5 | 32 | 1224)))
+            && std::fs::metadata(path).is_ok_and(|m| m.is_file());
+        if !blocked_by_reader {
             return first;
         }
         let mut aside = None;
