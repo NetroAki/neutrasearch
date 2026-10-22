@@ -90,10 +90,15 @@ fn repeated_directory_reconciliation_reuses_decoded_blocks() {
     let before = decode_count();
     assert_eq!(browser.directory_children("/root").unwrap().len(), 256);
     assert_eq!(decode_count(), before);
-    BrowserIndex::apply_changes(&path, built.generation, &[
-        DeltaChange::Remove(records[100].path.clone()),
-        DeltaChange::Upsert(record("/root/new.txt".into())),
-    ]).unwrap();
+    BrowserIndex::apply_changes(
+        &path,
+        built.generation,
+        &[
+            DeltaChange::Remove(records[100].path.clone()),
+            DeltaChange::Upsert(record("/root/new.txt".into())),
+        ],
+    )
+    .unwrap();
     let current = browser.directory_children("/root").unwrap();
     assert_eq!(current.len(), 256);
     assert!(!current.iter().any(|r| r.path == records[100].path));
